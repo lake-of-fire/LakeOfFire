@@ -175,3 +175,39 @@ test('comment-separated selector and value identifiers retain their spelling', a
         assert.equal(output, css.replace('page-break-inside/**/: avoid', '-webkit-column-break-inside/**/: avoid'))
     })
 })
+
+
+test('escaped brace custom-property values retain writing-mode adaptation', async () => {
+    const css = String.raw`p { --mode\{: vertical-rl; -epub-writing-mode: var(--mode\{); }`
+    await withStylesheet(css, [], output => {
+        assert.equal(output, String.raw`p { --mode\{: vertical-rl; writing-mode: var(--mode\{); }`)
+    })
+})
+
+for (const identifier of [String.raw`--mode\{`, String.raw`--mode\7b `,
+    String.raw`--mode\00007b`, String.raw`--mode\7b` + '\r\n',
+    String.raw`--mode\\\{`, String.raw`--mode\5c \{`]) {
+    test(`ordinary and hex escaped braces preserve declarations: ${JSON.stringify(identifier)}`, async () => {
+        const breakIdentifier = identifier.replace('--mode', '--break')
+        const css = `p { ${identifier}: vertical-rl; ${breakIdentifier}: always; -epub-writing-mode/**/: var(${identifier}); page-break-before /*keep*/ : var(${breakIdentifier}); }`
+        await withStylesheet(css, [], output => {
+            assert.equal(output, css
+                .replace('-epub-writing-mode/**/:', 'writing-mode/**/:')
+                .replace('page-break-before /*keep*/ :', '-webkit-column-break-before /*keep*/ :'))
+        })
+    })
+}
+
+test('escaped backslashes leave actual selector braces structural', async () => {
+    const css = String.raw`page-break-before:hover.tail\\{ -epub-writing-mode/**/: vertical-rl; }
+-epub-writing-mode:hover.tail\5c { page-break-before/**/: always; }`
+    await withStylesheet(css, [], output => {
+        assert.equal(output, String.raw`page-break-before:hover.tail\\{ writing-mode/**/: vertical-rl; }
+-epub-writing-mode:hover.tail\5c { -webkit-column-break-before/**/: always; }`)
+    })
+})
+
+test('unprefixed writing-mode and escaped custom variables remain authored', async () => {
+    const css = String.raw`p { --mode\{: vertical-rl; writing-mode/**/: var(--mode\{); }`
+    await withStylesheet(css, [], output => assert.equal(output, css))
+})

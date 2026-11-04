@@ -143,73 +143,99 @@ class BookEndcapShellTests(unittest.TestCase):
         result = page.evaluate(r"""async () => {
             const { Loader } = await import('/load/viewer-assets/foliate-js/epub.js')
             const check = (condition, message) => { if (!condition) throw new Error(message) }
-            const sheet = `#from-style {
+            const baseSheet = `#from-style {
                 content: "keep; { 10vw";
                 /* lead */ page-break-before/**/: always;
                 -epub-writing-mode /* a */ \t/**/ : vertical-rl;
                 width: 1e1vw;
                 --label: "page-break-before/**/: 10vw";
                 --url: url("https://example.com/10vw");
-            }`
-            const attribute = `content: 'keep; { 10vw'; /* lead */ -epub-writing-mode/**/: vertical-rl;
+            }
+            ${String.raw`#exact { --mode\{: vertical-rl; -epub-writing-mode: var(--mode\{); }`}`
+            const baseAttribute = `content: 'keep; { 10vw'; /* lead */ -epub-writing-mode/**/: vertical-rl;
                 page-break-inside /* a */\t/**/: avoid; width: -1e-1vw;
                 --label: page-break-before/**/:value;`
-            const expectedSheet = sheet
-                .replace('page-break-before/**/: always', '-webkit-column-break-before/**/: always')
-                .replace('-epub-writing-mode /* a */', 'writing-mode /* a */')
-                .replace('width: 1e1vw', 'width: 80px')
             const checked = []
             for (const mediaType of ['text/html', 'application/xhtml+xml']) {
-                const item = { href: 'OPS/chapter.xhtml', mediaType }
-                const source = `<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head>
-                    <title>Inline CSS</title><style>${sheet}</style></head><body>
-                    <p id="from-style">Style element</p>
-                    <p id="from-attribute" style="${attribute}">Style attribute</p>
-                    </body></html>`
-                // XML normalizes attribute whitespace during the caller's
-                // first parse; compare against that real DOM value.
-                const originalAttribute = new DOMParser().parseFromString(source, mediaType)
-                    .querySelector('#from-attribute').getAttribute('style')
-                const expectedAttribute = originalAttribute
-                    .replace('-epub-writing-mode/**/: vertical-rl', 'writing-mode/**/: vertical-rl')
-                    .replace('page-break-inside /* a */', '-webkit-column-break-inside /* a */')
-                    .replace('width: -1e-1vw', 'width: -0.8px')
-                const loader = new Loader({ resources: { manifest: [item] },
-                    loadText: async () => source,
-                    loadBlob: async () => { throw new Error('unexpected raw resource') },
-                })
-                const frame = document.createElement('iframe')
-                try {
-                    const url = await loader.loadItem(item)
-                    const output = await (await fetch(url)).text()
-                    const parsed = new DOMParser().parseFromString(output, mediaType)
-                    check(!parsed.querySelector('parsererror'), 'serialized chapter must parse')
-                    check(parsed.querySelector('style').textContent === expectedSheet, 'style element preserves protected text/comments')
-                    check(parsed.querySelector('#from-attribute').getAttribute('style') === expectedAttribute,
-                        'style attribute preserves protected text/comments')
-                    await new Promise((resolve, reject) => {
-                        frame.onload = resolve
-                        frame.onerror = () => reject(new Error('chapter frame failed'))
-                        frame.src = url
-                        document.body.append(frame)
+                for (const [identifier, prefixed] of [
+                    [String.raw`--mode\{`, true], [String.raw`--mode\7b `, true],
+                    [String.raw`--mode\00007b`, true], [String.raw`--mode\\\{`, true],
+                    [String.raw`--mode\5c \{`, true], ['--mode', false],
+                ]) {
+                    const breakIdentifier = identifier.replace('--mode', '--break')
+                    let sheet = baseSheet.replace('#from-style {',
+                        `#from-style { ${identifier}: vertical-rl; ${breakIdentifier}: always;`)
+                    // Replace only the intended property value, preserving the
+                    // escaped variable's authored name and declaration bytes.
+                    sheet = sheet.replace('-epub-writing-mode /* a */ \t/**/ : vertical-rl;',
+                        `-epub-writing-mode /* a */ \t/**/ : var(${identifier});`)
+                        .replace('page-break-before/**/: always;',
+                            `page-break-before/**/: var(${breakIdentifier});`)
+                    let attribute = `${identifier}: vertical-rl; ` + baseAttribute
+                        .replace('-epub-writing-mode/**/: vertical-rl;',
+                            `-epub-writing-mode/**/: var(${identifier});`)
+                    if (!prefixed) {
+                        sheet = sheet.replace('-epub-writing-mode', 'writing-mode')
+                        attribute = attribute.replace('-epub-writing-mode', 'writing-mode')
+                    }
+                    const expectedSheet = sheet
+                        .replace('page-break-before/**/:', '-webkit-column-break-before/**/:')
+                        .replace('-epub-writing-mode /* a */', 'writing-mode /* a */')
+                        .replace('width: 1e1vw', 'width: 80px')
+                        .replace('-epub-writing-mode: var(', 'writing-mode: var(')
+                    const item = { href: 'OPS/chapter.xhtml', mediaType }
+                    const source = `<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head>
+                        <title>Inline CSS</title><style>${sheet}</style></head><body>
+                        <p id="from-style">Style element</p><p id="exact">Exact escaped-brace case</p>
+                        <p id="from-attribute" style="${attribute}">Style attribute</p>
+                        </body></html>`
+                    // XML normalizes attribute whitespace during the caller's
+                    // first parse; compare against that real DOM value.
+                    const originalAttribute = new DOMParser().parseFromString(source, mediaType)
+                        .querySelector('#from-attribute').getAttribute('style')
+                    const expectedAttribute = originalAttribute
+                        .replace('-epub-writing-mode/**/:', 'writing-mode/**/:')
+                        .replace('page-break-inside /* a */', '-webkit-column-break-inside /* a */')
+                        .replace('width: -1e-1vw', 'width: -0.8px')
+                    const loader = new Loader({ resources: { manifest: [item] },
+                        loadText: async () => source,
+                        loadBlob: async () => { throw new Error('unexpected raw resource') },
                     })
-                    const doc = frame.contentDocument
-                    const styleTarget = doc.querySelector('#from-style')
-                    const attributeTarget = doc.querySelector('#from-attribute')
-                    const style = frame.contentWindow.getComputedStyle(styleTarget)
-                    check(style.writingMode === 'vertical-rl', 'style element affects actual layout style')
-                    check(style.width === '80px', 'viewport exponent dimension is adapted')
-                    check(frame.contentWindow.getComputedStyle(attributeTarget).writingMode === 'vertical-rl',
-                        'style attribute affects actual layout style')
-                    check(attributeTarget.style.getPropertyValue('-webkit-column-break-inside') === 'avoid',
-                        'style attribute break declaration reaches CSSOM')
-                    check(style.getPropertyValue('-webkit-column-break-before') === 'always',
-                        'style element break declaration reaches CSSOM')
-                    checked.push(mediaType)
-                } finally {
-                    frame.remove()
-                    loader.destroy()
+                    const frame = document.createElement('iframe')
+                    try {
+                        const url = await loader.loadItem(item)
+                        const output = await (await fetch(url)).text()
+                        const parsed = new DOMParser().parseFromString(output, mediaType)
+                        check(!parsed.querySelector('parsererror'), 'serialized chapter must parse')
+                        check(parsed.querySelector('style').textContent === expectedSheet, 'style element preserves protected text/comments')
+                        check(parsed.querySelector('#from-attribute').getAttribute('style') === expectedAttribute,
+                            'style attribute preserves protected text/comments')
+                        await new Promise((resolve, reject) => {
+                            frame.onload = resolve
+                            frame.onerror = () => reject(new Error('chapter frame failed'))
+                            frame.src = url
+                            document.body.append(frame)
+                        })
+                        const doc = frame.contentDocument
+                        const styleTarget = doc.querySelector('#from-style')
+                        const attributeTarget = doc.querySelector('#from-attribute')
+                        const style = frame.contentWindow.getComputedStyle(styleTarget)
+                        check(style.writingMode === 'vertical-rl', 'style element affects actual layout style')
+                        check(frame.contentWindow.getComputedStyle(doc.querySelector('#exact')).writingMode === 'vertical-rl',
+                            'exact escaped-brace case affects actual layout style')
+                        check(style.width === '80px', 'viewport exponent dimension is adapted')
+                        check(frame.contentWindow.getComputedStyle(attributeTarget).writingMode === 'vertical-rl',
+                            'style attribute affects actual layout style')
+                        check(attributeTarget.style.getPropertyValue('-webkit-column-break-inside') === 'avoid',
+                            'style attribute break declaration reaches CSSOM')
+                        check(style.getPropertyValue('-webkit-column-break-before') === 'always',
+                            'style element break declaration reaches CSSOM')
+                    } finally {
+                        frame.remove()
+                        loader.destroy()
+                    }
                 }
+                checked.push(mediaType)
             }
             return checked
         }""")
