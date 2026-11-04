@@ -11,7 +11,7 @@ const ns = {
     dc: 'http://purl.org/dc/elements/1.1/',
     ncx: 'http://www.daisy.org/z3986/2005/ncx/', smil: 'http://www.w3.org/ns/SMIL',
 }
-const filenames = ['100%.xhtml', 'literal%20.xhtml', 'literal .xhtml', 'chapter#draft.xhtml', 'chapter?draft.xhtml', 'literal%2F.xhtml']
+const filenames = ['100%.xhtml', ' trailing.xhtml ', 'literal%20.xhtml', 'literal .xhtml', 'chapter#draft.xhtml', 'chapter?draft.xhtml', 'literal%2F.xhtml']
 const fragment = 'sentence %20#?'
 const encodedFragment = encodeURIComponent(fragment)
 
