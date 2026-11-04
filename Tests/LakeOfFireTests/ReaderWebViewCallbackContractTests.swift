@@ -421,6 +421,35 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoadPending(for: url))
     }
 
+    func testTerminalFailureObserverPreservesLaterSameURLReaderLoad() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let model = fixture.readerModeViewModel
+        let url = URL(string: "https://example.com/retry-after-terminal-failure")!
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.isRenderingReaderHTML = true
+        model.beginReaderModeLoad(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+        var observations = 0
+        fixture.handler.onNavigationFailed = { _ in observations += 1 }
+
+        fixture.handler.onNavigationFailed(state: state, disposition: .terminal)
+        let failedObserver = fixture.taskManager.onNavigationFailedTask
+        XCTAssertEqual(observations, 0)
+        let newerLoaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+        model.beginReaderModeLoad(for: url)
+        model.expectSyntheticReaderLoaderCommit(for: newerLoaderURL)
+        fixture.readerContent.isRenderingReaderHTML = true
+        defer { model.cancelReaderModeLoad(for: url) }
+        try await failedObserver?.value
+
+        XCTAssertEqual(observations, 1)
+        XCTAssertTrue(model.isReaderModeLoadPending(for: url))
+        XCTAssertTrue(model.isReaderModeLoading)
+        XCTAssertEqual(model.expectedSyntheticReaderLoaderURL, newerLoaderURL)
+        XCTAssertTrue(fixture.readerContent.isRenderingReaderHTML)
+    }
+
     func testProvisionalNavigationFailurePreservesCommittedReaderRender()
     async throws {
         let fixture = makeReaderWebViewHandlerFixture()
