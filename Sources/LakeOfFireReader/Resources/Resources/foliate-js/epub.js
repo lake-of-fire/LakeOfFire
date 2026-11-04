@@ -396,8 +396,8 @@ const parseClock = str => {
         const [m, s] = parts
         return m * 60 + s
     }
-    const [x, unit] = str.split(/(?=[^\d.])/)
-    const n = parseFloat(x)
+    const unit = str.replace(/^[\d.]+/, '')
+    const n = parseFloat(str)
     const f = unit === 'h' ? 60 * 60 :
         unit === 'min' ? 60 :
         unit === 'ms' ? .001 :
@@ -1391,7 +1391,8 @@ ${doc.querySelector('parsererror').innerText}`)
         this.#assertActive()
         const magic = 'encoding=json+base64:'
         if (txt?.startsWith(magic)) {
-            const json = atob(txt.slice(magic.length))
+            const bytes = Uint8Array.from(atob(txt.slice(magic.length)), character => character.charCodeAt(0))
+            const json = new TextDecoder().decode(bytes)
             return JSON.parse(json)
         }
     }
