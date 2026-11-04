@@ -886,3 +886,62 @@ for (const scope of ['section', 'book']) {
         } finally { view.close() }
     })
 }
+
+
+const makeLanguageElement = ({lang, xmlLang, serializedXMLLang} = {}) => {
+    let htmlLanguage = lang
+    return {
+        get lang() { return htmlLanguage ?? '' },
+        set lang(value) { htmlLanguage = value },
+        dir: '',
+        getAttribute(name) {
+            return name === 'lang' ? htmlLanguage ?? null
+                : name === 'xml:lang' ? serializedXMLLang ?? xmlLang ?? null : null
+        },
+        getAttributeNS(namespace, name) {
+            return namespace === 'http://www.w3.org/XML/1998/namespace' && name === 'lang'
+                ? xmlLang ?? null : null
+        },
+    }
+}
+
+for (const [name, body, html, bookLanguage, expectedQuery, expectedRootLanguage, expectedDirection] of [
+    ['XML root', {}, {xmlLang:'en'}, 'tr', 'i', null, 'ltr'],
+    ['XML body before HTML root', {xmlLang:'en'}, {lang:'tr'}, 'tr', 'i', 'tr', 'ltr'],
+    ['XML wins on the same element', {}, {xmlLang:'en',lang:'tr'}, 'tr', 'i', 'tr', 'ltr'],
+    ['explicit unknown XML root', {}, {xmlLang:''}, 'tr', 'i', null, ''],
+    ['explicit unknown XML body', {xmlLang:''}, {lang:'tr'}, 'tr', 'i', 'tr', ''],
+    ['HTML body before XML root', {lang:'en'}, {xmlLang:'tr'}, 'tr', 'i', null, 'ltr'],
+    ['HTML-serialized XML declaration', {}, {serializedXMLLang:'en'}, 'tr', 'i', null, 'ltr'],
+    ['package fallback', {}, {}, 'tr', 'ı', 'tr', 'ltr'],
+    ['XML Arabic direction', {}, {xmlLang:'ar'}, 'en', 'i', null, 'rtl'],
+]) {
+    test(`View preserves chapter language and derived direction: ${name}`, async () => {
+        const renderer = new FakeRenderer()
+        globalThis.__viewRendererFactory = () => renderer
+        const view = new View()
+        const doc = makeSearchDocument('I')
+        doc.body = makeLanguageElement(body)
+        doc.documentElement = makeLanguageElement(html)
+        const book = makeBook()
+        book.metadata.language = bookLanguage
+        book.sections = [{createDocument:async () => doc}]
+        view.getCFI = (_index, range) => {
+            assert.equal(range.startOffset, 0)
+            assert.equal(range.endOffset, 1)
+            return 'language-match'
+        }
+        view.addAnnotation = async () => {}
+        try {
+            await view.open(book)
+            for (const query of ['i','ı']) {
+                const results = await collectAsync(view.search({query,index:0,matchDiacritics:true}))
+                assert.deepEqual(results.filter(x => x?.excerpt).map(x => x.excerpt.match),
+                    query === expectedQuery ? ['I'] : [], query)
+            }
+            renderer.dispatchEvent(new CustomEvent('load', {detail:{doc,index:0}}))
+            assert.equal(doc.documentElement.getAttribute('lang'), expectedRootLanguage)
+            assert.equal(doc.documentElement.dir, expectedDirection)
+        } finally { view.close() }
+    })
+}
