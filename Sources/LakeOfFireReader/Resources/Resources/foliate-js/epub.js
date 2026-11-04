@@ -427,7 +427,7 @@ const parseSMIL = (doc, resolve = f => f) => {
     })
 }
 
-const isUUID = /([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})/
+const isUUID = /([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})/i
 
 const getUUID = opf => {
     for (const el of opf.getElementsByTagNameNS(NS.DC, 'identifier')) {
@@ -506,7 +506,7 @@ class Encryption {
                 const key = await algo.key(opf)
                 this.#decoders.set(algorithm, blob => algo.decode(key, blob))
             }
-            this.#uris.set(uri, algorithm)
+            if (typeof uri === 'string' && uri) this.#uris.set(resolveURL(uri, ''), algorithm)
         }
     }
     getDecoder(uri) {
@@ -1242,7 +1242,8 @@ ${doc.querySelector('parsererror').innerText}`)
         this.#loader = new Loader({
             loadText: this.loadText,
             loadBlob: uri => Promise.resolve(this.loadBlob(uri))
-                .then(this.#encryption.getDecoder(uri)),
+                .then(blob => blob == null || this.#destroyed
+                    ? null : this.#encryption.getDecoder(uri)(blob)),
             resources: this.resources,
             replaceText: this.replaceText,
             replaceURL: this.replaceURL,
