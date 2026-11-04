@@ -19,6 +19,7 @@ public final class ReaderEBookServingPackage: Sendable {
     private let snapshot: ReaderEBookPackageSnapshot
     private let source: ReaderPackageEntrySource
     private let resources: [Data: ReaderEBookPackageFingerprint.Resource]
+    fileprivate let fontObfuscation: ReaderEBookFontObfuscation
 
     public init(sourceURL: URL, snapshot: ReaderEBookPackageSnapshot,
                 packageDocumentPath: String? = nil,
@@ -45,6 +46,13 @@ public final class ReaderEBookServingPackage: Sendable {
                   return UInt64(entry.size) == resource.byteCount
               }) else { throw ReaderEBookServingError.mismatchedResource }
         try snapshot.validateObservation(snapshot.observationToken)
+        let fontObfuscation = try ReaderEBookFontObfuscation.prepare(
+            entries: entries, packageDocumentPath: selectedPath
+        ) { path in
+            try Self.readVerifiedEntry(subpath: path, snapshot: snapshot, source: source, resources: resources)
+        }
+        try snapshot.validateObservation(snapshot.observationToken)
+        self.fontObfuscation = fontObfuscation
         self.sourceURL = sourceURL
         self.snapshot = snapshot
         self.fingerprint = fingerprint
@@ -62,12 +70,18 @@ public final class ReaderEBookServingPackage: Sendable {
     }
 
     fileprivate func readEntry(subpath: String) throws -> Data {
-        try validate()
+        try Self.readVerifiedEntry(subpath: subpath, snapshot: snapshot, source: source, resources: resources)
+    }
+
+    private static func readVerifiedEntry(subpath: String, snapshot: ReaderEBookPackageSnapshot,
+                                          source: ReaderPackageEntrySource,
+                                          resources: [Data: ReaderEBookPackageFingerprint.Resource]) throws -> Data {
+        try snapshot.validateObservation(snapshot.observationToken)
         guard let resource = resources[Data(subpath.utf8)] else {
             throw ReaderPackageEntrySourceError.entryNotFound
         }
         let bytes = try source.readEntry(subpath: subpath)
-        try validate()
+        try snapshot.validateObservation(snapshot.observationToken)
         guard UInt64(bytes.count) == resource.byteCount,
               SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == resource.sha256 else {
             throw ReaderEBookServingError.mismatchedResource
@@ -116,6 +130,16 @@ public final class ReaderEBookServingLease: @unchecked Sendable {
     public func readEntry(subpath: String) throws -> Data {
         try validate()
         let data = try package.readEntry(subpath: subpath)
+        try validate()
+        return data
+    }
+
+    /// For direct native HTML/CSS resource loads only. Raw /entry consumers
+    /// still own their JS decoder and must continue using readEntry.
+    public func readNativeResource(subpath: String) throws -> Data {
+        let rawBytes = try readEntry(subpath: subpath)
+        // readEntry validates the authentic obfuscated bytes, not decoded data.
+        let data = try package.fontObfuscation.decode(rawBytes, subpath: subpath)
         try validate()
         return data
     }
