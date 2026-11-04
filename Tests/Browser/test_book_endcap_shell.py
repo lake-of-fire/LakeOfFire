@@ -264,6 +264,149 @@ class BookEndcapShellTests(unittest.TestCase):
         self.assertEqual(result['renderedSegments'], 1)
         self.assertEqual(result['hits'], [{'text':'猫','match':'猫','inSegment':True}])
 
+    def test_search_svg_spine_documents_and_later_html_keep_valid_cfis(self):
+        def chapter(name):
+            text = prepared_chapter(name)
+            return text.replace('</body>', '<p id="after-svg">HTMLneedle</p></body>') if name == 'two' else text
+        output = BytesIO()
+        with zipfile.ZipFile(BytesIO(make_epub(chapter))) as original, zipfile.ZipFile(output, 'w') as archive:
+            for info in original.infolist():
+                content = original.read(info)
+                if info.filename == 'OPS/book.opf':
+                    content = content.decode().replace('<item id="two"',
+                        '<item id="graphic" href="graphic.svg" media-type="image/svg+xml"/><item id="two"')
+                    content = content.replace('<itemref idref="two"/>', '<itemref idref="graphic"/><itemref idref="two"/>').encode()
+                archive.writestr(info, content)
+            archive.writestr('OPS/graphic.svg', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 800">'
+                '<title>titleneedle</title><desc>descneedle</desc><metadata>metadataneedle</metadata>'
+                '<defs><text>defsneedle</text></defs><symbol><text>symbolneedle</text></symbol>'
+                '<text id="svg-text" x="20" y="40">SVGneedle</text>'
+                '<text id="svg-inline" x="20" y="80">read<tspan>ing</tspan></text>'
+                '<text id="svg-label-one" x="20" y="120">joined</text>'
+                '<text id="svg-label-two" x="20" y="160"><tspan>labels</tspan></text></svg>')
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-svg-spine.epub'
+        self.server.epub_fixtures[path] = output.getvalue()
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-svg-spine.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        result = page.evaluate("""async () => {
+            const view = reader.view;
+            const svg = await view.book.sections[1].createDocument();
+            const html = await view.book.sections[2].createDocument();
+            const matches = [];
+            let done = false;
+            for await (const result of view.search({query:'needle'})) {
+                if (result === 'done') done = true;
+                for (const hit of result?.subitems ?? []) {
+                    const resolved = view.resolveCFI(hit.cfi);
+                    const range = resolved.anchor(resolved.index === 1 ? svg : html);
+                    matches.push({index:resolved.index,text:range.toString(),match:hit.excerpt.match,
+                        parent:range.startContainer.parentElement.localName});
+                }
+            }
+            const direct = [];
+            for await (const hit of view.search({query:'SVGneedle',index:1})) {
+                if (!hit?.excerpt) continue;
+                direct.push(view.resolveCFI(hit.cfi).anchor(svg).toString());
+            }
+            const phrases = {};
+            for (const query of ['reading','joinedlabels','joined']) {
+                phrases[query] = [];
+                for await (const hit of view.search({query,index:1,matchWholeWords:true})) {
+                    if (!hit?.excerpt) continue;
+                    const range = view.resolveCFI(hit.cfi).anchor(svg);
+                    phrases[query].push({text:range.toString(),start:range.startContainer.parentElement.closest('text').id,
+                        end:range.endContainer.parentElement.closest('text').id});
+                }
+            }
+            return {svgBody:svg.body,svgRoot:svg.documentElement.localName,matches,direct,phrases,done};
+        }""")
+        self.assertIsNone(result['svgBody'])
+        self.assertEqual(result['svgRoot'], 'svg')
+        self.assertEqual(result['matches'], [{'index':1,'text':'needle','match':'needle','parent':'text'},
+                                            {'index':2,'text':'needle','match':'needle','parent':'p'}])
+        self.assertEqual(result['direct'], ['SVGneedle'])
+        self.assertEqual(result['phrases'], {'reading':[{'text':'reading','start':'svg-inline','end':'svg-inline'}],
+            'joinedlabels':[], 'joined':[{'text':'joined','start':'svg-label-one','end':'svg-label-one'}]})
+        self.assertTrue(result['done'])
+
+    def test_search_ruby_base_text_keeps_processed_cfi_structure(self):
+        authored = ('<p id="generated-ruby">漢字を</p>'
+                    '<p id="authored-ruby"><ruby>東京<rp>（</rp><rt>とうきょう</rt><rp>）</rp></ruby>へ</p>'
+                    '<p id="complex-ruby"><ruby><rb>大阪</rb><rtc><rt>おおさか</rt></rtc></ruby>に</p>')
+        generated = ('<m-s><m-m id="mnb-ruby"><ruby class="mnb-gen"><m-t>漢字</m-t>'
+                     '<rt>かんじ</rt></ruby><m-t>を</m-t></m-m></m-s>')
+        def raw_chapter(name):
+            return prepared_chapter(name).replace('</body>', authored + '</body>')
+        processed = {f'OPS/{name}.xhtml': raw_chapter(name).replace(
+            '<p id="generated-ruby">漢字を</p>', f'<p id="generated-ruby">{generated}</p>') for name in ['one','two']}
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-ruby.epub'
+        self.server.epub_fixtures[path] = make_epub(raw_chapter)
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.add_init_script("""(() => {
+            const processed = """ + json.dumps(processed) + """;
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = (input, options) => {
+                const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+                if (url.protocol === 'ebook:' && url.pathname === '/processed-section') {
+                    const html = processed[url.searchParams.get('subpath')];
+                    return Promise.resolve(new Response(html ?? '', {status:html ? 200 : 404,
+                        headers:{'Content-Type':'text/html; charset=utf-8','X-Manabi-Processing-Authoritative':'true'}}));
+                }
+                return originalFetch(input, options);
+            };
+        })();""")
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-ruby.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        result = page.evaluate("""async () => {
+            const view = reader.view;
+            const raw = new DOMParser().parseFromString(await view.book.loadText('OPS/one.xhtml'),'application/xhtml+xml');
+            const detached = await view.book.sections[0].createDocument();
+            const rendered = view.renderer.getContents().find(content=>content.index===0).doc;
+            const annotationCount = doc=>doc.querySelectorAll('rt,rp,rtc').length;
+            const before = [annotationCount(detached),annotationCount(rendered)];
+            const run = async query => {
+                const hits = [];
+                for await (const hit of view.search({query,index:0})) {
+                    if (!hit?.excerpt) continue;
+                    const range = view.resolveCFI(hit.cfi).anchor(rendered);
+                    const surface = range.cloneContents();
+                    surface.querySelectorAll('rt,rp,rtc').forEach(node=>node.remove());
+                    hits.push({match:hit.excerpt.match,surface:surface.textContent,
+                        id:range.startContainer.parentElement.closest('p').id,
+                        start:range.startContainer.parentElement.localName,end:range.endContainer.parentElement.localName,
+                        startOffset:range.startOffset,endOffset:range.endOffset});
+                }
+                return hits;
+            };
+            const generated = await run('漢字を'), authored = await run('東京へ'), complex = await run('大阪に');
+            const annotations = [];
+            for (const query of ['かんじ','かんじを','とうきょう','おおさか','（','）']) annotations.push(...await run(query));
+            return {rawGeneratedAnnotations:raw.querySelectorAll('#generated-ruby rt').length,
+                before,after:[annotationCount(detached),annotationCount(rendered)],generated,authored,complex,annotations};
+        }""")
+        def match(text, element_id, start, end):
+            return {'match':text,'surface':text,'id':element_id,'start':start,'end':end,'startOffset':0,'endOffset':1}
+        self.assertEqual(result['rawGeneratedAnnotations'], 0)
+        self.assertEqual(result['before'], [6,6])
+        self.assertEqual(result['after'], result['before'])
+        self.assertEqual(result['generated'], [match('漢字を','generated-ruby','m-t','m-t')])
+        self.assertEqual(result['authored'], [match('東京へ','authored-ruby','ruby','p')])
+        self.assertEqual(result['complex'], [match('大阪に','complex-ruby','rb','p')])
+        self.assertEqual(result['annotations'], [])
+
     def test_search_unvisited_invalid_xhtml_uses_html_fallback(self):
         def chapter(name):
             text = prepared_chapter(name)
