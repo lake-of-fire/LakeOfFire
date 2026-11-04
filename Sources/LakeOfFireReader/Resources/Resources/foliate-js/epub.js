@@ -59,21 +59,42 @@ const childGetter = (doc, ns) => {
     }
 }
 
-const resolveURL = (url, relativeTo) => {
-    try {
-        if (relativeTo.includes(':')) return new URL(url, relativeTo)
-        // the base needs to be a valid URL, so set a base URL and then remove it
-        const root = 'https://invalid.invalid/'
-        const obj = new URL(url, root + relativeTo)
-        obj.search = ''
-        return decodeURI(obj.href.replace(root, ''))
-    } catch (e) {
-        console.warn(e)
-        return url
-    }
+const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
+
+// Archive identities are raw names. URI references stay encoded until an
+// exact storage lookup; a literal "%20" must never become a space twice.
+const archivePathToURI = path => path.split('/').map(encodeURIComponent).join('/')
+const decodeArchivePath = path => path.split('/').map(component => {
+    const decoded = decodeURIComponent(component)
+    if (/[\\/]/.test(decoded)) throw new URIError('Encoded archive path separator')
+    return decoded
+}).join('/')
+const uriToArchivePath = href => {
+    const { resourceHref } = splitInternalResourceReference(href)
+    if (isExternal(resourceHref)) return resourceHref
+    return decodeArchivePath(resourceHref)
 }
 
-const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
+// relativeTo is always a raw archive path, never an already encoded URI.
+const resolveURL = (url, relativeTo) => {
+    if (isExternal(url)) return url
+    // Check before URL dot-segment normalization can discard the component.
+    if (/%(?:2f|5c)/i.test(splitInternalResourceReference(url).resourceHref))
+        throw new URIError('Encoded archive path separator')
+    const root = 'https://invalid.invalid/'
+    let obj
+    try {
+        obj = new URL(url, root + archivePathToURI(relativeTo))
+    } catch (error) {
+        if (error instanceof TypeError)
+            throw new URIError('Invalid archive URI reference')
+        throw error
+    }
+    obj.search = ''
+    return obj.href.startsWith(root)
+        ? `${archivePathToURI(decodeArchivePath(obj.pathname.slice(1)))}${obj.hash}`
+        : obj.href
+}
 
 const manabiEpubReaderLoadLog = (stage, payload = {}) => {
     try {
@@ -298,13 +319,22 @@ const getMetadata = opf => {
     }
 }
 
+const resolveOptionalReference = (href, resolve) => {
+    if (!href) return null
+    try { return resolve(href) }
+    catch (error) {
+        if (error instanceof URIError) return null
+        throw error
+    }
+}
+
 const parseNav = (doc, resolve = f => f) => {
     const {
         $,
         $$,
         $$$
     } = childGetter(doc, NS.XHTML)
-    const resolveHref = href => href ? decodeURI(resolve(href)) : null
+    const resolveHref = href => resolveOptionalReference(href, resolve)
     const parseLI = getType => $li => {
         const $a = $($li, 'a') ?? $($li, 'span')
         const $ol = $($li, 'ol')
@@ -351,7 +381,7 @@ const parseNCX = (doc, resolve = f => f) => {
         $,
         $$
     } = childGetter(doc, NS.NCX)
-    const resolveHref = href => href ? decodeURI(resolve(href)) : null
+    const resolveHref = href => resolveOptionalReference(href, resolve)
     const parseItem = el => {
         const $label = $(el, 'navLabel')
         const $content = $(el, 'content')
@@ -410,9 +440,13 @@ const parseSMIL = (doc, resolve = f => f) => {
         $,
         $$$
     } = childGetter(doc, NS.SMIL)
-    const resolveHref = href => href ? decodeURI(resolve(href)) : null
+    const resolveHref = href => resolveOptionalReference(href, resolve)
     return $$$(doc, 'par').map($par => {
-        const id = $($par, 'text')?.getAttribute('src')?.split('#')?.[1]
+        const textSource = $($par, 'text')?.getAttribute('src') ?? ''
+        const { fragment } = splitInternalResourceReference(textSource)
+        let id
+        try { id = fragment ? decodeURIComponent(fragment.slice(1)) : undefined }
+        catch (error) { if (!(error instanceof URIError)) throw error }
         const $audio = $($par, 'audio')
         return $audio ? {
             id,
@@ -497,6 +531,15 @@ class Encryption {
                 uri
             }
             of data) {
+            if (typeof uri !== 'string' || !uri) continue
+            let path
+            try { path = uriToArchivePath(resolveURL(uri, '')) }
+            catch (error) {
+                // Optional obfuscation metadata cannot make otherwise readable
+                // chapters unavailable or turn an encoded separator into an alias.
+                if (error instanceof URIError) continue
+                throw error
+            }
             if (!this.#decoders.has(algorithm)) {
                 const algo = this.#algorithms[algorithm]
                 if (!algo) {
@@ -506,7 +549,7 @@ class Encryption {
                 const key = await algo.key(opf)
                 this.#decoders.set(algorithm, blob => algo.decode(key, blob))
             }
-            if (typeof uri === 'string' && uri) this.#uris.set(resolveURL(uri, ''), algorithm)
+            this.#uris.set(path, algorithm)
         }
     }
     getDecoder(uri) {
@@ -533,7 +576,7 @@ class Resources {
         this.manifest = $$($manifest, 'item')
             .map(getAttributes('href', 'id', 'media-type', 'properties', 'media-overlay'))
             .map(item => {
-                item.href = resolveHref(item.href)
+                item.href = uriToArchivePath(resolveHref(item.href))
                 item.properties = item.properties?.split(/\s/)
                 return item
             })
@@ -566,8 +609,8 @@ class Resources {
             this.getItemByID($$$(opf, 'meta')
                 .find(filterAttribute('name', 'cover'))
                 ?.getAttribute('content')) ??
-            this.getItemByHref(this.guide
-                ?.find(ref => ref.type.includes('cover'))?.href)
+            this.getItemByHref(uriToArchivePath(this.guide
+                ?.find(ref => ref.type.includes('cover'))?.href ?? ''))
 
         this.cfis = CFI.fromElements($$itemref)
     }
@@ -860,7 +903,12 @@ export class Loader {
         if (typeof href !== 'string' || !href || isExternal(href)) return href
         const { resourceHref, fragment } = splitInternalResourceReference(href)
         if (!resourceHref) return href
-        const path = resolveURL(resourceHref, base)
+        let path
+        try { path = uriToArchivePath(resolveURL(resourceHref, base)) }
+        catch (error) {
+            if (error instanceof URIError) return href
+            throw error
+        }
         const item = this.manifest.find(item => item.href === path)
         if (!item) return href
         const url = await this.loadItem(item, parents.concat(base))
@@ -1099,11 +1147,14 @@ export class Loader {
             const relative = pathRelative(pathDirname(href), asset.href)
             const rootRelative = '/' + asset.href
             const urls = new Set([
-                relative,
-                encodeURI(relative),
-                rootRelative,
-                encodeURI(rootRelative),
+                archivePathToURI(relative),
+                archivePathToURI(rootRelative),
             ])
+            // Keep legacy unescaped names only when they cannot be confused
+            // with URI escapes, a query or a fragment belonging to another item.
+            for (const path of [relative, rootRelative]) {
+                if (!/[%#?]/.test(path)) urls.add(path)
+            }
             for (const url of urls) {
                 if (url && !assetMap.has(url)) assetMap.set(url, asset)
             }
@@ -1260,7 +1311,8 @@ ${doc.querySelector('parsererror').innerText}`)
                 return null
             }
             return {
-                id: this.resources.getItemByID(idref)?.href,
+                id: item.href,
+                href: archivePathToURI(item.href),
                 load: () => this.#loader.loadItem(item),
                 unload: () => this.#loader.unloadItem(item),
                 createDocument: () => this.loadDocument(item),
@@ -1399,8 +1451,8 @@ ${doc.querySelector('parsererror').innerText}`)
         return { ...resolved, index: this.#sectionIndexFromSpineIndex(resolved.index) }
     }
     resolveHref(href) {
-        const [path, hash] = href.split('#')
-        const item = this.resources.getItemByHref(decodeURI(path))
+        const [path, hash] = this.splitTOCHref(href)
+        const item = this.resources.getItemByHref(path)
         if (!item) return null
         const spineIndex = this.resources.spine.findIndex(({ idref }) => idref === item.id)
         const index = this.#sectionIndexFromSpineIndex(spineIndex)
@@ -1411,7 +1463,14 @@ ${doc.querySelector('parsererror').innerText}`)
         }
     }
     splitTOCHref(href) {
-        return href?.split('#') ?? []
+        if (typeof href !== 'string') return []
+        try {
+            const { fragment } = splitInternalResourceReference(href)
+            return [uriToArchivePath(href), fragment ? decodeURIComponent(fragment.slice(1)) : undefined]
+        } catch (error) {
+            if (error instanceof URIError) return []
+            throw error
+        }
     }
     getTOCFragment(doc, id) {
         return doc.getElementById(id) ??
