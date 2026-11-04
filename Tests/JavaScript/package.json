@@ -1,0 +1,10 @@
+{
+  "name": "lakeoffire-javascript-tests",
+  "private": true,
+  "scripts": {
+    "test:carousel": "node readability-carousel.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}
