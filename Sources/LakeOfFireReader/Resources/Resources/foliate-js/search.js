@@ -55,58 +55,110 @@ const simpleSearch = function* (strs, query, options = {}) {
     } while (index > -1)
 }
 
-const segmenterSearch = function* (strs, query, options = {}) {
-    if (!strs.length || !query.length) return
+// Every comparison unit keeps the complete original grapheme span. This
+// preserves UTF-16 offsets through omitted format tokens, whitespace runs and
+// length-changing Unicode folds.
+const mapSearchText = (text, segmenter, transform, collapseWhitespace = false) => {
+    const values = [], starts = [], ends = []
+    let previousValue
+    for (const { index, segment } of segmenter.segment(text)) {
+        const value = transform(segment)
+        if (!value) continue
+        const end = index + segment.length
+        if (collapseWhitespace && value === ' ' && previousValue === ' ') {
+            ends[ends.length - 1] = end
+            continue
+        }
+        values.push(value)
+        for (let i = 0; i < value.length; i++) {
+            starts.push(index)
+            ends.push(end)
+        }
+        previousValue = value
+    }
+    return { text: values.join(''), starts, ends }
+}
+
+const normalizeSearchSegment = segment => !/[^\p{Format}]/u.test(segment)
+    ? '' : /^\s+$/u.test(segment) ? ' ' : segment
+
+const segmentedCandidates = function* (text, query, segments, queryLength, collator) {
+    for (let i = 0; i + queryLength <= segments.length; i++) {
+        const start = segments[i].index
+        const last = segments[i + queryLength - 1]
+        const end = last.index + last.segment.length
+        if (collator.compare(query, text.slice(start, end)) === 0) yield { start, end }
+    }
+}
+
+const foldedCandidates = function* (text, query, graphemes, collator, boundaries) {
+    const locale = collator.resolvedOptions().locale
+    const ignoresMarks = ['base', 'case'].includes(collator.resolvedOptions().sensitivity)
+    // A chapter repeats most graphemes. Keep locale casing/decomposition
+    // bounded by distinct graphemes, with no cache surviving this search.
+    const foldedSegments = new Map()
+    const fold = segment => {
+        if (foldedSegments.has(segment)) return foldedSegments.get(segment)
+        const value = segment.normalize('NFKD').toLocaleLowerCase(locale)
+            .toLocaleUpperCase(locale).normalize('NFKD')
+        const folded = ignoresMarks ? value.replace(/\p{Mark}/gu, '') : value
+        foldedSegments.set(segment, folded)
+        return folded
+    }
+    const needle = mapSearchText(query, graphemes, fold).text
+    if (!needle) return
+    const key = mapSearchText(text, graphemes, fold)
+    let index = -1
+    while ((index = key.text.indexOf(needle, index + 1)) !== -1) {
+        const start = key.starts[index], end = key.ends[index + needle.length - 1]
+        if (boundaries && (!boundaries.has(start) || !boundaries.has(end))) continue
+        // Unicode folds discover candidates, not collation keys. Verify the
+        // complete original spelling, including sensitivity and locale; half
+        // an expansion ("s" inside "ß") must never become a match.
+        if (collator.compare(query, text.slice(start, end)) === 0) yield { start, end }
+    }
+}
+
+const mergeCandidates = function* (first, second) {
+    let a = first.next(), b = second.next(), previous
+    while (!a.done || !b.done) {
+        const useFirst = b.done || !a.done && (a.value.start < b.value.start
+            || a.value.start === b.value.start && a.value.end <= b.value.end)
+        const value = useFirst ? a.value : b.value
+        if (useFirst) a = first.next()
+        else b = second.next()
+        if (value.start === previous?.start && value.end === previous?.end) continue
+        previous = value
+        yield value
+    }
+}
+
+const collatedRanges = function* (text, query, options = {}) {
+    if (!text.length || !query.length) return
     const { locales = 'en', granularity = 'grapheme', sensitivity = 'base' } = options
-    let segmenter, collator
+    let segmenter, graphemes, collator
     try {
-        segmenter = new Intl.Segmenter(locales, { usage: 'search', granularity })
+        segmenter = new Intl.Segmenter(locales, { granularity })
+        graphemes = new Intl.Segmenter(locales, { granularity: 'grapheme' })
         collator = new Intl.Collator(locales, { sensitivity })
-    } catch (e) {
-        console.warn(e)
-        segmenter = new Intl.Segmenter('en', { usage: 'search', granularity })
+    } catch (error) {
+        console.warn(error)
+        segmenter = new Intl.Segmenter('en', { granularity })
+        graphemes = new Intl.Segmenter('en', { granularity: 'grapheme' })
         collator = new Intl.Collator('en', { sensitivity })
     }
-    const queryLength = Array.from(segmenter.segment(query)).length
-
-    const substrArr = []
-    let strIndex = 0
-    let segments = segmenter.segment(strs[strIndex])[Symbol.iterator]()
-    main: while (strIndex < strs.length) {
-        while (substrArr.length < queryLength) {
-            const { done, value } = segments.next()
-            if (done) {
-                // the current string is exhausted
-                // move on to the next string
-                strIndex++
-                if (strIndex < strs.length) {
-                    segments = segmenter.segment(strs[strIndex])[Symbol.iterator]()
-                    continue
-                } else break main
-            }
-            const { index, segment } = value
-            // ignore formatting characters
-            if (!/[^\p{Format}]/u.test(segment)) continue
-            // normalize whitespace
-            if (/\s/u.test(segment)) {
-                if (!/\s/u.test(substrArr[substrArr.length - 1]?.segment))
-                    substrArr.push({ strIndex, index, segment: ' ' })
-                continue
-            }
-            value.strIndex = strIndex
-            substrArr.push(value)
-        }
-        const substr = substrArr.map(x => x.segment).join('')
-        if (collator.compare(query, substr) === 0) {
-            const endIndex = strIndex
-            const lastSeg = substrArr[substrArr.length - 1]
-            const endOffset = lastSeg.index + lastSeg.segment.length
-            const startIndex = substrArr[0].strIndex
-            const startOffset = substrArr[0].index
-            const range = { startIndex, startOffset, endIndex, endOffset }
-            yield { range, excerpt: makeExcerpt(strs, range) }
-        }
-        substrArr.shift()
+    const normalized = mapSearchText(text, graphemes, normalizeSearchSegment, true)
+    const needle = mapSearchText(query, graphemes, normalizeSearchSegment, true).text
+    if (!normalized.text || !needle) return
+    const segments = Array.from(segmenter.segment(normalized.text))
+    const queryLength = Array.from(segmenter.segment(needle)).length
+    const boundaries = granularity === 'grapheme' ? null
+        : new Set([...segments.map(({ index }) => index), normalized.text.length])
+    const candidates = mergeCandidates(
+        segmentedCandidates(normalized.text, needle, segments, queryLength, collator),
+        foldedCandidates(normalized.text, needle, graphemes, collator, boundaries))
+    for (const { start, end } of candidates) {
+        yield { startOffset: normalized.starts[start], endOffset: normalized.ends[end - 1] }
     }
 }
 
@@ -115,8 +167,7 @@ const segmenterSearch = function* (strs, query, options = {}) {
 // then map the original UTF-16 offsets back to those nodes.
 const collatedSearch = function* (strs, query, options) {
     let startIndex = 0, startSum = 0
-    for (const result of segmenterSearch([strs.join('')], query, options)) {
-        const start = result.range.startOffset, end = result.range.endOffset
+    for (const { startOffset: start, endOffset: end } of collatedRanges(strs.join(''), query, options)) {
         while (startSum + strs[startIndex].length <= start) {
             startSum += strs[startIndex++].length
         }

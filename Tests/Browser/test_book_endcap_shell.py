@@ -264,6 +264,54 @@ class BookEndcapShellTests(unittest.TestCase):
                                                  match('read\ning', 'search-empty', 'search-empty', 3)])
         self.assertEqual(results['locale'], [match('I', 'search-locale', 'search-locale', 1)])
 
+    def test_search_normalization_and_unicode_ranges(self):
+        def chapter(name):
+            examples = ('<p id="normalized-space">cat  <span>dog</span></p>'
+                        '<p id="normalized-format">ca&#xAD;<span>t</span></p>'
+                        '<p id="normalized-sharp">Stra<span>ße</span></p>'
+                        '<p id="normalized-ligature">o<span>ﬃ</span>ce</p>')
+            return prepared_chapter(name).replace('</body>', examples + '</body>')
+
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-normalization.epub'
+        self.server.epub_fixtures[path] = make_epub(chapter)
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-normalization.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        results = page.evaluate('''async () => {
+            const view = reader.view;
+            const doc = await view.book.sections[0].createDocument();
+            const run = async (query, options = {}) => {
+                const matches = [];
+                for await (const result of view.search({query,index:0,defaultLocale:'de',...options})) {
+                    if (!result?.excerpt) continue;
+                    const range = view.resolveCFI(result.cfi).anchor(doc);
+                    matches.push({match:result.excerpt.match, text:range.toString(),
+                        start:range.startContainer.parentElement.closest('p')?.id,
+                        end:range.endContainer.parentElement.closest('p')?.id,
+                        startOffset:range.startOffset, endOffset:range.endOffset});
+                }
+                return matches;
+            };
+            return {space:await run('cat  dog'), format:await run('ca\u00ADt'),
+                sharp:await run('strasse'), ligature:await run('office'),
+                strict:await run('strasse', {matchDiacritics:true})};
+        }''')
+        def match(text, element_id, end_offset):
+            return {'match':text, 'text':text, 'start':element_id, 'end':element_id,
+                    'startOffset':0, 'endOffset':end_offset}
+        self.assertEqual(results['space'], [match('cat  dog', 'normalized-space', 3)])
+        self.assertEqual(results['format'], [match('cat', 'normalized-space', 3),
+                                             match('ca\u00ADt', 'normalized-format', 1)])
+        self.assertEqual(results['sharp'], [match('Straße', 'normalized-sharp', 2)])
+        self.assertEqual(results['ligature'], [match('oﬃce', 'normalized-ligature', 2)])
+        self.assertEqual(results['strict'], [])
+
     def test_skipped_spine_entry_preserves_href_and_cfi_navigation(self):
         self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
         self.server.epub_fixtures['/missing-spine-entry.epub'] = make_epub(missing_spine_entry=True)
