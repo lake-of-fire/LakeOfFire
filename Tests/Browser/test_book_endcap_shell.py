@@ -4,9 +4,12 @@ No loading gate, CSP or renderer geometry is disabled to make this test pass.
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
+from html import escape
+from urllib.parse import quote
 from pathlib import Path
 from threading import Thread
 import os
+import re
 import sys
 import unittest
 import zipfile
@@ -33,6 +36,44 @@ def make_epub(chapter_factory=prepared_chapter, *, missing_spine_entry=False):
         for name in ['one', 'two']:
             archive.writestr('OPS/' + name + '.xhtml', chapter_factory(name))
     return output.getvalue()
+
+def make_uri_epub(with_toc=True):
+    directory = 'OPS/100%/draft#?'
+    names = ['100%.xhtml', 'literal%20.xhtml', 'literal .xhtml',
+             'chapter#draft.xhtml', 'chapter?draft.xhtml', 'literal%2F.xhtml', '日本語.xhtml', 'A.xhtml']
+    output = BytesIO()
+    with zipfile.ZipFile(output, 'w') as archive:
+        archive.writestr('mimetype', 'application/epub+zip')
+        archive.writestr('META-INF/container.xml',
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+            f'<rootfile full-path="{escape(directory, quote=True)}/book.opf" media-type="application/oebps-package+xml"/>'
+            '</rootfiles></container>')
+        manifest = ''.join(f'<item id="c{i}" href="{quote(name, safe="")}" media-type="application/xhtml+xml"/>'
+                           for i, name in enumerate(names))
+        if with_toc:
+            manifest += '<item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>'
+        spine = ''.join(f'<itemref idref="c{i}"/>' for i in range(len(names)))
+        archive.writestr(directory + '/book.opf',
+            '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">'
+            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="uid">uri-book</dc:identifier>'
+            '<dc:title>URI References</dc:title><dc:language>tr</dc:language></metadata>'
+            f'<manifest>{manifest}</manifest><spine>{spine}</spine></package>')
+        def navigation_ref(name):
+            encoded = '%41.xhtml' if name == 'A.xhtml' else quote(name, safe='')
+            return re.sub(r'%[0-9A-Fa-f]{2}', lambda value: value[0].lower(), encoded)
+        nav = ''.join(f'<li><a href="{navigation_ref(name)}#uri-fragment">Chapter {i}</a></li>'
+                      for i, name in enumerate(names))
+        archive.writestr(directory + '/nav.xhtml',
+            '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'
+            f'<body><nav epub:type="toc"><ol>{nav}</ol></nav></body></html>')
+        for i, name in enumerate(names):
+            next_href = quote(names[(i + 1) % len(names)], safe='') + '#uri-fragment'
+            content = prepared_chapter(f'chapter-{i}').replace('</body>',
+                f'<p id="uri-fragment">target</p><p id="uri-language">I zzz</p>'
+                f'<a id="uri-next" href="{next_href}">next</a></body>')
+            archive.writestr(directory + '/' + name, content)
+    return output.getvalue(), directory, names
+
 
 class Handler(SimpleHTTPRequestHandler):
     def log_message(self, *args): pass
@@ -131,6 +172,97 @@ class BookEndcapShellTests(unittest.TestCase):
         # unittest runs class cleanups even if setup or an earlier cleanup fails.
         # Reverse registration closes the browser before its Playwright runtime.
         cls.addClassCleanup(cls.browser.close)
+
+    def test_uri_navigation_snapshot_and_raw_warm_identity(self):
+        for with_toc in (True, False):
+            with self.subTest(with_toc=with_toc):
+                archive, directory, names = make_uri_epub(with_toc)
+                self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+                path = f'/uri-navigation-{with_toc}.epub'
+                self.server.epub_fixtures[path] = archive
+                self.addCleanup(self.server.epub_fixtures.pop, path)
+                page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+                self.addCleanup(page.close)
+                page.add_init_script(BRIDGE)
+                page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+                wait_for_reader(page, 'typeof window.loadEBook === "function"')
+                page.evaluate('(path) => loadEBook({url:location.origin+path,layoutMode:"paginated"})', path)
+                wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+                canonical = [quote(directory + '/' + name, safe='/') for name in names]
+                raw = [directory + '/' + name for name in names]
+                self.assertEqual(page.evaluate('reader.view.book.sections.map(s => s.id)'), raw)
+                self.assertEqual(page.evaluate('reader.view.book.sections.map(s => s.href)'), canonical)
+                first = page.evaluate('reader.buildGoToSheetSnapshot()')
+                self.assertEqual(first['currentChapterHref'], canonical[0])
+                self.assertEqual(first['currentChapterTitle'], 'Chapter 0' if with_toc else '100%')
+                self.assertTrue(all(item['percent'] is not None for item in first['chapters']))
+                locale = page.evaluate('''async () => {
+                    const matches = [];
+                    for await (const item of reader.view.search({query:'ı', index:0, matchDiacritics:true})) {
+                        if (item?.excerpt) matches.push(item.excerpt.match);
+                    }
+                    return matches;
+                }''')
+                self.assertEqual(locale, ['I'])
+                for i in range(1, len(names)):
+                    page.evaluate('''() => reader.view.renderer.getContents()[0].doc.getElementById('uri-next').click()''')
+                    wait_for_reader(page, f'reader.view.renderer.displayedIndex === {i} && reader.view.lastLocation?.index === {i}')
+                    snapshot = page.evaluate('reader.buildGoToSheetSnapshot()')
+                    self.assertEqual(snapshot['currentChapterHref'], canonical[i])
+                warm = page.evaluate('''(raw) => {
+                    manabi_syncLiveSettledSections({hrefs:raw.slice(0,2), firstLiveHref:raw[0]});
+                    return {hrefs:[...__manabiLiveProcessedSectionHrefs], first:__manabiFirstLiveSectionHref};
+                }''', raw)
+                self.assertEqual(warm, {'hrefs': sorted(raw[:2]), 'first': raw[0]})
+
+    def test_search_preserves_inline_words_blocks_locale_and_cfi_ranges(self):
+        def chapter(name):
+            examples = ('<p id="search-inline">read<span>ing</span></p>'
+                        '<p id="search-prefix">read</p><p id="search-suffix">ing</p>'
+                        '<div id="search-empty">read<div></div>ing</div>'
+                        '<p id="search-locale">I zzz</p>')
+            return prepared_chapter(name).replace('</body>', examples + '</body>')
+
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-boundaries.epub'
+        self.server.epub_fixtures[path] = make_epub(chapter)
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-boundaries.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        results = page.evaluate('''async () => {
+            const view = reader.view;
+            const doc = await view.book.sections[0].createDocument();
+            const run = async (query, options = {}) => {
+                const matches = [];
+                for await (const result of view.search({query, index:0, matchWholeWords:true, ...options})) {
+                    if (!result?.excerpt) continue;
+                    const resolved = view.resolveCFI(result.cfi);
+                    const range = resolved.anchor(doc);
+                    matches.push({match:result.excerpt.match, index:resolved.index,
+                        start:range.startContainer.parentElement.closest('[id^="search-"]')?.id,
+                        end:range.endContainer.parentElement.closest('[id^="search-"]')?.id,
+                        startOffset:range.startOffset, endOffset:range.endOffset});
+                }
+                return matches;
+            };
+            return {joined:await run('reading'), partial:await run('read'),
+                separated:await run('read ing'),
+                locale:await run('ı', {matchWholeWords:false, matchDiacritics:true, defaultLocale:'tr'})};
+        }''')
+        def match(text, start, end, end_offset):
+            return {'match': text, 'index': 0, 'start': start, 'end': end,
+                    'startOffset': 0, 'endOffset': end_offset}
+        self.assertEqual(results['joined'], [match('reading', 'search-inline', 'search-inline', 3)])
+        self.assertEqual(results['partial'], [match('read', 'search-prefix', 'search-prefix', 4),
+                                               match('read', 'search-empty', 'search-empty', 4)])
+        self.assertEqual(results['separated'], [match('read\ning', 'search-prefix', 'search-suffix', 3),
+                                                 match('read\ning', 'search-empty', 'search-empty', 3)])
+        self.assertEqual(results['locale'], [match('I', 'search-locale', 'search-locale', 1)])
 
     def test_skipped_spine_entry_preserves_href_and_cfi_navigation(self):
         self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})

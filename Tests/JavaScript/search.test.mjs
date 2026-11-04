@@ -100,3 +100,33 @@ test('accent search preserves a combining sequence split across inline nodes', (
         excerpt: { pre: '', match: 'e\u0301', post: '' },
     }])
 })
+
+
+test('whole-word search treats inline text nodes as one word', () => {
+    assert.deepEqual(matches(['read', 'ing'], 'reading', { granularity: 'word' }), [{
+        range: { startIndex: 0, startOffset: 0, endIndex: 1, endOffset: 3 },
+        excerpt: { pre: '', match: 'reading', post: '' },
+    }])
+    assert.deepEqual(matches(['read', 'ing'], 'read', { granularity: 'word' }), [])
+})
+
+test('whole-word search keeps apostrophes across inline nodes', () => {
+    assert.deepEqual(matches(['I', "'", 'm'], "I'm", { granularity: 'word' }).map(x => x.range), [
+        { startIndex: 0, startOffset: 0, endIndex: 2, endOffset: 1 },
+    ])
+})
+
+test('whole-word search segments Japanese across inline nodes', () => {
+    assert.deepEqual(matches(['日本', '語'], '日本語', { granularity: 'word', locales: 'ja' }).map(x => x.range), [
+        { startIndex: 0, startOffset: 0, endIndex: 1, endOffset: 1 },
+    ])
+})
+
+for (const sensitivity of ['base', 'case']) {
+    test(`${sensitivity} search keeps a split grapheme attached to a following match`, () => {
+        assert.deepEqual(matches(['e', '\u0301', '猫'], 'é猫', { sensitivity }), [{
+            range: { startIndex: 0, startOffset: 0, endIndex: 2, endOffset: 1 },
+            excerpt: { pre: '', match: 'e\u0301猫', post: '' },
+        }])
+    })
+}
