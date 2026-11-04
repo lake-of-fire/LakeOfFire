@@ -1002,7 +1002,12 @@ export class Loader {
             cursor = match.index + match[0].length
         }
         layoutParts.push(str.slice(cursor))
-        const layout = layoutParts.join('')
+        // Ordinary identifier escapes cannot supply structural delimiters.
+        // Consume each escape once: \\ masks only the backslash pair, while
+        // hex escapes also consume their optional whitespace terminator.
+        const layout = layoutParts.join('').replace(
+            /\\(?:[0-9a-f]{1,6}(?:\r\n|[\t\n\f\r ])?|[^\n\r\f])/gi,
+            escape => '\ufffc'.repeat(escape.length))
         for (const match of layout.matchAll(/(^|[;{])([\t\n\f\r ]*)(-epub-[\w-]+|page-break-(?:after|before|inside))(?=[\t\n\f\r ]*:)/gi)) {
             const start = match.index + match[1].length + match[2].length
             // A colon in a selector prelude is not a declaration, including
