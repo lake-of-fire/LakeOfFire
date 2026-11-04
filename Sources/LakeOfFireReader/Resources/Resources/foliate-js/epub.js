@@ -24,6 +24,19 @@ const MIME = {
     JS: /\/(x-)?(javascript|ecmascript)/,
 }
 
+// Rendering and detached search/navigation documents must interpret malformed
+// XHTML identically. Preserve SVG/XML parsing rather than treating those as HTML.
+const parseContentDocument = (parser, source, mediaType) => {
+    let doc = parser.parseFromString(source, mediaType)
+    const parserError = mediaType === MIME.XHTML ? doc.querySelector('parsererror') : null
+    if (parserError) {
+        console.warn(parserError.innerText)
+        mediaType = MIME.HTML
+        doc = parser.parseFromString(source, mediaType)
+    }
+    return { doc, mediaType }
+}
+
 // convert to camel case
 const camel = x => x.toLowerCase().replace(/[-:](.)/g, (_, g) => g.toUpperCase())
 
@@ -143,12 +156,45 @@ const cssEscapePattern = /\\(?:\r\n|[\s\S])/.source
 const cssUnquotedURLPattern = /(?:\\[0-9a-f]{1,6}(?:\r\n|[\t\n\f\r ])|\\[^\n\r\f]|[^"'()\\\s])*/.source
 const cssStringPattern = String.raw`"(?:${cssEscapePattern}|[^"\\\n\r\f])*"|'(?:${cssEscapePattern}|[^'\\\n\r\f])*'`
 const cssCommentPattern = /\/\*[\s\S]*?(?:\*\/|$)/.source
+const cssIdentifierEscapePattern = /\\(?:[0-9a-f]{1,6}(?:\r\n|[\t\n\f\r ])?|[^\n\r\f])/.source
+const cssIdentifierPattern = String.raw`(?:[-_a-z\u0080-\uffff]|${cssIdentifierEscapePattern})(?:[-\w\u0080-\uffff]|${cssIdentifierEscapePattern})*`
+const cssNumberPattern = /[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?/.source
+const cssViewportDimension = new RegExp(`^(${cssNumberPattern})(vw|vh)$`, 'i')
+const cssPropertyColon = new RegExp(String.raw`^(?:\s|${cssCommentPattern})*:`)
+const cssGroupingRule = /^@(?:media|supports|container|layer|document|scope|starting-style|(?:-\w+-)?keyframes)$/i
 const cssTokens = new RegExp([
     cssCommentPattern,
     String.raw`@import(?:[\t\n\f\r ]|${cssCommentPattern})*(${cssStringPattern})`,
     String.raw`url\([\t\n\f\r ]*(${cssStringPattern}|${cssUnquotedURLPattern})[\t\n\f\r ]*\)`,
     cssStringPattern,
+    // Consume complete dimensions and names. A unit-like suffix in a class,
+    // hash, custom property, animation name or longer unit is not a viewport unit.
+    String.raw`${cssNumberPattern}(?:${cssIdentifierPattern}|%)?`,
+    String.raw`#(?:[-\w\u0080-\uffff]|${cssIdentifierEscapePattern})+`,
+    String.raw`@?${cssIdentifierPattern}`,
+    /\s+/.source,
+    /[\s\S]/.source,
 ].join('|'), 'gi')
+
+// A nested type selector may also begin with an identifier and colon. Its
+// following rule block distinguishes it from a property declaration. Protected
+// strings/comments/URLs remain single tokens while looking for that delimiter.
+const cssDeclarationFollows = (source, start) => {
+    const tokens = new RegExp(cssTokens.source, cssTokens.flags)
+    tokens.lastIndex = start
+    let depth = 0
+    for (const match of source.matchAll(tokens)) {
+        const token = match[0]
+        if (token === '(' || token === '[') depth++
+        else if (token === ')' || token === ']') {
+            if (!depth) return true
+            depth--
+        }
+        else if (!depth && token === '{') return false
+        else if (!depth && (token === ';' || token === '}')) return true
+    }
+    return true
+}
 
 const decodeCSSURL = token => {
     const value = /^["']/.test(token) ? token.slice(1, -1) : token
@@ -986,17 +1032,8 @@ export class Loader {
 
         // parse and replace in HTML
         if ([MIME.XHTML, MIME.HTML, MIME.SVG].includes(mediaType)) {
-            let effectiveMediaType = mediaType
-            let doc = new DOMParser().parseFromString(replacedStr, effectiveMediaType)
-            // change to HTML if it's not valid XHTML
-            const parserError = effectiveMediaType === MIME.XHTML
-                ? doc.querySelector('parsererror')
-                : null
-            if (parserError) {
-                console.warn(parserError.innerText)
-                effectiveMediaType = MIME.HTML
-                doc = new DOMParser().parseFromString(replacedStr, effectiveMediaType)
-            }
+            const { doc, mediaType: effectiveMediaType } =
+                parseContentDocument(new DOMParser(), replacedStr, mediaType)
             // Resolve stylesheet instructions in the XML prolog (not editor
             // metadata or instructions after the document element).
             if ([MIME.XHTML, MIME.SVG].includes(effectiveMediaType)) {
@@ -1050,7 +1087,7 @@ export class Loader {
                     await this.replaceCSS(el.textContent, href, parents)
             for (const el of doc.querySelectorAll('[style]'))
                 el.setAttribute('style',
-                    await this.replaceCSS(el.getAttribute('style'), href, parents))
+                    await this.replaceCSS(el.getAttribute('style'), href, parents, true))
             // TODO: replace inline scripts? probably not worth the trouble
             const textResult = new XMLSerializer().serializeToString(doc)
             manabiEpubReaderLoadLog('epub.loadReplaced.finish', {
@@ -1077,65 +1114,80 @@ export class Loader {
         })
         return this.createURL(href, result, mediaType, parent)
     }
-    async replaceCSS(str, href, parents = []) {
+    async replaceCSS(str, href, parents = [], declarationsOnly = false) {
         const w = window?.innerWidth ?? 800
         const h = window?.innerHeight ?? 600
-        const tokens = Array.from(str.matchAll(cssTokens))
-        const edits = []
-        const layoutParts = []
-        let cursor = 0
-        for (const match of tokens) {
-            layoutParts.push(str.slice(cursor, match.index))
-            // Preserve offsets and syntax context across protected tokens.
-            // Comments are whitespace, but a string/URL/import must not create
-            // a fresh declaration boundary within an existing value.
-            layoutParts.push((match[0].startsWith('/*') ? ' ' : '\ufffc')
-                .repeat(match[0].length))
-            cursor = match.index + match[0].length
-        }
-        layoutParts.push(str.slice(cursor))
-        // Ordinary identifier escapes cannot supply structural delimiters.
-        // Consume each escape once: \\ masks only the backslash pair, while
-        // hex escapes also consume their optional whitespace terminator.
-        const layout = layoutParts.join('').replace(
-            /\\(?:[0-9a-f]{1,6}(?:\r\n|[\t\n\f\r ])?|[^\n\r\f])/gi,
-            escape => '\ufffc'.repeat(escape.length))
-        for (const match of layout.matchAll(/(^|[;{])([\t\n\f\r ]*)(-epub-[\w-]+|page-break-(?:after|before|inside))(?=[\t\n\f\r ]*:)/gi)) {
-            const start = match.index + match[1].length + match[2].length
-            // A colon in a selector prelude is not a declaration, including
-            // type selectors named like one of the adapted properties.
-            if (/^[^;{}]*\{/.test(layout.slice(start + match[3].length))) continue
-            const property = match[3].replace(/^-epub-/i, '')
-                .replace(/^page-break-(after|before|inside)$/i, '-webkit-column-break-$1')
-            edits.push({ start, end: start + match[3].length, text: property })
-        }
-        // Match complete dimension tokens, including signed/exponent values.
-        for (const match of layout.matchAll(/(?<![-\w\\\u0080-\uffff.])([+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?)v([wh])(?![-\w\\\u0080-\uffff])/gi)) {
-            edits.push({ start: match.index, end: match.index + match[0].length,
-                text: parseFloat(match[1]) * (match[2].toLowerCase() === 'w' ? w : h) / 100 + 'px' })
-        }
-        for (const match of tokens) {
+        // A rule prelude and its declaration list have different name positions.
+        // Track only their lexical delimiters; keep authored text and unsupported
+        // syntax intact instead of round-tripping through the browser's CSSOM.
+        const scopes = [{ declarations: declarationsOnly, head: null, parens: 0, brackets: 0 }]
+        let result = ''
+        for (const match of str.matchAll(cssTokens)) {
+            let token = match[0]
+            const scope = scopes[scopes.length - 1]
+            if (/^\s+$/.test(token) || token.startsWith('/*')) {
+                result += token
+                continue
+            }
             const reference = match[1] ?? match[2]
-            // A function name ending in "url" is not the CSS url() function.
-            const continuesIdentifier = /[-\w\\\u0080-\uffff]/.test(str[match.index - 1] ?? '')
-            if (reference !== undefined && !continuesIdentifier) {
+            if (reference !== undefined) {
                 const originalURL = decodeCSSURL(reference)
                 const url = await this.loadHref(originalURL, href, parents)
                 if (url != null && url !== originalURL) {
-                    const text = match[1] !== undefined
-                        ? match[0].slice(0, -reference.length) + quoteCSSURL(url)
+                    token = match[1] !== undefined
+                        ? token.slice(0, -reference.length) + quoteCSSURL(url)
                         : `url(${quoteCSSURL(url)})`
-                    edits.push({ start: match.index, end: match.index + match[0].length, text })
+                }
+                scope.head ??= match[1] !== undefined ? '@import' : 'url'
+            } else {
+                const dimension = token.match(cssViewportDimension)
+                if (dimension) {
+                    const size = dimension[2].toLowerCase() === 'vw' ? w : h
+                    token = Number(dimension[1]) * size / 100 + 'px'
+                } else if ((scope.declarations && scope.head === null
+                    || scope.head?.toLowerCase() === '@supports' && scope.previous === '(')
+                    && cssPropertyColon.test(str.slice(match.index + match[0].length))) {
+                    // Only actual property names are adapted. Custom properties,
+                    // selectors and value identifiers keep their original spelling.
+                    if (!token.startsWith('--')
+                        && (/^-epub-/i.test(token) || /^page-break-(after|before|inside)$/i.test(token))
+                        && cssDeclarationFollows(str, match.index + match[0].length)) {
+                        token = token.replace(/^-epub-/i, '')
+                            .replace(/^page-break-(after|before|inside)$/i,
+                                (_, suffix) => `-webkit-column-break-${suffix.toLowerCase()}`)
+                    }
+                }
+                if (token === '{') {
+                    // Nested blocks in a custom-property value remain values.
+                    const valueBlock = scope.valueBlock || scope.value && scope.head?.startsWith('--')
+                    scopes.push({ declarations: !valueBlock && (cssGroupingRule.test(scope.head ?? '')
+                        ? scope.declarations : true),
+                        head: null, parens: 0, brackets: 0, valueBlock })
+                } else if (token === '}') {
+                    if (scopes.length > 1) {
+                        const completed = scopes.pop()
+                        if (!completed.valueBlock) {
+                            const parent = scopes[scopes.length - 1]
+                            parent.head = null
+                            parent.value = false
+                        }
+                    }
+                } else if (token === ';' && !scope.parens && !scope.brackets) {
+                    scope.head = null
+                    scope.value = false
+                } else {
+                    if (token === '(') scope.parens++
+                    else if (token === ')') scope.parens = Math.max(0, scope.parens - 1)
+                    else if (token === '[') scope.brackets++
+                    else if (token === ']') scope.brackets = Math.max(0, scope.brackets - 1)
+                    else if (token === ':' && !scope.parens && !scope.brackets) scope.value = true
+                    scope.head ??= match[0]
                 }
             }
+            scope.previous = match[0]
+            result += token
         }
-        let result = ''
-        cursor = 0
-        for (const { start, end, text } of edits.sort((a, b) => a.start - b.start)) {
-            result += str.slice(cursor, start) + text
-            cursor = end
-        }
-        return result + str.slice(cursor)
+        return result
     }
     // find & replace exact relative paths for all assets without parsing
     replaceString(str, href, parents = []) {
@@ -1425,9 +1477,17 @@ ${doc.querySelector('parsererror').innerText}`)
     }
     async loadDocument(item) {
         this.#assertActive()
-        const str = await this.loadText(item.href)
+        let str = await this.loadText(item.href)
         this.#assertActive()
-        return this.parser.parseFromString(str, item.mediaType)
+        // Search/navigation CFIs must address the same native-produced structure
+        // as the displayed section, including its sentence and segment wrappers.
+        // Metadata reads above remain raw package reads.
+        if (this.replaceText && [MIME.XHTML, MIME.HTML].includes(item.mediaType)) {
+            str = await this.replaceText(item.href, str, item.mediaType, { forSearch: true })
+            this.#assertActive()
+        }
+        if (str == null) throw new Error(`Failed to load section document: ${item.href}`)
+        return parseContentDocument(this.parser, str, item.mediaType).doc
     }
     async loadMediaOverlay(item) {
         this.#assertActive()

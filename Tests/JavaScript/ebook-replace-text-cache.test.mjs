@@ -266,3 +266,46 @@ test('load-session retirement without destroy fences a late decode and a success
     owner.destroy()
     successor.destroy()
 })
+
+
+test('native detached search processes without claiming live section ownership', async () => {
+    const started = deferred(), finish = deferred()
+    const viewer = makeViewer(() => { started.resolve(); return finish.promise })
+    const owner = viewer.makeOwner({ nativeSource, allowForegroundHTML: false })
+    const pending = owner('chapter.xhtml', original, 'application/xhtml+xml', {forSearch:true})
+    await startedWithinTurn(started.promise)
+    const inflight = [viewer.context.__manabiInflightReplaceTextCount,
+        viewer.context.__manabiInflightLiveReplaceTextCount ?? 0]
+    finish.resolve(response())
+    try {
+        const html = await pending
+        assert.match(html, /<m-m>processed<\/m-m>/)
+        assert.deepEqual(inflight, [1, 0])
+        assert.equal(new URL(viewer.requests[0].url).searchParams.get('packageSessionID'), nativeSource.packageSessionID)
+        assert.equal(viewer.context.__manabiFirstLiveSectionHref, undefined)
+        assert.deepEqual(viewer.published, [])
+        assertIdle(viewer)
+        await assert.rejects(replace(owner), /must load through processed-section direct URL/)
+    } finally { owner.destroy() }
+})
+
+for (const failure of ['network', 'HTTP', 'non-authoritative']) {
+    test(`native detached search rejects ${failure} structure and retries without live publication`, async () => {
+        const viewer = makeViewer((_options, attempt) => {
+            if (attempt > 1) return response()
+            if (failure === 'network') throw new Error('transient')
+            return response(failure === 'HTTP' ? {ok:false} : {html:original,authoritative:false})
+        })
+        const owner = viewer.makeOwner({nativeSource,allowForegroundHTML:false})
+        const search = () => owner('chapter.xhtml', original, 'application/xhtml+xml', {forSearch:true})
+        try {
+            await assert.rejects(search(), failure === 'network' ? /transient/
+                : failure === 'HTTP' ? /HTTP error/ : /authoritative processed structure/)
+            assert.match(await search(), /<m-m>processed<\/m-m>/)
+            assert.equal(viewer.requests.length, 2)
+            assert.deepEqual(viewer.published, [])
+            assert.equal(viewer.context.__manabiFirstLiveSectionHref, undefined)
+            assertIdle(viewer)
+        } finally { owner.destroy() }
+    })
+}
