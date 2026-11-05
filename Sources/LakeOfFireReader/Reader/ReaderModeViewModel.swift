@@ -1491,6 +1491,9 @@ public class ReaderModeViewModel: ObservableObject {
     public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil {
         willSet { processingDependencyWillChange() }
     }
+    /// Injectable account boundary for render ownership. Tests use an isolated Session.
+    public var readerAccountSessionAccess: AccountSessionAccess?
+
     public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil {
         willSet { processingDependencyWillChange() }
     }
