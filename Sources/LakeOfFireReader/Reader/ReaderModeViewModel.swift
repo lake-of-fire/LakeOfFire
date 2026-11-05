@@ -1522,6 +1522,9 @@ public class ReaderModeViewModel: ObservableObject {
     public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil {
         willSet { processingDependencyWillChange() }
     }
+    /// Injectable account boundary for render ownership. Tests use an isolated Session.
+    public var readerAccountSessionAccess: AccountSessionAccess?
+
     public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil {
         willSet { processingDependencyWillChange() }
     }
@@ -2574,6 +2577,7 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
         let initialContent = readerContent.content
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+        let publicationDateLoader = readerPublicationDateLoader
         beginReaderModeLoad(for: contentURL)
         let didStart = startRenderTaskIfNeeded(for: contentURL) { [weak self] generation in
             guard let self else { return }
@@ -2625,9 +2629,14 @@ public class ReaderModeViewModel: ObservableObject {
                     guard await self.isCurrentRender(for: contentURL, generation: generation) else {
                         return
                     }
-                    let publicationDateFallback = cachedReadabilityContent.contains("id=\"reader-publication-date\"")
-                        ? nil
-                        : await readerContentPublicationDateFallback(for: contentURL)
+                    let publicationDateFallback: String?
+                    if cachedReadabilityContent.contains("id=\"reader-publication-date\"") {
+                        publicationDateFallback = nil
+                    } else if let publicationDateLoader {
+                        publicationDateFallback = await publicationDateLoader(contentURL)
+                    } else {
+                        publicationDateFallback = await readerContentPublicationDateFallback(for: contentURL)
+                    }
                     guard await self.isCurrentRender(for: contentURL, generation: generation) else {
                         return
                     }
