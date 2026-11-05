@@ -960,6 +960,59 @@ extension ReaderContentHTMLLifetimeTests {
             "A's delayed font-ready callback must not settle B's account")
     }
 
+    func testSameAccountNewAuthorizationRejectsOldReadinessAndReplaysCurrentRender() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let session = Session.ephemeralForTesting()
+        session.authenticated(authToken: "isolated-account-a", userID: 101)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: session)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Account generation article.</div></body></html>"
+        await render(mode, reader: reader)
+        let originalGeneration = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)))
+        let originalAccount = session.accountSessionSnapshot
+        session.authenticated(authToken: "isolated-replacement-authorization", userID: 101)
+        XCTAssertEqual(session.accountSessionSnapshot.identity, originalAccount.identity)
+        XCTAssertNotEqual(session.accountSessionSnapshot.generation, originalAccount.generation)
+        XCTAssertFalse(mode.handleRenderedReaderDocumentReady(
+            pageURL: fileURL, hasReaderContent: true, renderGeneration: originalGeneration
+        ))
+
+        await render(mode, reader: reader)
+        let replacementGeneration = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)))
+        XCTAssertNotEqual(replacementGeneration, originalGeneration)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
+        XCTAssertTrue(mode.handleRenderedReaderDocumentReady(
+            pageURL: fileURL, hasReaderContent: true, renderGeneration: replacementGeneration
+        ))
+        XCTAssertFalse(mode.isReaderModeLoading)
+    }
+
+    func testReplacementAccountBoundaryWithMatchingSnapshotRejectsOldReadiness() async throws {
+        let (realm, row, reader, mode, _) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let originalSession = Session.ephemeralForTesting()
+        originalSession.authenticated(authToken: "isolated-account-a", userID: 101)
+        let replacementSession = Session.ephemeralForTesting()
+        replacementSession.authenticated(authToken: "isolated-account-a", userID: 101)
+        XCTAssertEqual(originalSession.accountSessionSnapshot, replacementSession.accountSessionSnapshot)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: originalSession)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Account boundary article.</div></body></html>"
+        await render(mode, reader: reader)
+        let originalGeneration = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)))
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: replacementSession)
+        XCTAssertFalse(mode.handleRenderedReaderDocumentReady(
+            pageURL: fileURL, hasReaderContent: true, renderGeneration: originalGeneration
+        ))
+        await render(mode, reader: reader)
+        let replacementGeneration = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)))
+        XCTAssertNotEqual(replacementGeneration, originalGeneration)
+        XCTAssertTrue(mode.handleRenderedReaderDocumentReady(
+            pageURL: fileURL, hasReaderContent: true, renderGeneration: replacementGeneration
+        ))
+    }
+
     func testSameAccountMatchingGenerationAcceptsCompletedDocumentReadiness() async throws {
         let (realm, row, reader, mode, navigator) = try renderFixture()
         defer { withExtendedLifetime(realm) {} }
