@@ -1040,7 +1040,7 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         fillAITTSQueueWindow()
         if index >= (ttsUtterances.count - 1) {
             ttsCurrentUtteranceIndex = max(ttsUtterances.count - 1, 0)
-            ttsCurrentCharacterRange = NSRange(location: utterance.speechString.count, length: 0)
+            ttsCurrentCharacterRange = NSRange(location: utterance.speechString.utf16.count, length: 0)
             updateAITTSProgress(forceEndOfUtterance: true)
             isPlaying = false
             deactivateReadAloudAudioSession()
@@ -1054,6 +1054,7 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
             ttsCurrentUtteranceIndex = index + 1
             ttsCurrentCharacterRange = nil
             updateAITTSProgress()
+            persistReadAloudPosition()
         }
         mediaDebugPrint(
             "# READALOUD ai.delegate.didFinish",
