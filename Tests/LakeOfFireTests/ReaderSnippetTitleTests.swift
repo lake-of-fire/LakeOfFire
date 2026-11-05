@@ -1,11 +1,12 @@
 import XCTest
+import Combine
 import BigSyncKit
 import RealmSwift
 import RealmSwiftGaps
 @testable import LakeOfFireContent
 import LakeOfFireCore
 @testable import LakeOfFireReader
-import SwiftUIWebView
+@testable import SwiftUIWebView
 import SwiftSoup
 
 final class ReaderSnippetTitleTests: XCTestCase {
@@ -1621,6 +1622,214 @@ private final class OwnedImportWriteProbe: @unchecked Sendable {
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
             }
             return true
+        }
+    }
+}
+
+@MainActor
+private extension ReaderSnippetTitleTests {
+    func nativeSnippet(_ key: String, title: String = "Original") -> HistoryRecord {
+        let row = HistoryRecord()
+        row.url = ReaderContentLoader.snippetURL(key: key)!
+        row.title = title
+        row.updateCompoundKey()
+        return row
+    }
+
+    func nativeIntent(from source: URL, to target: URL) throws -> WebViewURLTransitionIntent {
+        let caller = WebViewScriptCaller()
+        caller.installBinding(ownedBy: UUID(), asyncCaller: { _, _, _, _ in .init(nil) },
+            unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
+        let sequencer = WebViewURLPublicationReceiptSequencer()
+        sequencer.configure(webViewID: ObjectIdentifier(caller),
+            binding: try XCTUnwrap(caller.currentJavaScriptBindingToken), url: source)
+        // Intent retains its monotonic lifetime independently of the sequencer.
+        return try XCTUnwrap(sequencer.observe(target, from: ObjectIdentifier(caller)).intent)
+    }
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testNativeSnippetOwnerSurvivesLoaderSelectionAndRendererReplacement() async throws {
+        let reader = ReaderContent()
+        let row = nativeSnippet("native-handoff")
+        try await reader.load(url: row.url) { _ in row }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+        let oldSelection = reader.currentSelectionID
+        let loader = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: row.url))
+        let intent = try nativeIntent(from: row.url, to: loader)
+        XCTAssertNotNil(reader.receiveSelectionIntent(intent))
+        XCTAssertTrue(fence())
+        try await reader.load(url: loader, consuming: intent) { _ in
+            XCTFail("Same-content handoff should retain its native model")
+            return nil
+        }
+        XCTAssertNotEqual(reader.currentSelectionID, oldSelection)
+        XCTAssertTrue(fence(), "A selection replacement is not a logical content replacement")
+        let fragment = URL(string: row.url.absoluteString + "#paragraph")!
+        try await reader.load(url: fragment) { _ in row }
+        XCTAssertTrue(fence())
+    }
+
+    @MainActor
+    func testNativeSnippetIntentRevokesBeforeSemanticResolutionAndNeverRevives() async throws {
+        let reader = ReaderContent()
+        let first = nativeSnippet("native-first"), second = nativeSnippet("native-second")
+        try await reader.load(url: first.url) { _ in first }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        let selectionFence = reader.makeSelectionCommitFence(requiring: reader.currentSelectionID)
+        let intent = try nativeIntent(from: first.url, to: second.url)
+        XCTAssertNotNil(reader.receiveSelectionIntent(intent))
+        XCTAssertFalse(fence(), "Native intent retires edits before semantic work or resolver starts")
+        XCTAssertTrue(selectionFence(), "Do not break the predecessor selection handoff")
+        XCTAssertNil(reader.makeNativeContentCommitFence(for: first.url))
+        reader.withdrawSelectionIntent(intent)
+        try await reader.load(url: first.url) { _ in first }
+        XCTAssertFalse(fence(), "Returning to the same URL cannot reopen an old edit")
+        XCTAssertTrue(try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))())
+    }
+
+    @MainActor
+    func testDirectNativeSnippetLoadRevokesBeforeResolverAndAwayBackCannotRevive() async throws {
+        let reader = ReaderContent()
+        let first = nativeSnippet("native-direct-first"), second = nativeSnippet("native-direct-second")
+        try await reader.load(url: first.url) { _ in first }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        try await reader.load(url: second.url) { _ in
+            XCTAssertFalse(fence())
+            return second
+        }
+        try await reader.load(url: first.url) { _ in first }
+        XCTAssertFalse(fence())
+    }
+
+    @MainActor
+    func testNativeSnippetSavePublishesFreshTitleAndBodyOverFrozenCachedRow() async throws {
+        try await withSnippetRealm { _ in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Original native body</p>")
+            let row = try XCTUnwrap(loaded as? HistoryRecord)
+            let reference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: row))
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+            let frozen = row.freeze()
+            let reader = ReaderContent()
+            try await reader.load(url: row.url) { _ in frozen }
+            let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+            let changed = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: row.url, title: "Saved native title", html: "<p>Saved native body</p>",
+                storage: storage, permitsCommit: fence)
+            XCTAssertTrue(changed)
+            let resolved = try await reference.resolveOnMainActor()
+            let fresh = try XCTUnwrap(resolved)
+            XCTAssertTrue(reader.publishUpdatedContent(fresh, permitsPublication: { fence() }))
+            XCTAssertFalse(reader.content === frozen)
+            XCTAssertEqual(reader.contentTitle, "Saved native title")
+            XCTAssertEqual(reader.locationBarTitle, "Saved native title")
+            XCTAssertTrue(reader.content?.html?.contains("Saved native body") == true)
+            XCTAssertTrue(fence(), "Publishing a fresh row must not invalidate native ownership")
+            try await reader.load(url: row.url) { _ in
+                XCTFail("Same-URL reload reuses the freshly published row")
+                return frozen
+            }
+            XCTAssertEqual(reader.cachedContentTitle, "Saved native title")
+        }
+    }
+
+    @MainActor
+    func testNativeSnippetPublicationCannotOverwriteReentrantContentSubscriberSuccessor() async throws {
+        let reader = ReaderContent()
+        let first = nativeSnippet("native-publish-first"), successor = nativeSnippet("native-publish-next", title: "Successor")
+        let fresh = nativeSnippet("native-publish-first", title: "Saved")
+        try await reader.load(url: first.url) { _ in first }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        let intent = try nativeIntent(from: first.url, to: successor.url)
+        let observer = reader.$content.sink { value in
+            guard value === fresh else { return }
+            reader.receiveSelectionIntent(intent)
+            reader.content = successor
+            reader.pageURL = successor.url
+        }
+        defer { observer.cancel() }
+        XCTAssertFalse(reader.publishUpdatedContent(fresh, permitsPublication: { fence() }))
+        XCTAssertTrue(reader.content === successor)
+        XCTAssertEqual(reader.contentTitle, "Successor")
+        XCTAssertEqual(reader.locationBarTitle, "Successor")
+        XCTAssertFalse(fence())
+    }
+
+    @MainActor
+    func testNativeSnippetTitlePublicationStopsBeforeRefreshingReentrantSuccessor() async throws {
+        let reader = ReaderContent()
+        let first = nativeSnippet("native-title-first"), successor = nativeSnippet("native-title-next", title: "Successor")
+        let fresh = nativeSnippet("native-title-first", title: "Saved")
+        try await reader.load(url: first.url) { _ in first }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        let intent = try nativeIntent(from: first.url, to: successor.url)
+        let observer = reader.contentTitleSubject.sink { title in
+            guard title == "Saved" else { return }
+            reader.receiveSelectionIntent(intent)
+            reader.content = successor
+            reader.pageURL = successor.url
+        }
+        defer { observer.cancel() }
+        XCTAssertFalse(reader.publishUpdatedContent(fresh, permitsPublication: { fence() }))
+        XCTAssertTrue(reader.content === successor)
+        XCTAssertEqual(reader.contentTitle, "Successor")
+        XCTAssertEqual(reader.locationBarTitle, "Successor")
+    }
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testCapturedNativeSnippetSaveCannotReviveDeletedStorageRows() async throws {
+        try await withSnippetRealm { _ in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Native delete fixture</p>")
+            let row = try XCTUnwrap(loaded as? HistoryRecord)
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+            let reader = ReaderContent()
+            try await reader.load(url: row.url) { _ in row }
+            let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+            try await row.delete()
+            let changed = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: row.url, title: "Must not revive", html: "<p>Must not revive</p>",
+                storage: storage, permitsCommit: fence)
+            XCTAssertFalse(changed)
+            XCTAssertTrue(fence(), "Deletion is enforced by storage, independently of logical navigation")
+            let live = try await ReaderContentLoader.loadAll(url: row.url)
+            XCTAssertTrue(live.isEmpty)
+        }
+    }
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testCapturedNativeSnippetSaveRejectsRecreatedPrimaryKey() async throws {
+        try await withSnippetRealm { _ in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Original physical row</p>")
+            let row = try XCTUnwrap(loaded as? HistoryRecord)
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+            let reference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: row))
+            let url = row.url
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
+                try await realm.asyncWrite {
+                    let original = try XCTUnwrap(realm.object(ofType: HistoryRecord.self,
+                        forPrimaryKey: reference.contentKey))
+                    realm.delete(original) // Intentional physical replacement fixture.
+                    let replacement = HistoryRecord()
+                    replacement.compoundKey = reference.contentKey
+                    replacement.url = url
+                    replacement.title = "Successor row"
+                    realm.add(replacement)
+                    replacement.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }()
+            let changed = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: url, title: "Stale edit", html: "<p>Stale edit</p>",
+                storage: storage, permitsCommit: { true })
+            XCTAssertFalse(changed)
+            let resolved = try await reference.resolveOnMainActor()
+            XCTAssertEqual(resolved?.title, "Successor row")
         }
     }
 }

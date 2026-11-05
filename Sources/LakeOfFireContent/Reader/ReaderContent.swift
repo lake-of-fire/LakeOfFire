@@ -39,14 +39,69 @@ private final class ReaderContentSelectionLifetime: @unchecked Sendable {
     }
 }
 
+/// Content publication checks reentrant subscribers before committing the model.
+/// Its projected publisher retains the existing `$content` observation surface.
+@propertyWrapper
+public struct ReaderContentPublication {
+    fileprivate var value: (any ReaderContentProtocol)?
+    fileprivate let subject: CurrentValueSubject<(any ReaderContentProtocol)?, Never>
+
+    public init(wrappedValue: (any ReaderContentProtocol)? = nil) {
+        value = wrappedValue
+        subject = CurrentValueSubject(wrappedValue)
+    }
+    @available(*, unavailable, message: "ReaderContent owns content publication")
+    public var wrappedValue: (any ReaderContentProtocol)? {
+        get { fatalError() }
+        set { fatalError() }
+    }
+    public var projectedValue: AnyPublisher<(any ReaderContentProtocol)?, Never> {
+        subject.eraseToAnyPublisher()
+    }
+    @MainActor
+    public static subscript(
+        _enclosingInstance owner: ReaderContent,
+        wrapped wrappedKeyPath: ReferenceWritableKeyPath<ReaderContent, (any ReaderContentProtocol)?>,
+        storage storageKeyPath: ReferenceWritableKeyPath<ReaderContent, Self>
+    ) -> (any ReaderContentProtocol)? {
+        get { owner[keyPath: storageKeyPath].value }
+        set { owner.setContent(newValue) }
+    }
+}
+
 @MainActor
 public class ReaderContent: ObservableObject {
-    @Published public var content: (any ReaderContentProtocol)? {
-        didSet {
-            syncLocationBarTitle()
-            syncContentTitle()
+    @ReaderContentPublication public var content: (any ReaderContentProtocol)?
+    private var contentPublicationID = UUID()
+
+    @discardableResult
+    fileprivate func setContent(
+        _ value: (any ReaderContentProtocol)?,
+        permitsPublication: @escaping @MainActor () -> Bool = { true }
+    ) -> Bool {
+        let publicationID = UUID()
+        contentPublicationID = publicationID
+        func isCurrent() -> Bool {
+            contentPublicationID == publicationID && permitsPublication()
         }
-    }// = ReaderContentLoader.unsavedHome
+        guard isCurrent() else { return false }
+        objectWillChange.send()
+        guard isCurrent() else { return false }
+        _content.subject.send(value)
+        guard isCurrent() else {
+            // Account-only withdrawal may leave no successor setter to restore
+            // the publisher's replay value. Do not replay an uncommitted row.
+            if contentPublicationID == publicationID { _content.subject.send(_content.value) }
+            return false
+        }
+        _content.value = value
+        syncLocationBarTitle()
+        guard isCurrent() else { return false }
+        syncContentTitle()
+        guard isCurrent() else { return false }
+        return isCurrent()
+    }
+
     @Published public var pageURL = URL(string: "about:blank")! {
         didSet {
             syncLocationBarTitle()
@@ -67,6 +122,10 @@ public class ReaderContent: ObservableObject {
     // may still have readers queued to receive its result.
     private var selectionID: UUID?
     private var selectionLifetime = ReaderContentSelectionLifetime()
+    // Native actions belong to logical content, independently of selections
+    // and renderer bindings. A withdrawn token can never become current again.
+    private var nativeContentURL: URL?
+    private var nativeContentLifetime = ReaderContentSelectionLifetime()
     private var selectionHandoff: ReaderContentSelectionHandoff?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
@@ -97,6 +156,7 @@ public class ReaderContent: ObservableObject {
     deinit {
         selectionHandoff?.withdraw()
         selectionLifetime.withdraw()
+        nativeContentLifetime.withdraw()
     }
 
     /// The existing native content selection, including its unresolved load.
@@ -110,10 +170,46 @@ public class ReaderContent: ObservableObject {
         return { lifetime.permitsCommit() }
     }
 
+    /// Capture synchronously at a native action, before any suspension. Loader
+    /// URLs, fragments and renderer replacements retain the logical owner.
+    /// Never infer a fresh owner from a cached model after navigation started.
+    public func makeNativeContentCommitFence(for url: URL) -> (@Sendable () -> Bool)? {
+        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        guard let nativeContentURL, nativeContentURL.matchesReaderURL(resolvedURL),
+              nativeContentLifetime.permitsCommit() else { return nil }
+        let lifetime = nativeContentLifetime
+        return { lifetime.permitsCommit() }
+    }
+
+    private func receiveNativeContentTarget(_ url: URL) {
+        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        if resolvedURL.absoluteString == "about:blank",
+           suppressedTransientAboutBlankTargetURL != nil
+            || WebViewReaderLoadActivity.shared.hasPendingPreProvisionalLoad { return }
+        guard nativeContentURL?.matchesReaderURL(resolvedURL) != true else { return }
+        nativeContentLifetime.withdraw()
+        nativeContentLifetime = ReaderContentSelectionLifetime()
+        nativeContentURL = resolvedURL
+    }
+
+    /// Publish the durable row, including a fresh replacement for a frozen
+    /// snapshot. Reentrant subscribers may select a successor or change account;
+    /// the caller must not refresh or reload after losing its original owner.
+    @discardableResult
+    public func publishUpdatedContent(
+        _ updatedContent: any ReaderContentProtocol,
+        permitsPublication: @escaping @MainActor () -> Bool
+    ) -> Bool {
+        guard permitsPublication(), !updatedContent.isInvalidated,
+              makeNativeContentCommitFence(for: updatedContent.url)?() == true else { return false }
+        return setContent(updatedContent, permitsPublication: permitsPublication)
+    }
+
     /// Called synchronously at native URL publication, before semantic deferral.
     @discardableResult
     public func receiveSelectionIntent(_ intent: WebViewURLTransitionIntent) -> ReaderContentSelectionHandoff? {
         guard intent.isCurrent, intent.representsURLChange else { return nil }
+        receiveNativeContentTarget(intent.destinationURL)
         if let selectionHandoff, selectionHandoff.intent === intent {
             return selectionHandoff.permitsCapture ? selectionHandoff : nil
         }
@@ -157,6 +253,15 @@ public class ReaderContent: ObservableObject {
     }
 
     private func syncLocationBarTitle() {
+        let publicationID = contentPublicationID
+        let displayURL = pageURL
+        defer {
+            // @Published sends before storage. A projection observer may
+            // synchronously install a successor; repair only from its state.
+            if contentPublicationID != publicationID || pageURL != displayURL {
+                syncLocationBarTitle()
+            }
+        }
         guard pageURL.absoluteString != "about:blank" else {
             snippetTitleIsGeneratedFromPrefix = false
             locationBarTitle = nil
@@ -280,6 +385,8 @@ public class ReaderContent: ObservableObject {
            WebViewReaderLoadActivity.shared.hasPendingPreProvisionalLoad {
             return
         }
+
+        receiveNativeContentTarget(resolvedContentURL)
 
         if resolvedContentURL.absoluteString != "about:blank" {
             suppressedTransientAboutBlankTargetURL = nil
