@@ -1,4 +1,9 @@
 import XCTest
+import SwiftSoup
+@preconcurrency import WebKit
+#if os(iOS)
+import UIKit
+#endif
 import SwiftUI
 import Combine
 import RealmSwift
@@ -94,8 +99,226 @@ private func makeReaderWebViewHandlerFixture() -> (
     return (handler, taskManager, readerContent, readerModeViewModel)
 }
 
+
+@MainActor
+private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandler, WKNavigationDelegate, WKScriptMessageHandler {
+    let html: Data
+    let loaded: XCTestExpectation
+    let pending: XCTestExpectation
+    let ready: XCTestExpectation
+    let receive: @Sendable (WebViewMessage) async -> Void
+    let nativeIsReady: @MainActor () -> Bool
+    private var reportedPending = false
+    private var reportedReady = false
+    private var messageTasks: [Task<Void, Never>] = []
+
+    init(
+        html: Data,
+        loaded: XCTestExpectation,
+        pending: XCTestExpectation,
+        ready: XCTestExpectation,
+        receive: @escaping @Sendable (WebViewMessage) async -> Void,
+        nativeIsReady: @escaping @MainActor () -> Bool
+    ) {
+        self.html = html
+        self.loaded = loaded
+        self.pending = pending
+        self.ready = ready
+        self.receive = receive
+        self.nativeIsReady = nativeIsReady
+    }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        let url = urlSchemeTask.request.url!
+        // Exercise the real local-scheme injection with a deterministic system
+        // font stylesheet. No bundled font file or network access is needed.
+        let isStylesheet = url.path == "/manabi-fonts.css"
+        let payload = isStylesheet ? Data("html { font-family: serif; }".utf8) : html
+        urlSchemeTask.didReceive(URLResponse(
+            url: url, mimeType: isStylesheet ? "text/css" : "text/html",
+            expectedContentLength: payload.count, textEncodingName: "utf-8"
+        ))
+        urlSchemeTask.didReceive(payload)
+        urlSchemeTask.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loaded.fulfill()
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any] else { return }
+        let receipt = WebViewMessage(
+            frameInfo: message.frameInfo, uuid: UUID(), name: message.name, body: body
+        )
+        messageTasks.append(Task { @MainActor in
+            await receive(receipt)
+            if body["hasRenderReadyMarker"] as? Bool == true,
+               body["fontPending"] as? Bool == true,
+               !reportedPending {
+                reportedPending = true
+                pending.fulfill()
+            }
+            if body["hasReaderRenderReady"] as? Bool == true,
+               nativeIsReady(), !reportedReady {
+                reportedReady = true
+                ready.fulfill()
+            }
+        })
+    }
+
+    func drainMessages() async {
+        while !messageTasks.isEmpty {
+            let tasks = messageTasks
+            messageTasks.removeAll()
+            for task in tasks { await task.value }
+        }
+    }
+
+    func stop() {
+        messageTasks.forEach { $0.cancel() }
+        messageTasks.removeAll()
+    }
+}
+
 @MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
+
+    func testGeneratedReadableDocumentFontSettlementPublishesNativeReadiness() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let mode = fixture.readerModeViewModel
+        let reader = fixture.readerContent
+        let navigator = fixture.handler.navigator
+        let url = URL(string: "internal://local/snippet?key=generated-font-readiness")!
+        let (realm, row) = try cachedHistoryRecord(url: url)
+        let readableHTML = "<html><body><div id='reader-content'><p>Readable fallback source 日本語.</p></div></body></html>"
+        try realm.write {
+            row.title = "Readable fallback"
+            row.html = readableHTML
+            row.rssContainsFullContent = true
+            row.isReaderModeByDefault = true
+            row.isReaderModeAvailable = false
+            row.isReaderModeOfferHidden = false
+        }
+        reader.pageURL = url
+        reader.content = row
+        reader.isRenderingReaderHTML = true
+        mode.navigator = navigator
+        mode.readerLocalHTMLLoader = { _ in readableHTML }
+        mode.readerPublicationDateLoader = { _ in nil }
+        var generatedHTML: Data?
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run { generatedHTML = Data(bytes) }
+            return bytes
+        }
+        defer {
+            mode.readerLocalHTMLLoader = nil
+            mode.readerPublicationDateLoader = nil
+            mode.processHTMLBytes = nil
+            withExtendedLifetime(realm) {}
+        }
+
+        mode.showReaderView(readerContent: reader, scriptCaller: fixture.handler.scriptCaller)
+        await mode.waitForReaderModeRender(for: url)
+        let html = try XCTUnwrap(generatedHTML, "The actual renderer must dispatch readable source")
+        let parsed = try SwiftSoup.parse(String(decoding: html, as: UTF8.self))
+        XCTAssertEqual(try parsed.getElementById("reader-content")?.text(), "Readable fallback source 日本語.")
+        XCTAssertTrue(try parsed.select("[data-mnb-native-sidecar-content-fingerprint]").isEmpty)
+        XCTAssertEqual(try parsed.select("html").first()?.attr("data-mnb-reader-render-ready"), "1")
+        XCTAssertEqual(try parsed.select("html").first()?.attr("data-mnb-font-pending"), "1")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+
+        var state = WebViewState.empty
+        state.pageURL = url
+        fixture.handler.readerViewModel.state = state
+        let loaded = expectation(description: "generated reader document loads")
+        let pending = expectation(description: "generated reader remains font pending")
+        let ready = expectation(description: "actual doc-state receiver accepts current readiness")
+        let receive = try XCTUnwrap(fixture.handler.webViewMessageHandlers.handlers["readerDocState"])
+        let nativeFixture = ReaderGeneratedReadinessFixture(
+            html: html, loaded: loaded, pending: pending, ready: ready,
+            receive: receive,
+            nativeIsReady: { fixture.handler.readerViewModel.state.hasReaderRenderReady }
+        )
+        let controller = WKUserContentController()
+        controller.add(nativeFixture, name: "readerDocState")
+        let script = ReaderDocStateUserScript().userScript
+        controller.addUserScript(script.webKitUserScript)
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController = controller
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(nativeFixture, forURLScheme: "internal")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 430, height: 932), configuration: configuration)
+        webView.navigationDelegate = nativeFixture
+#if os(iOS)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive },
+            "This native WebKit control requires the app-hosted test plan")
+        weak var previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let host = UIViewController()
+        host.view.frame = webView.frame
+        host.view.addSubview(webView)
+        window.rootViewController = host
+        window.frame = webView.frame
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+#endif
+        defer {
+            webView.stopLoading()
+            webView.navigationDelegate = nil
+            controller.removeScriptMessageHandler(forName: "readerDocState")
+            nativeFixture.stop()
+#if os(iOS)
+            webView.removeFromSuperview()
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKeyAndVisible()
+#endif
+        }
+        webView.load(URLRequest(url: url))
+        await fulfillment(of: [loaded, pending], timeout: 10)
+        await nativeFixture.drainMessages()
+        XCTAssertFalse(fixture.handler.readerViewModel.state.hasReaderRenderReady)
+        XCTAssertTrue(mode.isReaderModeLoadPending(for: url))
+        let bindingOwner = UUID()
+        fixture.handler.scriptCaller.installBinding(
+            ownedBy: bindingOwner,
+            asyncCaller: { source, arguments, frame, world in
+                let result = try await webView.callAsyncJavaScript(
+                    source,
+                    arguments: arguments?.mapValues { $0 as Any } ?? [:],
+                    in: frame,
+                    contentWorld: world ?? .page
+                )
+                return .init(result)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        defer { _ = fixture.handler.scriptCaller.clearBinding(ownedBy: bindingOwner) }
+        // Run the real injector. Its asynchronous font completion clears the
+        // gate; the production mutation observer and receiver settle native state.
+        await mode.injectSharedFontIfNeeded(
+            scriptCaller: fixture.handler.scriptCaller, pageURL: url
+        )
+        await fulfillment(of: [ready], timeout: 5)
+        await nativeFixture.drainMessages()
+        XCTAssertTrue(fixture.handler.readerViewModel.state.hasReaderRenderReady)
+        XCTAssertFalse(mode.isReaderModeLoadPending(for: url))
+        XCTAssertFalse(mode.isReaderModeLoading)
+        XCTAssertFalse(reader.isRenderingReaderHTML)
+        let injectionMode = try await webView.evaluateJavaScript("globalThis.manabiReaderFontInjectionMode")
+        XCTAssertEqual(injectionMode as? String, "local-scheme")
+        let pendingAttribute = try await webView.evaluateJavaScript("document.documentElement.hasAttribute('data-mnb-font-pending')")
+        XCTAssertEqual(pendingAttribute as? Bool, false)
+        withExtendedLifetime((fixture, nativeFixture, webView)) {}
+    }
+
     private func cachedHistoryRecord(url: URL) throws -> (Realm, HistoryRecord) {
         let realm = try Realm(configuration: .init(
             inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]
