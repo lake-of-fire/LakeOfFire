@@ -311,12 +311,77 @@ final class ReaderReadAloudSpeechOwnershipTests: XCTestCase {
         XCTAssertEqual(resumedLease.releaseCount, 1)
     }
 
+    func testIntermediateFinishRestoresNextSentenceBeforeDidStartAndRejectsObsoletePersistence() throws {
+        let defaults = UserDefaults.standard
+        let positionsKey = "readerReadAloudPlaybackPositions"
+        let contentKey = "speech-finish-checkpoint-\(UUID().uuidString)"
+        let storageKey = "\(contentKey)|article"
+        let hadPositions = defaults.object(forKey: positionsKey) != nil
+        XCTAssertNil(defaults.dictionary(forKey: positionsKey)?[storageKey])
+        defer {
+            // Remove only this test's entry, preserving other contents' positions.
+            var positions = defaults.dictionary(forKey: positionsKey) ?? [:]
+            positions.removeValue(forKey: storageKey)
+            if positions.isEmpty && !hadPositions {
+                defaults.removeObject(forKey: positionsKey)
+            } else {
+                defaults.set(positions, forKey: positionsKey)
+            }
+        }
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        viewModel.registerPlaybackStart(contentKey: contentKey)
+        let queue = utterances + [
+            ReaderTTSUtterance(sentenceIdentifier: "checkpoint-3", text: "三文目です。"),
+            ReaderTTSUtterance(sentenceIdentifier: "checkpoint-4", text: "最後の文章です。"),
+        ]
+        XCTAssertTrue(viewModel.presentAITTS(utterances: queue, autoplay: true))
+        XCTAssertEqual((defaults.dictionary(forKey: positionsKey)?[storageKey] as? NSNumber)?.doubleValue, 0)
+        let first = try XCTUnwrap(synthesizer.utterances.first)
+        let obsoleteNext = synthesizer.utterances[1]
+        let obsoleteTerminal = try XCTUnwrap(synthesizer.utterances.last)
+        let completion = viewModel.ttsPlaybackCompletionGeneration
+        let callbackSource = AVSpeechSynthesizer()
+
+        // The fake synthesizer never sends didStart, including for the next sentence.
+        viewModel.speechSynthesizer(callbackSource, didFinish: first)
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "admission-2")
+        XCTAssertEqual((defaults.dictionary(forKey: positionsKey)?[storageKey] as? NSNumber)?.doubleValue, 1)
+        let restoredSynthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let restoredLease = SpeechOwnershipTestAudioSessionLease()
+        let restored = makeModel(synthesizer: restoredSynthesizer, lease: restoredLease)
+        defer { restored.clearAITTSPlaybackQueue() }
+        restored.registerPlaybackStart(contentKey: contentKey)
+        XCTAssertTrue(restored.presentAITTS(utterances: queue, autoplay: false))
+        XCTAssertEqual(restored.ttsCurrentSentenceIdentifier, "admission-2")
+        XCTAssertEqual(restored.ttsProgressValue, 1)
+        XCTAssertTrue(restoredSynthesizer.utterances.isEmpty)
+
+        // A newer seek persists its position and retires the old utterance map.
+        viewModel.seekAITTS(toSentenceIdentifier: "checkpoint-4", shouldPlay: false)
+        viewModel.speechSynthesizer(callbackSource, didFinish: first)
+        viewModel.speechSynthesizer(callbackSource, didFinish: obsoleteNext)
+        viewModel.speechSynthesizer(callbackSource, didFinish: obsoleteTerminal)
+        XCTAssertEqual((defaults.dictionary(forKey: positionsKey)?[storageKey] as? NSNumber)?.doubleValue, 3)
+        XCTAssertTrue(restored.presentAITTS(utterances: queue, autoplay: false))
+        XCTAssertEqual(restored.ttsCurrentSentenceIdentifier, "checkpoint-4")
+        XCTAssertEqual(restored.ttsProgressValue, 3)
+        XCTAssertEqual(viewModel.ttsPlaybackCompletionGeneration, completion)
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(lease.releaseCount, 1)
+        XCTAssertEqual(restoredLease.releaseCount, 0)
+    }
+
     func testCurrentCompletionAdvancesOnceAndDuplicateCallbacksAreInert() throws {
         let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
         let lease = SpeechOwnershipTestAudioSessionLease()
         let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
         defer { viewModel.clearAITTSPlaybackQueue() }
-        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+        let queue = [utterances[0], ReaderTTSUtterance(
+            sentenceIdentifier: "admission-2", text: "👩🏽‍💻とe\u{301}の文章です。")]
+        XCTAssertTrue(viewModel.presentAITTS(utterances: queue, autoplay: true))
         let first = try XCTUnwrap(synthesizer.utterances.first)
         let terminal = try XCTUnwrap(synthesizer.utterances.last)
         let completion = viewModel.ttsPlaybackCompletionGeneration
