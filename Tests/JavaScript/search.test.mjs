@@ -133,23 +133,25 @@ for (const sensitivity of ['base', 'case']) {
 
 
 for (const granularity of ['grapheme', 'word']) {
-    for (const [parts, query, expected] of [
-        [['cat  ', 'dog'], 'cat  dog', [0, 0, 1, 3]],
-        [['cat\t\n', 'dog'], 'cat dog', [0, 0, 1, 3]],
-        [['ca\u00AD', 't'], 'ca\u00ADt', [0, 0, 1, 1]],
-        [['ca\u00AD', 't'], 'cat', [0, 0, 1, 1]],
-        [['cat', '   '], 'cat ', [0, 0, 1, 3]],
-        [['  ', '\t\n'], ' ', [0, 0, 1, 2]],
-    ]) {
-        test(`${granularity} search normalizes both sides and preserves full spans: ${JSON.stringify(parts)} / ${query}`, () => {
-            const [startIndex, startOffset, endIndex, endOffset] = expected
-            assert.deepEqual(matches(parts, query, {granularity, sensitivity:'base'}).map(x => x.range),
-                [{startIndex, startOffset, endIndex, endOffset}])
+    for (const sensitivity of ['base', 'accent', 'case', 'variant']) {
+        for (const [parts, query, expected] of [
+            [['cat  ', 'dog'], 'cat  dog', [0, 0, 1, 3]],
+            [['cat\t\n', 'dog'], 'cat dog', [0, 0, 1, 3]],
+            [['ca\u00AD', 't'], 'ca\u00ADt', [0, 0, 1, 1]],
+            [['ca\u00AD', 't'], 'cat', [0, 0, 1, 1]],
+            [['cat', '   '], 'cat ', [0, 0, 1, 3]],
+            [['  ', '\t\n'], ' ', [0, 0, 1, 2]],
+        ]) {
+            test(`${granularity}/${sensitivity} search normalizes both sides and preserves full spans: ${JSON.stringify(parts)} / ${query}`, () => {
+                const [startIndex, startOffset, endIndex, endOffset] = expected
+                assert.deepEqual(matches(parts, query, {granularity, sensitivity}).map(x => x.range),
+                    [{startIndex, startOffset, endIndex, endOffset}])
+            })
+        }
+        test(`${granularity}/${sensitivity} search ignores an empty normalized query`, () => {
+            assert.deepEqual(matches(['a\u00ADb'], '\u00AD', {granularity, sensitivity}), [])
         })
     }
-    test(`${granularity} search ignores an empty normalized query`, () => {
-        assert.deepEqual(matches(['a\u00ADb'], '\u00AD', {granularity}), [])
-    })
 }
 
 for (const [parts, query, locale, expected] of [
@@ -218,3 +220,29 @@ test('complete-word expansion candidates retain accent sensitivity', () => {
     const equal = new Intl.Collator('fr',options).compare('cœur','coeur') === 0
     assert.equal(matches(['cœur'],'coeur',options).length, equal ? 1 : 0)
 })
+
+
+for (const [parts, query, expected] of [
+    [['e', '\u0301', '猫'], 'é', { startIndex:0, startOffset:0, endIndex:1, endOffset:1 }],
+    [['é', '猫'], 'e\u0301', { startIndex:0, startOffset:0, endIndex:0, endOffset:1 }],
+]) {
+    test(`variant search accepts canonical Unicode spelling with original spans: ${parts.join('')} / ${query}`, () => {
+        assert.deepEqual(matches(parts, query, {locales:'fr', sensitivity:'variant'}).map(x => x.range), [expected])
+    })
+}
+
+test('variant search retains independent overlapping spans through omitted format tokens', () => {
+    const results = matches(['a', '\u00ADa', 'a', 'a', 'a', '!'], 'aaa', {sensitivity:'variant'})
+    assert.deepEqual(results.map(x => x.range), [
+        {startIndex:0, startOffset:0, endIndex:2, endOffset:1},
+        {startIndex:1, startOffset:1, endIndex:3, endOffset:1},
+        {startIndex:2, startOffset:0, endIndex:4, endOffset:1},
+    ])
+    assert.deepEqual(results.map(x => x.excerpt.match), ['a\u00ADaa', 'aaa', 'aaa'])
+})
+
+for (const [text, query] of [['Cat', 'cat'], ['é', 'e'], ['É', 'é'], ['cafe\u0301', 'cafe']]) {
+    test(`variant search preserves case and diacritic distinctions: ${text} / ${query}`, () => {
+        assert.deepEqual(matches([text], query, {locales:'fr', sensitivity:'variant'}), [])
+    })
+}
