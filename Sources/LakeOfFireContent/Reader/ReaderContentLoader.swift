@@ -197,7 +197,8 @@ public struct ReaderContentLoader {
             _ target: T, in realm: Realm
         ) -> Bool {
             guard let row = realm.resolve(ThreadSafeReference(to: target)),
-                  !row.isInvalidated, !row.isDeleted else { return false }
+                  !row.isInvalidated, !row.isDeleted,
+                  row.url.matchesReaderURL(target.url) else { return false }
             return true
         }
 
