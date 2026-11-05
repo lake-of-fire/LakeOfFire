@@ -191,10 +191,10 @@ const collatedSearch = function* (strs, query, options) {
 }
 
 export const search = (strs, query, options) => {
-    const { granularity = 'grapheme', sensitivity = 'base' } = options
-    if (!Intl?.Segmenter || granularity === 'grapheme'
-    && sensitivity === 'variant')
-        return simpleSearch(strs, query, options)
+    // Case and diacritic controls must not bypass whitespace/format-token
+    // normalization or original grapheme spans. Variant collation still
+    // distinguishes case and accents while accepting canonical equivalents.
+    if (!Intl?.Segmenter) return simpleSearch(strs, query, options)
     return collatedSearch(strs, query, options)
 }
 
