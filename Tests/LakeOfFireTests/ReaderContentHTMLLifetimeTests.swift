@@ -1,10 +1,11 @@
 import Foundation
+import SwiftSoup
 import LakeKit
 import RealmSwift
 import XCTest
 import WebKit
 @testable import LakeOfFireContent
-@testable import LakeOfFireReader
+@_spi(ReaderProcessing) @testable import LakeOfFireReader
 @testable import SwiftUIWebView
 
 @MainActor
@@ -856,6 +857,41 @@ extension ReaderContentHTMLLifetimeTests {
     }
 
 #if DEBUG
+    func testInitiatingAccountContextSurvivesSuspensionInRealProcessingCallback() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let session = Session.ephemeralForTesting()
+        session.authenticated(authToken: "isolated-context-a", userID: 101)
+        let access = AccountSessionAccess(session: session)
+        let initiatingSnapshot = session.accountSessionSnapshot
+        mode.readerAccountSessionAccess = access
+        mode.readabilityContent = "<html><body><div id='reader-content'>Captured account context.</div></body></html>"
+        let processed = expectation(description: "real processing callback observes initiating context")
+        mode.processReadabilityContent = { html, _, _, _, _, _, _ in
+            let captured = try XCTUnwrap(ReaderModeProcessingAccountContext.account)
+            XCTAssertEqual(captured.access.boundaryID, access.boundaryID)
+            XCTAssertEqual(captured.snapshot, initiatingSnapshot)
+            XCTAssertTrue(captured.isCurrent)
+            await Task.yield()
+            await MainActor.run {
+                session.authenticated(authToken: "isolated-context-b", userID: 202)
+            }
+            XCTAssertEqual(ReaderModeProcessingAccountContext.account?.snapshot, initiatingSnapshot,
+                "Suspended work must retain A rather than sampling B")
+            XCTAssertFalse(captured.isCurrent)
+            processed.fulfill()
+            return try SwiftSoup.parse(html)
+        }
+        await render(mode, reader: reader)
+        await fulfillment(of: [processed], timeout: 1)
+        XCTAssertEqual(session.accountSessionSnapshot.identity, .authenticated(userID: 202))
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+        XCTAssertNil(ReaderModeProcessingAccountContext.account,
+            "The render's TaskLocal context must not escape into its host")
+    }
+
     func testAccountReplacementBeforeProcessingRejectsOriginalRender() async throws {
         let (realm, row, reader, mode, navigator) = try renderFixture()
         defer { withExtendedLifetime(realm) {} }
