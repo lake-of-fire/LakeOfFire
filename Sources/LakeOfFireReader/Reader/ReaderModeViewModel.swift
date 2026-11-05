@@ -1459,6 +1459,26 @@ func readerModeReadyGenerationIsCurrent(
     return reportedGeneration == nil
 }
 
+/// The account that initiated one foreground render, captured before suspension.
+/// Core consumes this same value through admission retries and native publication.
+@_spi(ReaderProcessing)
+public struct ReaderModeProcessingAccount: Sendable {
+    public let access: AccountSessionAccess
+    public let snapshot: AccountSessionSnapshot
+
+    public init(access: AccountSessionAccess) {
+        self.access = access
+        snapshot = access.snapshot
+    }
+
+    public var isCurrent: Bool { access.snapshot == snapshot }
+}
+
+@_spi(ReaderProcessing)
+public enum ReaderModeProcessingAccountContext {
+    @TaskLocal public static var account: ReaderModeProcessingAccount?
+}
+
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
@@ -2460,8 +2480,7 @@ public class ReaderModeViewModel: ObservableObject {
     private func startRenderTaskIfNeeded(
         for url: URL,
         originatingContentIsCurrent: @escaping @MainActor () -> Bool,
-        accountSession: AccountSessionSnapshot?,
-        accountBoundaryID: AccountSessionBoundaryID?,
+        processingAccount: ReaderModeProcessingAccount?,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
@@ -2480,15 +2499,17 @@ public class ReaderModeViewModel: ObservableObject {
         completedRenderOwner = nil
         let task = Task { @ReaderViewModelActor [weak self] in
             guard let self else { return }
-            await operation(generation)
+            await ReaderModeProcessingAccountContext.$account.withValue(processingAccount) {
+                await operation(generation)
+            }
             await self.finishRenderTask(for: canonicalURL, generation: generation)
         }
         activeRendersByURL[key] = ActiveRender(
             task: task,
             generation: generation,
             originatingContentIsCurrent: originatingContentIsCurrent,
-            accountSession: accountSession,
-            accountBoundaryID: accountBoundaryID
+            accountSession: processingAccount?.snapshot,
+            accountBoundaryID: processingAccount?.access.boundaryID
         )
         return true
     }
@@ -2634,8 +2655,9 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
         let initialContent = readerContent.content
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
-        let accountSession = readerAccountSessionAccess?.snapshot
-        let accountBoundaryID = readerAccountSessionAccess?.boundaryID
+        let processingAccount = readerAccountSessionAccess.map(ReaderModeProcessingAccount.init(access:))
+        let accountSession = processingAccount?.snapshot
+        let accountBoundaryID = processingAccount?.access.boundaryID
         let originatingContentIsCurrent = { @MainActor in
             self.readerAccountSessionAccess?.snapshot == accountSession
                 && self.readerAccountSessionAccess?.boundaryID == accountBoundaryID
@@ -2649,8 +2671,7 @@ public class ReaderModeViewModel: ObservableObject {
         startRenderTaskIfNeeded(
             for: contentURL,
             originatingContentIsCurrent: originatingContentIsCurrent,
-            accountSession: accountSession,
-            accountBoundaryID: accountBoundaryID
+            processingAccount: processingAccount
         ) { [weak self] generation in
             guard let self else { return }
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
@@ -3042,20 +3063,32 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         if needsAsyncWrite {
+            let processingAccount = ReaderModeProcessingAccountContext.account
             try await content.asyncWrite { _, content in
-                content.isReaderModeByDefault = true
-                content.isReaderModeAvailable = false
-                content.isReaderModeOfferHidden = false
-                if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                    if let resolvedStoredHTML {
-                        content.html = resolvedStoredHTML
+                // Realm can begin this transaction after selection/account
+                // replacement. Keep its bounded writes inside the captured
+                // Session publication fence; no account is sampled on this actor.
+                let update = {
+                    guard selectionIsCurrent() else { return }
+                    content.isReaderModeByDefault = true
+                    content.isReaderModeAvailable = false
+                    content.isReaderModeOfferHidden = false
+                    if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                        if let resolvedStoredHTML {
+                            content.html = resolvedStoredHTML
+                        }
+                        if let resolvedTitleIfNeeded {
+                            content.title = resolvedTitleIfNeeded
+                        }
+                        content.rssContainsFullContent = true
                     }
-                    if let resolvedTitleIfNeeded {
-                        content.title = resolvedTitleIfNeeded
-                    }
-                    content.rssContainsFullContent = true
+                    content.refreshChangeMetadata(explicitlyModified: true)
                 }
-                content.refreshChangeMetadata(explicitlyModified: true)
+                if let processingAccount {
+                    _ = try? processingAccount.access.publish(ifCurrent: processingAccount.snapshot, update)
+                } else {
+                    update()
+                }
             }
         }
 
