@@ -2944,7 +2944,7 @@ export class Paginator extends HTMLElement {
         }
     }
     #canGoToIndex(index) {
-        return index >= 0 && index <= this.sections.length - 1
+        return Number.isInteger(index) && index >= 0 && index < (this.sections?.length ?? 0)
     }
     async #goTo({
         index,
@@ -3048,9 +3048,12 @@ export class Paginator extends HTMLElement {
         }
     }
     async goTo(target) {
-        if (this.#locked) return
+        if (this.#locked) return null
         const resolved = await target
-        if (this.#canGoToIndex(resolved.index)) return await this.#goTo(resolved)
+        // A page turn may acquire the lock while an asynchronous target resolves.
+        // Explicit rejection must not look like legacy void navigation success.
+        if (this.#locked || !this.#canGoToIndex(resolved?.index)) return null
+        return await this.#goTo(resolved)
     }
     async #scrollPrev(distance, knownMetrics = null) {
         if (!this.#view) return true

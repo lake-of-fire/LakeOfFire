@@ -1,3 +1,4 @@
+import { selectedEbookPackageDocument } from './ebook-native-source-request.js'
 import * as CFI from './epubcfi.js'
 
 const NS = {
@@ -815,6 +816,7 @@ export class EPUB {
     parser = new DOMParser()
     #loader
     #sourceDestroy
+    #nativePackageDocumentPath
     #destroyed = false
     #encryption
     constructor({
@@ -824,8 +826,10 @@ export class EPUB {
         replaceText,
         replaceURL,
         sha1,
+        packageDocumentPath = null,
         destroy: destroySource,
     }) {
+        this.#nativePackageDocumentPath = packageDocumentPath
         this.loadText = loadText
         this.loadBlob = loadBlob
         this.getSize = getSize
@@ -853,7 +857,7 @@ ${doc.querySelector('parsererror').innerText}`)
             .filter(file => file.mediaType === 'application/oebps-package+xml')
 
         if (!opfs.length) throw new Error('No package document defined in container')
-        const opfPath = opfs[0].fullPath
+        const opfPath = selectedEbookPackageDocument(opfs, this.#nativePackageDocumentPath)
         const opf = await this.#loadXML(opfPath)
         if (!opf) throw new Error('Failed to load package document')
 

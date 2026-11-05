@@ -196,10 +196,10 @@ test('rejects an older section load that resumes after replacement navigation', 
     const replacementNavigation = layout.goTo({ index: 1 })
     const replacementIframe = await nextPendingIframe('replacement.xhtml')
     replacementIframe.finishLoading(fixedLayoutDocument('replacement'))
-    await replacementNavigation
+    assert.equal(await replacementNavigation, true)
 
     releaseOriginalSection('original.xhtml')
-    await originalNavigation
+    assert.equal(await originalNavigation, null)
     assert.equal(
         pendingIframes.some(iframe => iframe.source === 'original.xhtml'),
         false,
@@ -573,7 +573,7 @@ test('rejects a delayed target resolved after a replacement book opens', async (
     })
     resolveTarget({ index: 0 })
 
-    await assert.doesNotReject(navigation)
+    assert.equal(await navigation, null)
     assert.deepEqual(layout.getContents(), [])
 })
 
@@ -902,4 +902,72 @@ test('falls through empty viewport metadata to the book viewport', async () => {
     const [content] = layout.getContents()
     assert.equal(content.iframe.style.width, '600px')
     assert.equal(content.iframe.style.height, '800px')
+})
+
+test('invalid and destroyed fixed-layout navigation explicitly rejects required restore', async () => {
+    const { runRequiredRestoreNavigation } = await import(
+        '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-restore-coordination.js'
+    )
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr', rendition: { spread: 'none' },
+        sections: [{ load: async () => 'must-not-load-invalid.xhtml' }],
+    })
+    for (const index of [-1, 1, 0.5, NaN, Infinity, '0']) {
+        const result = await runRequiredRestoreNavigation(() => layout.goTo({ index }))
+        assert.equal(result.ok, false)
+        assert.equal(result.value, null)
+        assert.equal(await layout.goToSpread(index, 'center'), null)
+    }
+    layout.destroy()
+    assert.equal(await layout.goTo({ index: 0 }), null)
+    assert.equal(await layout.goToSpread(0, 'center'), null)
+    assert.deepEqual(layout.getContents(), [])
+})
+
+test('successful fixed-layout navigation and an already displayed target report success', async () => {
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none', viewport: { width: 600, height: 800 } },
+        sections: [{ load: async () => 'explicit-navigation-success.xhtml' }],
+    })
+    const pending = layout.goTo({ index: 0 })
+    const iframe = await nextPendingIframe('explicit-navigation-success.xhtml')
+    iframe.finishLoading(fixedLayoutDocument('explicit success'))
+    assert.equal(await pending, true)
+    assert.equal(await layout.goTo({ index: 0 }), true)
+    layout.destroy()
+})
+
+test('returning to the previous spread during replacement frame load reloads actual content', async () => {
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none', viewport: { width: 600, height: 800 } },
+        sections: [
+            { load: async () => 'return-during-frame-original.xhtml' },
+            { load: async () => 'return-during-frame-replacement.xhtml' },
+        ],
+    })
+    const initial = layout.goTo({ index: 0 })
+    const firstFrame = await nextPendingIframe('return-during-frame-original.xhtml')
+    firstFrame.finishLoading(fixedLayoutDocument('original'))
+    assert.equal(await initial, true)
+
+    const replacement = layout.goTo({ index: 1 })
+    const abandonedFrame = await nextPendingIframe('return-during-frame-replacement.xhtml')
+    assert.deepEqual(layout.getContents(), [])
+
+    const returned = layout.goTo({ index: 0 })
+    const restoredFrame = await nextPendingIframe('return-during-frame-original.xhtml')
+    restoredFrame.finishLoading(fixedLayoutDocument('restored original'))
+    assert.equal(await returned, true)
+    assert.equal(await replacement, null)
+
+    // The cancelled iframe's late load must not replace the restored content.
+    abandonedFrame.finishLoading(fixedLayoutDocument('obsolete replacement'))
+    assert.equal(layout.index, 0)
+    assert.deepEqual(layout.getContents().map(content => content.doc.title), ['restored original'])
+    layout.destroy()
 })

@@ -1,0 +1,46 @@
+name: Port book download ownership
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Sources/LakeOfFireReader/Reader/Books/**'
+      - 'Tests/LakeOfFireTests/BookDownload*Tests.swift'
+      - 'Tools/test-book-download-operation.sh'
+      - '.github/workflows/port-book-downloads.yml'
+permissions:
+  contents: read
+concurrency:
+  group: book-download-port-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ownership:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2.1'
+      - name: Test committed owner and retain exact inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/inputs
+          git rev-parse HEAD > evidence/tested-commit.txt
+          git ls-tree -r HEAD > evidence/source-manifest.txt
+          swift --version > evidence/toolchain.txt
+          git archive HEAD 'Sources/LakeOfFireReader/Reader/Books' 'Tests/LakeOfFireTests/BookDownloadOperationTests.swift' 'Tests/LakeOfFireTests/BookDownloadImportPortTests.swift' 'Tools/test-book-download-operation.sh' | tar -x -C evidence/inputs
+          bash Tools/test-book-download-operation.sh 2>&1 | tee evidence/test.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: book-download-${{ matrix.os }}-${{ github.run_attempt }}
+          path: evidence
+          retention-days: 7
+          if-no-files-found: error

@@ -13,6 +13,11 @@ fileprivate func makeArticleReadingProgressCompoundKey(url: URL) -> String {
 public class ArticleReadingProgress: ReadingSession {
     @Persisted public var sentenceIdentifiersRead: List<String>
 
+    /// Exact retained reading lifetime selected by Common's source-authority
+    /// layer. Nil is the legacy/unversioned lifetime. Lake stores the pointer
+    /// but does not interpret, rotate, or synchronize authority on its own.
+    @Persisted public var readAuthorityEpochID: String?
+
     // Web only, not for ebooks
     @Persisted public var articleSentenceCount: Int?
     @Persisted public var scrollPositionSentenceIdentifier: String?

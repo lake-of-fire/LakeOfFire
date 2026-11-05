@@ -11,9 +11,13 @@ struct EPubParser {
     /// Reads metadata from either a packed or unpacked EPUB through the same
     /// package-entry boundary used by the viewer.
     static func parseMetadataAndCover(
-        from epubURL: URL
+        from epubURL: URL,
+        limits: ReaderPackageResourceLimits = .metadata
     ) throws -> (title: String, author: String?, coverHref: String?, publicationDate: Date?)? {
-        let source = try ReaderPackageEntrySource(localURL: epubURL)
+        let source = try ReaderPackageEntrySource(localURL: epubURL, limits: limits)
+        // Inspect the catalog before XML parsing. Per-entry read limits apply
+        // to container/OPF bytes, not unrelated media that is never loaded here.
+        _ = try source.enumerateEntries()
         let containerData = try source.readEntry(subpath: "META-INF/container.xml")
         guard let packagePath = parseContainer(containerData) else { return nil }
         let packageData = try source.readEntry(subpath: packagePath)

@@ -1,0 +1,36 @@
+name: Port Reader-selected Lake lifecycle
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run selected JavaScript regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test Tests/JavaScript/ebook-native-lookup-publication.test.mjs Tests/JavaScript/native-mark-read-request.test.mjs
+      - name: Parse changed Swift production files
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in             Sources/LakeOfFireContent/Files/ReaderFileManager.swift             Sources/LakeOfFireContent/Web/HistoryRecord.swift             Sources/LakeOfFireReader/Reader/Books/EbookURLSchemeHandler.swift             Sources/LakeOfFireReader/Reader/Reader.swift             Sources/LakeOfFireReader/Reader/ReaderEbookTextProcessor.swift             Sources/LakeOfFireReader/Reader/ReaderExternalSegmentSidecar.swift             Sources/LakeOfFireReader/Reader/ReaderJavascriptMessages.swift             Sources/LakeOfFireReader/Reader/ReaderModeViewModel.swift             Sources/LakeOfFireReader/Reader/ReaderWebView.swift
+          do
+            swiftc -frontend -parse "$path"
+          done
