@@ -709,7 +709,6 @@ final class ReaderSnippetTitleTests: XCTestCase {
         try await withSnippetRealm { bookmarkConfiguration in
             let historyConfiguration = self.makeRealmConfiguration()
             ReaderContentLoader.historyRealmConfiguration = historyConfiguration
-            let storage = ReaderContentLoader.SnippetStorage.capture()
             let url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "separate-store-change"))
             try await { @RealmBackgroundActor in
                 let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkConfiguration)
@@ -724,6 +723,13 @@ final class ReaderSnippetTitleTests: XCTestCase {
                 history.title = "Original history"
                 try bookmarkRealm.write { bookmarkRealm.add(bookmark) }
                 try historyRealm.write { historyRealm.add(history) }
+            }()
+            // Capture the seeded files so the writer fences their physical identities.
+            let storage = ReaderContentLoader.SnippetStorage.capture()
+            try await { @RealmBackgroundActor in
+                let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkConfiguration)
+                let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyConfiguration)
+                let bookmark = try XCTUnwrap(bookmarkRealm.object(ofType: Bookmark.self, forPrimaryKey: "separate-bookmark"))
                 let historyBefore = Self.snippetWriteSnapshot(in: historyRealm)
                 let probe = SnippetCommittedStoreProbe(bookmarkRealm: bookmarkRealm)
                 do {

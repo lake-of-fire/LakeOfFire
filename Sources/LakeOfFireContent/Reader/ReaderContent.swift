@@ -618,11 +618,15 @@ public class ReaderContent: ObservableObject {
         try await withTaskCancellationHandler {
             retiredTask?.cancel()
             @MainActor
-            func validatePublication() throws {
+            func validateSelection() throws {
                 try Task.checkCancellation()
                 guard selectionID == loadID, nextLifetime.permitsCommit(),
-                      nativeLifetime.permitsCommit(),
                       handoff?.permitsCapture != false else { throw CancellationError() }
+            }
+            @MainActor
+            func validatePublication() throws {
+                try validateSelection()
+                guard nativeLifetime.permitsCommit() else { throw CancellationError() }
             }
             try validatePublication()
 
@@ -649,10 +653,20 @@ public class ReaderContent: ObservableObject {
             if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL, sourceURL: url) {
                 currentSectionIndex = nil
                 try validatePublication()
-                _ = setContent(preloadedContent, permitsPublication: {
+                let didPublish = setContent(preloadedContent, permitsPublication: {
                     self.selectionID == loadID && nextLifetime.permitsCommit()
                         && nativeLifetime.permitsCommit() && handoff?.permitsCapture != false
                 })
+                guard didPublish else {
+                    // Let this deleted row's current commit clean up missing
+                    // content. A different native owner must still reject.
+                    try validateSelection()
+                    guard self.nativeContentLifetime === nativeLifetime,
+                          preloadedContent.isInvalidated || preloadedContent.isDeleted else {
+                        throw CancellationError()
+                    }
+                    return
+                }
                 try validatePublication()
                 pageURL = displayURL
                 try validatePublication()
