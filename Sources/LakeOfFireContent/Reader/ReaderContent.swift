@@ -73,6 +73,9 @@ public struct ReaderContentPublication {
 public class ReaderContent: ObservableObject {
     @ReaderContentPublication public var content: (any ReaderContentProtocol)?
     private var contentPublicationID = UUID()
+    // Invalidation belongs to the stored row's owner, even while a successor
+    // publication still exposes this predecessor through will-set callbacks.
+    private var cachedContentLifetime: ReaderContentSelectionLifetime?
 
     @discardableResult
     fileprivate func setContent(
@@ -92,35 +95,43 @@ public class ReaderContent: ObservableObject {
         let lifetime = nativeContentLifetime
         let publicationID = UUID()
         contentPublicationID = publicationID
+        var completed = false
+        defer {
+            // Both notification boundaries can reject before model storage.
+            // Repair only this generation; a reentrant successor owns its replay.
+            if !completed, contentPublicationID == publicationID {
+                if let cached = _content.value, cached.isInvalidated || cached.isDeleted {
+                    cachedContentLifetime?.withdraw()
+                    _content.value = nil
+                    cachedContentLifetime = nil
+                }
+                if _content.subject.value !== _content.value {
+                    _content.subject.send(_content.value)
+                }
+            }
+        }
         func isCurrent() -> Bool {
             if let value, value.isInvalidated || value.isDeleted {
                 // Withdraw this publication's owner, never a reentrant successor.
                 lifetime.withdraw()
                 return false
             }
-            return contentPublicationID == publicationID && permitsPublication()
+            return contentPublicationID == publicationID
+                && (value == nil || lifetime.permitsCommit()) && permitsPublication()
         }
         guard isCurrent() else { return false }
         objectWillChange.send()
         guard isCurrent() else { return false }
         _content.subject.send(value)
-        guard isCurrent() else {
-            // Account-only withdrawal may leave no successor setter to restore
-            // the publisher's replay value. Do not replay an uncommitted row.
-            if contentPublicationID == publicationID {
-                if let cached = _content.value, cached.isInvalidated || cached.isDeleted {
-                    _content.value = nil
-                }
-                _content.subject.send(_content.value)
-            }
-            return false
-        }
+        guard isCurrent() else { return false }
         _content.value = value
+        cachedContentLifetime = value == nil ? nil : lifetime
         syncLocationBarTitle()
         guard isCurrent() else { return false }
         syncContentTitle()
         guard isCurrent() else { return false }
-        return isCurrent()
+        completed = true
+        return true
     }
 
     @Published public var pageURL = URL(string: "about:blank")! {
@@ -140,6 +151,9 @@ public class ReaderContent: ObservableObject {
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
     private var loadingResolvedContentURL: URL?
+    // A pending native intent can retire a resolver's mutation authority while
+    // retaining its predecessor selection for the existing handoff contract.
+    private var loadingNativeContentLifetime: ReaderContentSelectionLifetime?
     // The last admitted selection outlives its loading task: a completed task
     // may still have readers queued to receive its result.
     private var selectionID: UUID?
@@ -173,7 +187,7 @@ public class ReaderContent: ObservableObject {
     public var validCachedContent: (any ReaderContentProtocol)? {
         guard let content else { return nil }
         guard !content.isInvalidated, !content.isDeleted else {
-            nativeContentLifetime.withdraw()
+            cachedContentLifetime?.withdraw()
             return nil
         }
         return content
@@ -229,11 +243,11 @@ public class ReaderContent: ObservableObject {
         guard nativeContentURL?.matchesReaderURL(resolvedURL) == true,
               nativeContentLifetime.permitsCommit() else { return false }
         if let content {
-            guard !content.isInvalidated, !content.isDeleted,
-                  content.url.matchesReaderURL(resolvedURL) else {
-                nativeContentLifetime.withdraw()
+            guard !content.isInvalidated, !content.isDeleted else {
+                cachedContentLifetime?.withdraw()
                 return false
             }
+            guard content.url.matchesReaderURL(resolvedURL) else { return false }
         }
         return pageURL.matchesReaderURL(resolvedURL) || ignoresTransientBlank(pageURL)
     }
@@ -269,6 +283,7 @@ public class ReaderContent: ObservableObject {
             let retiredTask = loadingTask
             loadingTask = nil
             loadingResolvedContentURL = nil
+            loadingNativeContentLifetime = nil
             selectionLifetime = ReaderContentSelectionLifetime()
             selectionID = UUID()
             retiredTask?.cancel()
@@ -426,6 +441,7 @@ public class ReaderContent: ObservableObject {
         if ignoresTransientBlank(resolvedContentURL) { return }
 
         receiveNativeContentTarget(resolvedContentURL)
+        let nativeLifetime = nativeContentLifetime
 
         if resolvedContentURL.absoluteString != "about:blank" {
             suppressedTransientAboutBlankTargetURL = nil
@@ -433,6 +449,8 @@ public class ReaderContent: ObservableObject {
 
         if let loadingTask,
            let loadingResolvedContentURL,
+           loadingNativeContentLifetime === nativeLifetime,
+           nativeLifetime.permitsCommit(),
            selectionLifetime.permitsCommit(),
            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
             let loadID = selectionID
@@ -450,7 +468,8 @@ public class ReaderContent: ObservableObject {
                     handoff?.withdraw()
                 }
                 try Task.checkCancellation()
-                guard selectionID == loadID, joinedLifetime.permitsCommit() else { throw CancellationError() }
+                guard selectionID == loadID, joinedLifetime.permitsCommit(),
+                      nativeLifetime.permitsCommit() else { throw CancellationError() }
                 if handoff != nil {
                     try Task.checkCancellation()
                     guard handoff?.permitsCapture != false else { throw CancellationError() }
@@ -506,6 +525,7 @@ public class ReaderContent: ObservableObject {
         selectionID = loadID
         loadingTask = nil
         loadingResolvedContentURL = nil
+        loadingNativeContentLifetime = nil
         defer {
             completeSelectionHandoff(handoff, selectionID: loadID, url: resolvedContentURL)
             finishLoading(ifOwnedBy: loadID)
@@ -519,6 +539,7 @@ public class ReaderContent: ObservableObject {
             func validatePublication() throws {
                 try Task.checkCancellation()
                 guard selectionID == loadID, nextLifetime.permitsCommit(),
+                      nativeLifetime.permitsCommit(),
                       handoff?.permitsCapture != false else { throw CancellationError() }
             }
             try validatePublication()
@@ -545,14 +566,20 @@ public class ReaderContent: ObservableObject {
             if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
                 currentSectionIndex = nil
                 try validatePublication()
-                content = preloadedContent
+                _ = setContent(preloadedContent, permitsPublication: {
+                    self.selectionID == loadID && nextLifetime.permitsCommit()
+                        && nativeLifetime.permitsCommit() && handoff?.permitsCapture != false
+                })
                 try validatePublication()
                 pageURL = displayURL
                 try validatePublication()
                 return
             }
 
-            content = nil
+            _ = setContent(nil, permitsPublication: {
+                self.selectionID == loadID && nextLifetime.permitsCommit()
+                    && nativeLifetime.permitsCommit() && handoff?.permitsCapture != false
+            })
             try validatePublication()
             currentSectionIndex = nil
             try validatePublication()
@@ -560,6 +587,7 @@ public class ReaderContent: ObservableObject {
             try validatePublication()
 
             loadingResolvedContentURL = resolvedContentURL
+            loadingNativeContentLifetime = nativeLifetime
             let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor [weak self, loadID] in
                 // Finish before any coalesced waiter receives success/error. Its
                 // immediate retry must not rejoin this already-completed task.
@@ -567,7 +595,7 @@ public class ReaderContent: ObservableObject {
                 try Task.checkCancellation()
                 let content = try await resolveContent(url) ?? ReaderContentLoader.unsavedHome
                 // Preserve the existing nonthrowing retirement result for a superseded load.
-                guard let self, self.selectionID == loadID else { return nil }
+                guard let self, self.selectionID == loadID, nativeLifetime.permitsCommit() else { return nil }
                 try Task.checkCancellation()
                 guard handoff?.permitsCapture != false else { throw CancellationError() }
                 guard !content.isInvalidated else { return nil }
@@ -575,9 +603,13 @@ public class ReaderContent: ObservableObject {
                     debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                     return nil
                 }
-                self.content = content
+                guard self.setContent(content, permitsPublication: {
+                    self.selectionID == loadID && nextLifetime.permitsCommit()
+                        && nativeLifetime.permitsCommit() && handoff?.permitsCapture != false
+                }) else { return nil }
                 guard self.selectionID == loadID, nextLifetime.permitsCommit(),
-                      handoff?.permitsCapture != false, self.content === content else { return nil }
+                      nativeLifetime.permitsCommit(), handoff?.permitsCapture != false,
+                      self.content === content else { return nil }
                 return content
             }
             loadingTask = task
@@ -614,6 +646,7 @@ public class ReaderContent: ObservableObject {
         // Old completion is independent of a new selection's loading slot.
         guard selectionID == loadID else { return }
         loadingResolvedContentURL = nil
+        loadingNativeContentLifetime = nil
         loadingTask = nil
     }
 
