@@ -228,6 +228,12 @@ public class ReaderContent: ObservableObject {
         nativeContentLifetime.withdraw()
         nativeContentLifetime = ReaderContentSelectionLifetime()
         nativeContentURL = resolvedURL
+        // A managed row can be retargeted before an explicit page boundary.
+        // Its later invalidation belongs to the newly selected native owner.
+        if let content, !content.isInvalidated, !content.isDeleted,
+           content.url.matchesReaderURL(resolvedURL) {
+            cachedContentLifetime = nativeContentLifetime
+        }
     }
 
     private func ignoresTransientBlank(_ url: URL) -> Bool {
@@ -247,7 +253,10 @@ public class ReaderContent: ObservableObject {
                 cachedContentLifetime?.withdraw()
                 return false
             }
-            guard content.url.matchesReaderURL(resolvedURL) else { return false }
+            guard content.url.matchesReaderURL(resolvedURL) else {
+                cachedContentLifetime?.withdraw()
+                return false
+            }
         }
         return pageURL.matchesReaderURL(resolvedURL) || ignoresTransientBlank(pageURL)
     }
