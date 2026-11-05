@@ -2240,3 +2240,78 @@ extension ReaderSnippetTitleTests {
         XCTAssertFalse(oldFence?() ?? true)
     }
 }
+
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testCapturedSnippetTargetURLChangeBeforeWriterRejectsAllRepresentations() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Original retargeted snippet</p>")
+            let original = try XCTUnwrap(loaded as? HistoryRecord)
+            let url = original.url, key = original.compoundKey
+            let successorURL = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "retargeted-before-writer"))
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: original))
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Self.seedSnippetRepresentations(url: url, in: realm)
+                let target = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+                // Keep the same physical row while replacing its logical target.
+                try realm.write { target.url = successorURL }
+                let before = Self.snippetWriteSnapshot(in: realm)
+                let changed = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                    contentURL: url, storage: storage, permitsCommit: { true },
+                    mutate: { Self.writeSnippetTestContent($0) })
+                XCTAssertFalse(changed, "A retargeted original row must not authorize edits to its old representations")
+                XCTAssertEqual(target.url, successorURL)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: realm), before)
+            }()
+        }
+    }
+
+    @MainActor
+    func testCapturedSnippetTargetURLChangeAtFinalPermissionRollsBackAllRepresentations() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Original final retarget snippet</p>")
+            let original = try XCTUnwrap(loaded as? HistoryRecord)
+            let url = original.url, key = original.compoundKey
+            let successorURL = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "retargeted-at-final-permission"))
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: original))
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Self.seedSnippetRepresentations(url: url, in: realm)
+                let target = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+                let before = Self.snippetWriteSnapshot(in: realm)
+                let probe = SnippetTargetURLChangeProbe(row: target, destination: successorURL)
+                var rejected = false
+                do {
+                    _ = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                        contentURL: url, storage: storage,
+                        permitsCommit: { probe.permitsCommit() },
+                        mutate: { Self.writeSnippetTestContent($0) })
+                } catch is CancellationError { rejected = true }
+                XCTAssertTrue(probe.changedTarget, "The final-permission fault must execute inside the actual writer")
+                XCTAssertTrue(rejected, "A final target change must roll back the write")
+                XCTAssertEqual(target.url, url)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: realm), before)
+            }()
+        }
+    }
+}
+
+/// Invoked synchronously by the shared Realm writer on RealmBackgroundActor.
+private final class SnippetTargetURLChangeProbe: @unchecked Sendable {
+    let row: HistoryRecord
+    let destination: URL
+    private(set) var changedTarget = false
+    init(row: HistoryRecord, destination: URL) {
+        self.row = row
+        self.destination = destination
+    }
+    func permitsCommit() -> Bool {
+        if !changedTarget, row.realm?.isInWriteTransaction == true, row.title == "Atomic saved" {
+            row.url = destination
+            changedTarget = true
+        }
+        return true
+    }
+}
