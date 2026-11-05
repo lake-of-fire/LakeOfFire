@@ -184,7 +184,15 @@ public struct ReaderContentLoader {
 
         fileprivate func containsCapturedTarget(in realm: Realm) -> Bool {
             guard let target else { return true } // Legacy multi-store API.
-            guard let row = realm.resolve(ThreadSafeReference(to: target.row)),
+            return Self.containsFrozenTarget(target.row, in: realm)
+        }
+
+        // Open the existential only within this generic call. The invariant
+        // ThreadSafeReference<T> stays local; no erased reference escapes.
+        private static func containsFrozenTarget<T: ReaderContentProtocol>(
+            _ target: T, in realm: Realm
+        ) -> Bool {
+            guard let row = realm.resolve(ThreadSafeReference(to: target)),
                   !row.isInvalidated, !row.isDeleted else { return false }
             return true
         }

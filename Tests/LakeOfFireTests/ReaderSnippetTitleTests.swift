@@ -2115,3 +2115,122 @@ private final class SnippetPhysicalFileReplacementProbe: @unchecked Sendable {
         catch { failure = error; return false }
     }
 }
+
+/// Every held resolver is released and its task joined within its test, including
+/// assertion-failure paths. Releasing before wait is also safe.
+private actor NativeSnippetNegativeLoadGate {
+    private var isOpen = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        isOpen = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testHeldDirectPredecessorCannotRegainNativeOwnerAfterSuccessorIntent() async throws {
+        let reader = ReaderContent()
+        let first = nativeSnippet("held-native-predecessor")
+        let successor = nativeSnippet("held-native-successor", title: "Successor")
+        let intent = try nativeIntent(from: first.url, to: successor.url)
+        let gate = NativeSnippetNegativeLoadGate()
+        let entered = expectation(description: "direct predecessor resolver entered")
+        let predecessor = Task { @MainActor in
+            do {
+                try await reader.load(url: first.url) { _ in
+                    entered.fulfill()
+                    await gate.wait()
+                    return first
+                }
+            } catch is CancellationError {
+                // A superseded predecessor may cancel or finish without publication.
+            } catch { XCTFail("Unexpected predecessor error: \(error)") }
+        }
+        let entry = await XCTWaiter.fulfillment(of: [entered], timeout: 5)
+        XCTAssertEqual(entry, .completed)
+        // No throwing unwrap after starting the held task: all paths join it.
+        let originalFence = reader.makeNativeContentCommitFence(for: first.url)
+        XCTAssertNotNil(originalFence)
+        let handoff = reader.receiveSelectionIntent(intent)
+        XCTAssertNotNil(handoff)
+        XCTAssertTrue(handoff?.permitsCapture == true)
+        XCTAssertFalse(originalFence?() ?? true)
+        await gate.release()
+        await predecessor.value
+        XCTAssertNil(reader.makeNativeContentCommitFence(for: first.url),
+                     "A retired direct resolver must not mint a fresh native mutation owner")
+        XCTAssertTrue(handoff?.permitsCapture == true,
+                      "Retiring A's native result must preserve B's predecessor handoff")
+        if handoff != nil {
+            do {
+                try await reader.load(url: successor.url, consuming: intent) { _ in successor }
+            } catch { XCTFail("Current successor intent must still consume its handoff: \(error)") }
+            XCTAssertTrue(reader.content === successor)
+            XCTAssertEqual(reader.pageURL, successor.url)
+            XCTAssertTrue(reader.makeNativeContentCommitFence(for: successor.url)?() == true)
+        }
+        XCTAssertFalse(originalFence?() ?? true)
+    }
+
+    @MainActor
+    func testFreshDirectRoundTripCannotCoalesceWithNativeRetiredPredecessor() async throws {
+        let reader = ReaderContent()
+        let old = nativeSnippet("held-native-roundtrip", title: "Retired result")
+        let fresh = nativeSnippet("held-native-roundtrip", title: "Fresh result")
+        let other = nativeSnippet("held-native-roundtrip-other")
+        let intent = try nativeIntent(from: old.url, to: other.url)
+        let oldGate = NativeSnippetNegativeLoadGate(), freshGate = NativeSnippetNegativeLoadGate()
+        let oldEntered = expectation(description: "old direct resolver entered")
+        let freshEntered = expectation(description: "fresh direct resolver entered independently")
+        let predecessor = Task { @MainActor in
+            do {
+                try await reader.load(url: old.url) { _ in
+                    oldEntered.fulfill()
+                    await oldGate.wait()
+                    return old
+                }
+            } catch is CancellationError { }
+            catch { XCTFail("Unexpected retired load error: \(error)") }
+        }
+        let oldEntry = await XCTWaiter.fulfillment(of: [oldEntered], timeout: 5)
+        XCTAssertEqual(oldEntry, .completed)
+        let oldFence = reader.makeNativeContentCommitFence(for: old.url)
+        XCTAssertNotNil(oldFence)
+        XCTAssertNotNil(reader.receiveSelectionIntent(intent))
+        XCTAssertFalse(oldFence?() ?? true)
+        let replacement = Task { @MainActor in
+            do {
+                try await reader.load(url: fresh.url) { _ in
+                    freshEntered.fulfill()
+                    await freshGate.wait()
+                    return fresh
+                }
+            } catch { XCTFail("Explicit fresh round-trip request must succeed: \(error)") }
+        }
+        let independentEntry = await XCTWaiter.fulfillment(of: [freshEntered], timeout: 5)
+        XCTAssertEqual(independentEntry, .completed,
+                       "A fresh direct request must not join the resolver retired by another native intent")
+        await freshGate.release()
+        if independentEntry == .completed {
+            // The real independent resolver can finish before the old result.
+            await replacement.value
+            XCTAssertTrue(reader.content === fresh)
+            await oldGate.release()
+            await predecessor.value
+        } else {
+            // Expected-red coalescing must fail assertions, not hang on oldGate.
+            await oldGate.release()
+            await predecessor.value
+            await replacement.value
+        }
+        XCTAssertTrue(reader.content === fresh, "Late predecessor completion must not displace the fresh result")
+        XCTAssertEqual(reader.contentTitle, "Fresh result")
+        XCTAssertFalse(oldFence?() ?? true)
+    }
+}
