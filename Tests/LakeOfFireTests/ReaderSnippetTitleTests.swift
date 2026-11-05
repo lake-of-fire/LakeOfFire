@@ -1833,3 +1833,285 @@ extension ReaderSnippetTitleTests {
         }
     }
 }
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testSuppressedBlankIntentAndLoadPreserveNativeOwnerUntilRealBlank() async throws {
+        let reader = ReaderContent(), row = nativeSnippet("suppressed-native-blank")
+        try await reader.load(url: row.url) { _ in row }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+        reader.suppressTransientAboutBlank(untilNextNonBlankLoad: row.url)
+        let blank = URL(string: "about:blank")!
+        let intent = try nativeIntent(from: row.url, to: blank)
+        reader.receiveSelectionIntent(intent)
+        XCTAssertTrue(fence())
+        try await reader.load(url: blank, consuming: intent) { _ in
+            XCTFail("Suppressed blank must not reach semantic resolution")
+            return nil
+        }
+        XCTAssertEqual(reader.pageURL, row.url)
+        reader.content = ReaderContentLoader.unsavedHome
+        XCTAssertTrue(reader.content === row, "Ignored blank model publication must preserve native content")
+        reader.pageURL = blank
+        XCTAssertTrue(reader.isCurrentNativeContent(row.url))
+        XCTAssertTrue(fence())
+        reader.pageURL = row.url
+        try await reader.load(url: row.url) { _ in row } // Consumes suppression.
+        reader.content = ReaderContentLoader.unsavedHome
+        XCTAssertFalse(fence(), "Unsuppressed direct blank model publication must retire the owner")
+        try await reader.load(url: blank) { _ in ReaderContentLoader.unsavedHome }
+        XCTAssertFalse(fence(), "A real blank must permanently retire the old native action")
+    }
+
+    @MainActor
+    func testPendingPreProvisionalBlankIntentAndLoadPreserveNativeOwnerUntilRealBlank() async throws {
+        let reader = ReaderContent(), row = nativeSnippet("pending-native-blank")
+        try await reader.load(url: row.url) { _ in row }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+        let activity = WebViewReaderLoadActivity.shared, owner = NSObject(), id = UUID()
+        activity.begin(id, owner: owner)
+        defer { activity.end(id); withExtendedLifetime(owner) {} }
+        let blank = URL(string: "about:blank")!
+        let intent = try nativeIntent(from: row.url, to: blank)
+        reader.receiveSelectionIntent(intent)
+        XCTAssertTrue(fence())
+        try await reader.load(url: blank, consuming: intent) { _ in
+            XCTFail("Pending pre-provisional blank must not resolve content")
+            return nil
+        }
+        XCTAssertEqual(reader.pageURL, row.url)
+        reader.content = ReaderContentLoader.unsavedHome
+        XCTAssertTrue(reader.content === row, "Ignored blank model publication must preserve native content")
+        reader.pageURL = blank
+        XCTAssertTrue(reader.isCurrentNativeContent(row.url))
+        XCTAssertTrue(fence())
+        reader.pageURL = row.url
+        activity.end(id)
+        let realIntent = try nativeIntent(from: row.url, to: blank)
+        reader.receiveSelectionIntent(realIntent)
+        XCTAssertFalse(fence(), "Without either suppression reason a blank intent retires immediately")
+        try await reader.load(url: blank, consuming: realIntent) { _ in ReaderContentLoader.unsavedHome }
+        try await reader.load(url: row.url) { _ in row }
+        XCTAssertFalse(fence(), "Returning after real blank cannot revive the old owner")
+    }
+
+    @MainActor
+    func testDirectContentAndPagePublicationsRetireNativeOwnerWithoutResolver() async throws {
+        let reader = ReaderContent(), first = nativeSnippet("direct-public-first")
+        let successor = nativeSnippet("direct-public-successor", title: "Successor")
+        try await reader.load(url: first.url) { _ in first }
+        let contentFence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        let contentObserver = reader.$content.sink { value in
+            if value === successor { XCTAssertFalse(contentFence(), "Retire before public content delivery") }
+        }
+        reader.content = successor
+        reader.pageURL = successor.url
+        XCTAssertFalse(contentFence())
+        reader.content = first
+        reader.pageURL = first.url
+        XCTAssertFalse(contentFence())
+        let pageFence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        let pageObserver = reader.$pageURL.sink { url in
+            if url == successor.url { XCTAssertFalse(pageFence(), "Retire before page URL delivery") }
+        }
+        reader.pageURL = successor.url
+        reader.pageURL = first.url
+        XCTAssertFalse(pageFence())
+        XCTAssertTrue(reader.isCurrentNativeContent(first.url))
+        contentObserver.cancel(); pageObserver.cancel()
+    }
+
+    @MainActor
+    func testNilCacheEvictionAndSameContentReplacementPreserveNativeOwner() async throws {
+        let reader = ReaderContent(), row = nativeSnippet("native-cache-eviction")
+        try await reader.load(url: row.url) { _ in row }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+        reader.content = nil
+        XCTAssertTrue(fence())
+        XCTAssertTrue(reader.isCurrentNativeContent(row.url))
+        let rehosted = nativeSnippet("native-cache-eviction", title: "Rehosted")
+        reader.content = rehosted
+        XCTAssertTrue(fence())
+        XCTAssertTrue(reader.isCurrentNativeContent(row.url))
+    }
+
+    @MainActor
+    private func assertReentrantNativeProjectionSuccessor(fromObjectWillChange: Bool) async throws {
+        let reader = ReaderContent(), original = nativeSnippet("native-projection-first")
+        let fresh = nativeSnippet("native-projection-first", title: "Saved")
+        let successor = nativeSnippet("native-projection-second", title: "Successor")
+        try await reader.load(url: original.url) { _ in original }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: original.url))
+        var selectedSuccessor = false
+        func selectSuccessor() {
+            guard !selectedSuccessor else { return }
+            selectedSuccessor = true
+            reader.content = successor
+            reader.pageURL = successor.url
+        }
+        let observation: AnyCancellable
+        if fromObjectWillChange {
+            observation = reader.objectWillChange.sink {
+                // Ignore the initial content notification: exercise the nested
+                // projection's will-set notification after fresh backing commit.
+                if reader.content === fresh { selectSuccessor() }
+            }
+        } else {
+            observation = reader.$locationBarTitle.sink { title in
+                if title == "Saved" { selectSuccessor() }
+            }
+        }
+        defer { observation.cancel() }
+        XCTAssertFalse(reader.publishUpdatedContent(fresh, permitsPublication: { fence() }))
+        XCTAssertTrue(selectedSuccessor)
+        XCTAssertTrue(reader.content === successor)
+        XCTAssertEqual(reader.pageURL, successor.url)
+        XCTAssertEqual(reader.locationBarTitle, "Successor")
+        XCTAssertEqual(reader.contentTitle, "Successor")
+        XCTAssertFalse(fence())
+        XCTAssertTrue(reader.isCurrentNativeContent(successor.url))
+    }
+
+    @MainActor
+    func testReentrantLocationBarTitleProjectionRepairsSuccessorState() async throws {
+        try await assertReentrantNativeProjectionSuccessor(fromObjectWillChange: false)
+    }
+
+    @MainActor
+    func testReentrantProjectionObjectWillChangeRepairsSuccessorState() async throws {
+        try await assertReentrantNativeProjectionSuccessor(fromObjectWillChange: true)
+    }
+
+    @MainActor
+    func testReentrantContentObjectWillChangeCannotStoreOlderPublication() async throws {
+        let reader = ReaderContent(), original = nativeSnippet("native-object-first")
+        let fresh = nativeSnippet("native-object-first", title: "Saved")
+        let successor = nativeSnippet("native-object-second", title: "Successor")
+        try await reader.load(url: original.url) { _ in original }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: original.url))
+        var redirected = false
+        let observer = reader.objectWillChange.sink {
+            guard !redirected else { return }
+            redirected = true
+            reader.content = successor
+            reader.pageURL = successor.url
+        }
+        defer { observer.cancel() }
+        XCTAssertFalse(reader.publishUpdatedContent(fresh, permitsPublication: { fence() }))
+        XCTAssertTrue(reader.content === successor)
+        XCTAssertEqual(reader.pageURL, successor.url)
+        XCTAssertEqual(reader.locationBarTitle, "Successor")
+        XCTAssertEqual(reader.contentTitle, "Successor")
+        var replayed: (any ReaderContentProtocol)?
+        let replay = reader.$content.sink { replayed = $0 }
+        defer { replay.cancel() }
+        XCTAssertTrue(replayed === successor)
+    }
+
+    @MainActor
+    private func assertPhysicalSnippetFileReplacement(atWritePermission: Bool, afterMutation: Bool = false) async throws {
+        let replacement = makeRealmConfiguration(), retired = makeRealmConfiguration()
+        try await withSnippetRealm { original in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Original file fixture</p>")
+            let row = try XCTUnwrap(loaded as? HistoryRecord)
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+            let url = row.url, key = row.compoundKey
+            let originalURL = try XCTUnwrap(original.fileURL)
+            let replacementURL = try XCTUnwrap(replacement.fileURL)
+            let retiredURL = try XCTUnwrap(retired.fileURL)
+            try await { @RealmBackgroundActor in
+                let originalRealm = try await RealmBackgroundActor.shared.cachedRealm(for: original)
+                let replacementRealm = try await RealmBackgroundActor.shared.cachedRealm(for: replacement)
+                let replacementRow = HistoryRecord()
+                replacementRow.compoundKey = key
+                replacementRow.url = url
+                replacementRow.title = "Replacement file row"
+                replacementRow.html = "<p>Replacement bytes</p>"
+                try await replacementRealm.asyncWrite {
+                    replacementRealm.add(replacementRow)
+                    replacementRow.refreshChangeMetadata(explicitlyModified: true)
+                }
+                let originalBefore = Self.snippetWriteSnapshot(in: originalRealm)
+                let replacementBefore = Self.snippetWriteSnapshot(in: replacementRealm)
+                let probe = SnippetPhysicalFileReplacementProbe(
+                    realm: originalRealm, original: originalURL, replacement: replacementURL,
+                    retired: retiredURL, afterMutation: afterMutation)
+                defer {
+                    // Restore fixture paths only after writer settlement so the
+                    // existing canonical teardown releases the correct cache keys.
+                    do { try probe.restoreFixturePaths() }
+                    catch { XCTFail("Unable to restore physical-file fixture paths: \(error)") }
+                }
+                if !atWritePermission { try probe.replaceFile() }
+                do {
+                    _ = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                        contentURL: url, storage: storage,
+                        permitsCommit: { atWritePermission ? probe.permitsCommit() : true }
+                    ) { object in
+                        object.title = "Stale file save"
+                        object.html = "<p>Must roll back</p>"
+                        return true
+                    }
+                    XCTFail("Captured snippet storage must reject physical file replacement at the same URL")
+                } catch RealmBackgroundActorError.realmFileChangedDuringOpen {
+                    // Expected: the captured inode, rather than the URL, owns this save.
+                }
+                XCTAssertNil(probe.failure)
+                XCTAssertTrue(probe.didReplace)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: replacementRealm), replacementBefore,
+                               "Replacement rows and pending mutation generations must remain untouched")
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: originalRealm), originalBefore,
+                               "This single original store must roll back provisional fields and journals")
+            }()
+        }
+    }
+
+    @MainActor
+    func testCapturedSnippetStorageRejectsPhysicalFileReplacementAfterCapture() async throws {
+        try await assertPhysicalSnippetFileReplacement(atWritePermission: false)
+    }
+
+    @MainActor
+    func testCapturedSnippetStorageRejectsPhysicalFileReplacementAtWriterAdmission() async throws {
+        try await assertPhysicalSnippetFileReplacement(atWritePermission: true)
+    }
+
+    @MainActor
+    func testCapturedSnippetStorageRejectsPhysicalFileReplacementAtFinalPermission() async throws {
+        try await assertPhysicalSnippetFileReplacement(atWritePermission: true, afterMutation: true)
+    }
+}
+
+/// Called only on RealmBackgroundActor by the actual shared snippet writer.
+/// Files are moved within unique fixture paths; existing fixture teardown owns
+/// each path, including the retained original. No replacement data is copied.
+private final class SnippetPhysicalFileReplacementProbe: @unchecked Sendable {
+    let realm: Realm
+    let original: URL, replacement: URL, retired: URL
+    let afterMutation: Bool
+    private(set) var didReplace = false
+    private var retiredOriginal = false
+    private(set) var failure: Error?
+    init(realm: Realm, original: URL, replacement: URL, retired: URL, afterMutation: Bool) {
+        self.realm = realm; self.original = original; self.replacement = replacement
+        self.retired = retired; self.afterMutation = afterMutation
+    }
+    func replaceFile() throws {
+        try FileManager.default.moveItem(at: original, to: retired)
+        retiredOriginal = true
+        try FileManager.default.moveItem(at: replacement, to: original)
+        didReplace = true
+    }
+    func restoreFixturePaths() throws {
+        if didReplace { try FileManager.default.moveItem(at: original, to: replacement) }
+        if retiredOriginal { try FileManager.default.moveItem(at: retired, to: original) }
+    }
+    func permitsCommit() -> Bool {
+        guard realm.isInWriteTransaction, !didReplace else { return true }
+        if afterMutation, !realm.objects(HistoryRecord.self).contains(where: { $0.title == "Stale file save" }) {
+            return true
+        }
+        do { try replaceFile(); return true }
+        catch { failure = error; return false }
+    }
+}

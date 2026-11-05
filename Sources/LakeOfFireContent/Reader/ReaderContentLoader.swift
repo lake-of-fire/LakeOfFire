@@ -1619,6 +1619,7 @@ This snippet loads when the pasteboard is empty in a debug build.
                 try storage.validateStorage()
                 guard storage.containsCapturedTarget(in: group.realm) else { return false }
                 guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                try storage.validateStorage()
                 // Query live records only after acquiring the write. No
                 // managed object selected before an await can be revived or
                 // mutated after another writer deletes/replaces it.
@@ -1643,6 +1644,7 @@ This snippet loads when the pasteboard is empty in a debug build.
                 try storage.validateStorage()
                 guard !Task.isCancelled, permitsCommit(),
                       storage.containsCapturedTarget(in: group.realm) else { throw CancellationError() }
+                try storage.validateStorage()
                 return changed
             }
             didChange = didChange || groupDidChange

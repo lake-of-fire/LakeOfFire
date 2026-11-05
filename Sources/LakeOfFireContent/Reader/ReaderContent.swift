@@ -40,7 +40,7 @@ private final class ReaderContentSelectionLifetime: @unchecked Sendable {
 }
 
 /// Content publication checks reentrant subscribers before committing the model.
-/// Its projected publisher retains the existing `$content` observation surface.
+/// `$content` supports subscription through AnyPublisher, not Published.Publisher.
 @propertyWrapper
 public struct ReaderContentPublication {
     fileprivate var value: (any ReaderContentProtocol)?
@@ -79,10 +79,26 @@ public class ReaderContent: ObservableObject {
         _ value: (any ReaderContentProtocol)?,
         permitsPublication: @escaping @MainActor () -> Bool = { true }
     ) -> Bool {
+        guard permitsPublication() else { return false }
+        if let value {
+            guard !value.isInvalidated, !value.isDeleted else {
+                nativeContentLifetime.withdraw()
+                return false
+            }
+            guard !ignoresTransientBlank(value.url) else { return false }
+            receiveNativeContentTarget(value.url)
+        }
+        // nil evicts the cache without changing the mounted logical content.
+        let lifetime = nativeContentLifetime
         let publicationID = UUID()
         contentPublicationID = publicationID
         func isCurrent() -> Bool {
-            contentPublicationID == publicationID && permitsPublication()
+            if let value, value.isInvalidated || value.isDeleted {
+                // Withdraw this publication's owner, never a reentrant successor.
+                lifetime.withdraw()
+                return false
+            }
+            return contentPublicationID == publicationID && permitsPublication()
         }
         guard isCurrent() else { return false }
         objectWillChange.send()
@@ -91,7 +107,12 @@ public class ReaderContent: ObservableObject {
         guard isCurrent() else {
             // Account-only withdrawal may leave no successor setter to restore
             // the publisher's replay value. Do not replay an uncommitted row.
-            if contentPublicationID == publicationID { _content.subject.send(_content.value) }
+            if contentPublicationID == publicationID {
+                if let cached = _content.value, cached.isInvalidated || cached.isDeleted {
+                    _content.value = nil
+                }
+                _content.subject.send(_content.value)
+            }
             return false
         }
         _content.value = value
@@ -103,6 +124,7 @@ public class ReaderContent: ObservableObject {
     }
 
     @Published public var pageURL = URL(string: "about:blank")! {
+        willSet { receiveNativeContentTarget(newValue) }
         didSet {
             syncLocationBarTitle()
         }
@@ -149,7 +171,11 @@ public class ReaderContent: ObservableObject {
     /// Only use this model synchronously on MainActor. Revalidate after any
     /// suspension; a valid row can still be removed while work is pending.
     public var validCachedContent: (any ReaderContentProtocol)? {
-        guard let content, !content.isInvalidated else { return nil }
+        guard let content else { return nil }
+        guard !content.isInvalidated, !content.isDeleted else {
+            nativeContentLifetime.withdraw()
+            return nil
+        }
         return content
     }
 
@@ -175,21 +201,41 @@ public class ReaderContent: ObservableObject {
     /// Never infer a fresh owner from a cached model after navigation started.
     public func makeNativeContentCommitFence(for url: URL) -> (@Sendable () -> Bool)? {
         let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
-        guard let nativeContentURL, nativeContentURL.matchesReaderURL(resolvedURL),
-              nativeContentLifetime.permitsCommit() else { return nil }
+        guard isCurrentNativeContent(resolvedURL) else { return nil }
         let lifetime = nativeContentLifetime
         return { lifetime.permitsCommit() }
     }
 
     private func receiveNativeContentTarget(_ url: URL) {
         let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
-        if resolvedURL.absoluteString == "about:blank",
-           suppressedTransientAboutBlankTargetURL != nil
-            || WebViewReaderLoadActivity.shared.hasPendingPreProvisionalLoad { return }
-        guard nativeContentURL?.matchesReaderURL(resolvedURL) != true else { return }
+        guard !ignoresTransientBlank(resolvedURL) else { return }
+        guard nativeContentURL?.matchesReaderURL(resolvedURL) != true
+            || !nativeContentLifetime.permitsCommit() else { return }
         nativeContentLifetime.withdraw()
         nativeContentLifetime = ReaderContentSelectionLifetime()
         nativeContentURL = resolvedURL
+    }
+
+    private func ignoresTransientBlank(_ url: URL) -> Bool {
+        url.absoluteString == "about:blank"
+            && (suppressedTransientAboutBlankTargetURL != nil
+                || WebViewReaderLoadActivity.shared.hasPendingPreProvisionalLoad)
+    }
+
+    /// Presentation validation for the already captured native owner. No model
+    /// instance or physical renderer identity contributes authority.
+    public func isCurrentNativeContent(_ url: URL) -> Bool {
+        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        guard nativeContentURL?.matchesReaderURL(resolvedURL) == true,
+              nativeContentLifetime.permitsCommit() else { return false }
+        if let content {
+            guard !content.isInvalidated, !content.isDeleted,
+                  content.url.matchesReaderURL(resolvedURL) else {
+                nativeContentLifetime.withdraw()
+                return false
+            }
+        }
+        return pageURL.matchesReaderURL(resolvedURL) || ignoresTransientBlank(pageURL)
     }
 
     /// Publish the durable row, including a fresh replacement for a frozen
@@ -200,9 +246,11 @@ public class ReaderContent: ObservableObject {
         _ updatedContent: any ReaderContentProtocol,
         permitsPublication: @escaping @MainActor () -> Bool
     ) -> Bool {
-        guard permitsPublication(), !updatedContent.isInvalidated,
-              makeNativeContentCommitFence(for: updatedContent.url)?() == true else { return false }
-        return setContent(updatedContent, permitsPublication: permitsPublication)
+        guard permitsPublication(), !updatedContent.isInvalidated, !updatedContent.isDeleted,
+              let fence = makeNativeContentCommitFence(for: updatedContent.url), fence() else { return false }
+        return setContent(updatedContent, permitsPublication: {
+            permitsPublication() && fence()
+        })
     }
 
     /// Called synchronously at native URL publication, before semantic deferral.
@@ -375,16 +423,7 @@ public class ReaderContent: ObservableObject {
                   resolvedContentURL.matchesReaderURL(intent.destinationURL) else { throw CancellationError() }
         }
 
-        if resolvedContentURL.absoluteString == "about:blank",
-           let suppressedTargetURL = suppressedTransientAboutBlankTargetURL,
-           suppressedTargetURL.absoluteString != "about:blank" {
-            return
-        }
-
-        if resolvedContentURL.absoluteString == "about:blank",
-           WebViewReaderLoadActivity.shared.hasPendingPreProvisionalLoad {
-            return
-        }
+        if ignoresTransientBlank(resolvedContentURL) { return }
 
         receiveNativeContentTarget(resolvedContentURL)
 
