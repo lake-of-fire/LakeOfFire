@@ -236,7 +236,22 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         let loaded = expectation(description: "generated reader document loads")
         let pending = expectation(description: "generated reader remains font pending")
         let ready = expectation(description: "actual doc-state receiver accepts current readiness")
-        let receive = try XCTUnwrap(fixture.handler.webViewMessageHandlers.handlers["readerDocState"])
+        let messageHandlers = ReaderMessageHandlers(
+            forceReaderModeWhenAvailable: false,
+            scriptCaller: fixture.handler.scriptCaller,
+            readerViewModel: fixture.handler.readerViewModel,
+            readerModeViewModel: mode,
+            readerContent: reader,
+            navigator: navigator,
+            hideNavigationDueToScroll: .constant(false),
+            showOriginalWillBeginHandler: nil,
+            navigationVisibilityWillChangeHandler: nil,
+            colorScheme: .light
+        )
+        // The production receiver captures its owner weakly; retain that owner
+        // until all actual WebKit messages have finished delivery.
+        defer { withExtendedLifetime(messageHandlers) {} }
+        let receive = try XCTUnwrap(messageHandlers.webViewMessageHandlers.handlers["readerDocState"])
         let nativeFixture = ReaderGeneratedReadinessFixture(
             html: html, loaded: loaded, pending: pending, ready: ready,
             receive: receive,
@@ -244,7 +259,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         )
         let controller = WKUserContentController()
         controller.add(nativeFixture, name: "readerDocState")
-        let script = ReaderDocStateUserScript().userScript
+        var script = ReaderDocStateUserScript().userScript
         controller.addUserScript(script.webKitUserScript)
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = controller
