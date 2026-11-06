@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import ZIPFoundation
 import RealmSwift
 import RealmSwiftGaps
 import BigSyncKit
@@ -274,6 +275,114 @@ final class EbookMetadataEnrichmentTests: XCTestCase {
             XCTAssertNil(file.imageUrl)
             XCTAssertNotNil(file.fileMetadataRefreshedAt)
             XCTAssertNotNil(self.generation(file, in: f.realm))
+        }
+    }
+
+    @RealmBackgroundActor
+    func testZIPAndDirectoryCoverRevisionTracksCompleteBytesAndPreservesIdenticalBytes() async throws {
+        for packed in [false, true] {
+            try await withFixture { f in
+                let path = f.root.appendingPathComponent("cover.epub")
+                // Equal-sized payloads differ only beyond the first read chunk.
+                // The entry reader admits bytes; image decoding is a separate boundary.
+                var firstBytes = Data(repeating: 0x41, count: 70_000)
+                firstBytes.append(0x01)
+                var secondBytes = firstBytes
+                secondBytes[secondBytes.count - 1] = 0x02
+                try self.writeCoveredEPUB(at: path, packed: packed, cover: firstBytes)
+                let file = try await self.seed("cover", in: f.realm)
+                let firstDeferred = try await EbookFileManager.enrichMetadata([file], status: { _ in .localOnly })
+                XCTAssertTrue(firstDeferred.isEmpty)
+                let firstURL = try XCTUnwrap(file.imageUrl)
+                let firstComponents = try XCTUnwrap(URLComponents(url: firstURL, resolvingAgainstBaseURL: false))
+                XCTAssertEqual(firstComponents.queryItems?.first(where: { $0.name == "subpath" })?.value, "Images/cover.jpg")
+                XCTAssertEqual(firstComponents.queryItems?.first(where: { $0.name == "cover-revision" })?.value?.count, 64)
+
+                try self.writeCoveredEPUB(at: path, packed: packed, cover: secondBytes)
+                let secondDeferred = try await EbookFileManager.enrichMetadata([file], status: { _ in .localOnly })
+                XCTAssertTrue(secondDeferred.isEmpty)
+                let secondURL = try XCTUnwrap(file.imageUrl)
+                XCTAssertNotEqual(firstURL, secondURL, "Changed cover bytes must change ReaderImage's request URL")
+                XCTAssertEqual(firstURL.path, secondURL.path)
+                let secondComponents = try XCTUnwrap(URLComponents(url: secondURL, resolvingAgainstBaseURL: false))
+                XCTAssertEqual(secondComponents.queryItems?.first(where: { $0.name == "subpath" })?.value, "Images/cover.jpg")
+
+                let generation = self.generation(file, in: f.realm)
+                let modifiedAt = file.modifiedAt
+                try self.writeCoveredEPUB(at: path, packed: packed, cover: secondBytes)
+                let unchangedDeferred = try await EbookFileManager.enrichMetadata([file], status: { _ in .localOnly })
+                XCTAssertTrue(unchangedDeferred.isEmpty)
+                XCTAssertEqual(file.imageUrl, secondURL)
+                XCTAssertEqual(file.modifiedAt, modifiedAt)
+                XCTAssertEqual(self.generation(file, in: f.realm), generation)
+            }
+        }
+    }
+
+    @RealmBackgroundActor
+    func testZIPAndDirectoryUnreadableOptionalCoverPreservesImageAndEnrichesMetadata() async throws {
+        for packed in [false, true] {
+            try await withFixture { f in
+                try self.writeCoveredEPUB(at: f.root.appendingPathComponent("missing.epub"), packed: packed, cover: nil)
+                let file = try await self.seed("missing", in: f.realm)
+                let previousImage = URL(string: "reader-file://file/load/local/missing.epub?subpath=old.jpg")!
+                try await EbookFileManager.applyMetadataUpdates(
+                    images: [(file, previousImage)], titles: [], authors: [], publicationDates: [], physicalMedia: []
+                )
+                let deferred = try await EbookFileManager.enrichMetadata([file], status: { _ in .localOnly })
+                XCTAssertTrue(deferred.isEmpty)
+                XCTAssertEqual(file.title, "Covered title")
+                XCTAssertEqual(file.author, "Cover author")
+                XCTAssertTrue(file.isPhysicalMedia)
+                XCTAssertEqual(file.imageUrl, previousImage)
+            }
+        }
+    }
+
+    @RealmBackgroundActor
+    func testZIPAndDirectoryCancellationAfterCoverPreparationDoesNotPublishPartialMetadata() async throws {
+        for packed in [false, true] {
+            try await withFixture { f in
+                try self.writeCoveredEPUB(at: f.root.appendingPathComponent("first.epub"), packed: packed, cover: Data([1, 2, 3]))
+                try self.writeCoveredEPUB(at: f.root.appendingPathComponent("second.epub"), packed: packed, cover: Data([4, 5, 6]))
+                let first = try await self.seed("first", in: f.realm)
+                let second = try await self.seed("second", in: f.realm)
+                let before = self.generation(first, in: f.realm)
+                do {
+                    _ = try await EbookFileManager.enrichMetadata([first, second], status: { url in
+                        if url.lastPathComponent == "second.epub" { throw CancellationError() }
+                        return .localOnly
+                    })
+                    XCTFail("Cancellation must not publish the earlier prepared cover or metadata")
+                } catch is CancellationError {} catch { XCTFail("Unexpected error: \(error)") }
+                XCTAssertEqual(first.title, "Before")
+                XCTAssertEqual(first.author, "")
+                XCTAssertNil(first.imageUrl)
+                XCTAssertFalse(first.isPhysicalMedia)
+                XCTAssertEqual(self.generation(first, in: f.realm), before)
+                XCTAssertEqual(second.title, "Before")
+                XCTAssertNil(second.imageUrl)
+            }
+        }
+    }
+
+    private func writeCoveredEPUB(at target: URL, packed: Bool, cover: Data?) throws {
+        if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+        let directory = packed
+            ? target.deletingLastPathComponent().appendingPathComponent(UUID().uuidString, isDirectory: true)
+            : target
+        defer { if packed { try? FileManager.default.removeItem(at: directory) } }
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent("META-INF"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent("Images"), withIntermediateDirectories: true)
+        try Data("""
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>
+        """.utf8).write(to: directory.appendingPathComponent("META-INF/container.xml"))
+        try Data("""
+        <package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0"><metadata><dc:title>Covered title</dc:title><dc:creator>Cover author</dc:creator></metadata><manifest><item id="cover" href="Images/cover.jpg" properties="cover-image" media-type="image/jpeg"/></manifest></package>
+        """.utf8).write(to: directory.appendingPathComponent("book.opf"))
+        if let cover { try cover.write(to: directory.appendingPathComponent("Images/cover.jpg")) }
+        if packed {
+            try FileManager.default.zipItem(at: directory, to: target, shouldKeepParent: false, compressionMethod: .deflate)
         }
     }
 
