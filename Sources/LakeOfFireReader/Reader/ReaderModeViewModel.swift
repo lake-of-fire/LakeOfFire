@@ -1269,22 +1269,19 @@ private func propagateReaderModeDefaults(
     fallbackTitle: String?,
     derivedTitle: String? = nil,
     permitsCommit: @escaping @Sendable () -> Bool
-) async {
+) async throws {
     guard !url.isSnippetURL, permitsCommit(), !Task.isCancelled else { return }
     let storageReadabilityHTML = stripRuntimeReadabilityAssets(from: readabilityHTML)
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle
-    do {
-        try await ReaderContentLoader.propagateReaderModeDefaults(
-            for: url,
-            excludingPrimaryKey: primaryKey,
-            primaryClassName: primaryClassName,
-            readabilityHTML: storageReadabilityHTML,
-            resolvedTitle: resolvedTitle,
-            permitsCommit: permitsCommit
-        )
-    } catch {
-        // Propagation is optional; never let its failure publish a retired render.
-    }
+    try await ReaderContentLoader.propagateReaderModeDefaults(
+        for: url,
+        excludingPrimaryKey: primaryKey,
+        primaryClassName: primaryClassName,
+        readabilityHTML: storageReadabilityHTML,
+        resolvedTitle: resolvedTitle,
+        account: ReaderModeProcessingAccountContext.account.map { ($0.access, $0.snapshot) },
+        permitsCommit: permitsCommit
+    )
 }
 
 // Shared DOM operations used by the native prepared dispatcher and the
@@ -1428,6 +1425,28 @@ func readerModeReadyGenerationIsCurrent(
     return reportedGeneration == nil
 }
 
+/// The account that initiated one foreground render, captured before suspension.
+/// Core consumes this same value through admission retries and native publication.
+@_spi(ReaderProcessing)
+public struct ReaderModeProcessingAccount: Sendable {
+    public let access: AccountSessionAccess
+    public let snapshot: AccountSessionSnapshot
+
+    public init(access: AccountSessionAccess) {
+        self.access = access
+        snapshot = access.snapshot
+    }
+
+    public var isCurrent: Bool {
+        snapshot.identity != .transitioning && access.snapshot == snapshot
+    }
+}
+
+@_spi(ReaderProcessing)
+public enum ReaderModeProcessingAccountContext {
+    @TaskLocal public static var account: ReaderModeProcessingAccount?
+}
+
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
@@ -1491,6 +1510,18 @@ public class ReaderModeViewModel: ObservableObject {
     public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil {
         willSet { processingDependencyWillChange() }
     }
+    /// The host's causal account boundary, retained by active and completed renders.
+    /// Hosts without account state may leave this unset.
+    public var readerAccountSessionAccess: AccountSessionAccess? {
+        willSet {
+            if newValue?.boundaryID != readerAccountSessionAccess?.boundaryID {
+                // Replacing the host Session retires work even when both
+                // snapshots happen to have the same user and generation.
+                for render in activeRendersByURL.values { render.task.cancel() }
+            }
+        }
+    }
+
     public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil {
         willSet { processingDependencyWillChange() }
     }
@@ -1570,12 +1601,16 @@ public class ReaderModeViewModel: ObservableObject {
     private struct CompletedRenderOwner: Equatable {
         let key: String
         let generation: UUID
+        let accountSession: AccountSessionSnapshot?
+        let accountBoundaryID: AccountSessionBoundaryID?
     }
 
     private struct ActiveRender {
         let task: Task<Void, Never>
         let generation: UUID
         let originatingContentIsCurrent: @MainActor () -> Bool
+        let accountSession: AccountSessionSnapshot?
+        let accountBoundaryID: AccountSessionBoundaryID?
     }
 
     private var activeRendersByURL: [String: ActiveRender] = [:]
@@ -1666,6 +1701,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func markReaderModeLoadComplete(for url: URL) {
+        guard renderAccountIsCurrent(for: url) else { return }
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let matchesPending = pendingKeysMatch(pendingReaderModeURL, canonicalURL)
         let matchesLastRendered = pendingKeysMatch(lastRenderedURL, canonicalURL)
@@ -1684,10 +1720,12 @@ public class ReaderModeViewModel: ObservableObject {
         expectedSyntheticReaderLoaderURL = nil
         readerModeLoading(false)
         let renderKey = canonicalRenderKey(canonicalURL)
-        if let activeGeneration = activeRendersByURL[renderKey]?.generation {
+        if let activeRender = activeRendersByURL[renderKey] {
             completedRenderOwner = CompletedRenderOwner(
                 key: renderKey,
-                generation: activeGeneration
+                generation: activeRender.generation,
+                accountSession: activeRender.accountSession,
+                accountBoundaryID: activeRender.accountBoundaryID
             )
         }
         lastRenderedURL = canonicalURL
@@ -1865,7 +1903,14 @@ public class ReaderModeViewModel: ObservableObject {
         requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil
     ) async {
         let bindingToken = bindingToken ?? scriptCaller.currentJavaScriptBindingToken
-        guard pageURL.absoluteString != "about:blank" else {
+        let accountSession = readerAccountSessionAccess?.snapshot
+        let accountBoundaryID = readerAccountSessionAccess?.boundaryID
+        let accountIsCurrent = { @MainActor in
+            self.readerAccountSessionAccess?.snapshot == accountSession
+                && self.readerAccountSessionAccess?.boundaryID == accountBoundaryID
+                && self.renderAccountIsCurrent(for: pageURL)
+        }
+        guard accountIsCurrent(), pageURL.absoluteString != "about:blank" else {
             return
         }
         let fontValues = readerFontCSSValues(horizontalFamily: readerFontFamilyName)
@@ -2003,6 +2048,7 @@ public class ReaderModeViewModel: ObservableObject {
                 });
             })();
             """
+            guard accountIsCurrent() else { return }
             _ = try? await evaluateReaderDocumentJavaScript(
                 js,
                 arguments: [
@@ -2193,6 +2239,7 @@ public class ReaderModeViewModel: ObservableObject {
             });
         })();
         """
+        guard accountIsCurrent() else { return }
         _ = try? await evaluateReaderDocumentJavaScript(
             js,
             arguments: [
@@ -2280,6 +2327,7 @@ public class ReaderModeViewModel: ObservableObject {
         reportedGeneration: UUID?
     ) -> Bool {
         let key = canonicalRenderKey(url)
+        guard renderAccountIsCurrent(for: url) else { return false }
         return readerModeReadyGenerationIsCurrent(
             activeGeneration: activeRendersByURL[key]?.generation,
             completedGeneration: completedRenderOwner?.key == key
@@ -2287,6 +2335,23 @@ public class ReaderModeViewModel: ObservableObject {
                 : nil,
             reportedGeneration: reportedGeneration
         )
+    }
+
+    private func renderAccountIsCurrent(for url: URL) -> Bool {
+        let key = canonicalRenderKey(url)
+        let accountSession: AccountSessionSnapshot?
+        let accountBoundaryID: AccountSessionBoundaryID?
+        if let render = activeRendersByURL[key] {
+            accountSession = render.accountSession
+            accountBoundaryID = render.accountBoundaryID
+        } else if let completed = completedRenderOwner, completed.key == key {
+            accountSession = completed.accountSession
+            accountBoundaryID = completed.accountBoundaryID
+        } else {
+            return true
+        }
+        return readerAccountSessionAccess?.snapshot == accountSession
+            && readerAccountSessionAccess?.boundaryID == accountBoundaryID
     }
 
     private func urlMatchesLastRendered(_ url: URL) -> Bool {
@@ -2312,8 +2377,10 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func isCurrentRender(for url: URL, generation: UUID) -> Bool {
-        readerModeRenderGenerationIsCurrent(
-            activeGeneration: activeRendersByURL[canonicalRenderKey(url)]?.generation,
+        guard let render = activeRendersByURL[canonicalRenderKey(url)],
+              render.originatingContentIsCurrent() else { return false }
+        return readerModeRenderGenerationIsCurrent(
+            activeGeneration: render.generation,
             expectedGeneration: generation,
             taskIsCancelled: Task.isCancelled
         )
@@ -2339,6 +2406,9 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     private func shouldSkipDuplicateLoaderRender(for url: URL) -> (skip: Bool, reason: String) {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
+        guard renderAccountIsCurrent(for: canonicalURL) else {
+            return (false, "retiredAccount")
+        }
         if hasActiveRender(for: canonicalURL) {
             return (true, "activeRender")
         }
@@ -2357,7 +2427,11 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         if !render.task.isCancelled, render.originatingContentIsCurrent() {
-            completedRenderOwner = CompletedRenderOwner(key: key, generation: generation)
+            completedRenderOwner = CompletedRenderOwner(
+                key: key, generation: generation,
+                accountSession: render.accountSession,
+                accountBoundaryID: render.accountBoundaryID
+            )
         }
         activeRendersByURL.removeValue(forKey: key)
     }
@@ -2382,6 +2456,7 @@ public class ReaderModeViewModel: ObservableObject {
     private func startRenderTaskIfNeeded(
         for url: URL,
         originatingContentIsCurrent: @escaping @MainActor () -> Bool,
+        processingAccount: ReaderModeProcessingAccount?,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
@@ -2400,13 +2475,17 @@ public class ReaderModeViewModel: ObservableObject {
         completedRenderOwner = nil
         let task = Task { @ReaderViewModelActor [weak self] in
             guard let self else { return }
-            await operation(generation)
+            await ReaderModeProcessingAccountContext.$account.withValue(processingAccount) {
+                await operation(generation)
+            }
             await self.finishRenderTask(for: canonicalURL, generation: generation)
         }
         activeRendersByURL[key] = ActiveRender(
             task: task,
             generation: generation,
-            originatingContentIsCurrent: originatingContentIsCurrent
+            originatingContentIsCurrent: originatingContentIsCurrent,
+            accountSession: processingAccount?.snapshot,
+            accountBoundaryID: processingAccount?.access.boundaryID
         )
         return true
     }
@@ -2554,8 +2633,14 @@ public class ReaderModeViewModel: ObservableObject {
         let requiresOriginalFrameBinding = cachedContainerFrameInfo?.isMainFrame == false
         let initialContent = readerContent.content
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
+        let processingAccount = readerAccountSessionAccess.map(ReaderModeProcessingAccount.init(access:))
+        guard processingAccount?.isCurrent != false else { return }
+        let accountSession = processingAccount?.snapshot
+        let accountBoundaryID = processingAccount?.access.boundaryID
         let originatingContentIsCurrent = { @MainActor in
-            selectionIsCurrent()
+            self.readerAccountSessionAccess?.snapshot == accountSession
+                && self.readerAccountSessionAccess?.boundaryID == accountBoundaryID
+                && selectionIsCurrent()
                 && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
                 && (initialContent.map { self.readerModeContentIsCurrent($0, readerContent: readerContent) } ?? true)
                 && initialContent?.isInvalidated != true
@@ -2566,7 +2651,8 @@ public class ReaderModeViewModel: ObservableObject {
         beginReaderModeLoad(for: contentURL)
         startRenderTaskIfNeeded(
             for: contentURL,
-            originatingContentIsCurrent: originatingContentIsCurrent
+            originatingContentIsCurrent: originatingContentIsCurrent,
+            processingAccount: processingAccount
         ) { [weak self] generation in
             guard let self else { return }
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
@@ -2683,7 +2769,12 @@ public class ReaderModeViewModel: ObservableObject {
         readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller
     ) async -> Bool {
-        guard let content = try? await readerContent.getContent() else {
+        let accountSession = readerAccountSessionAccess?.snapshot
+        let accountBoundaryID = readerAccountSessionAccess?.boundaryID
+        guard let content = try? await readerContent.getContent(),
+              !Task.isCancelled,
+              readerAccountSessionAccess?.snapshot == accountSession,
+              readerAccountSessionAccess?.boundaryID == accountBoundaryID else {
             return false
         }
         guard content.url.isSnippetURL else {
@@ -2977,10 +3068,11 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         if needsAsyncWrite {
-            try await content.asyncWrite { _, content in
-                // Realm can begin this transaction after the page was replaced.
-                // The captured lifetime is safe to query off the main actor.
-                guard selectionIsCurrent() else { return }
+            let processingAccount = ReaderModeProcessingAccountContext.account
+            try await content.asyncWrite(
+                account: processingAccount.map { ($0.access, $0.snapshot) }
+            ) { _, content in
+                guard selectionIsCurrent(), !Task.isCancelled else { throw CancellationError() }
                 content.isReaderModeByDefault = true
                 content.isReaderModeAvailable = false
                 content.isReaderModeOfferHidden = false
@@ -2994,6 +3086,7 @@ public class ReaderModeViewModel: ObservableObject {
                     content.rssContainsFullContent = true
                 }
                 content.refreshChangeMetadata(explicitlyModified: true)
+                guard selectionIsCurrent(), !Task.isCancelled else { throw CancellationError() }
             }
         }
 
@@ -3103,7 +3196,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
-            await propagateReaderModeDefaults(
+            try await propagateReaderModeDefaults(
                 for: url,
                 primaryKey: primaryRecordCompoundKey,
                 primaryClassName: primaryRecordClassName,
@@ -3501,9 +3594,13 @@ public class ReaderModeViewModel: ObservableObject {
         
         let committedURL = content.url
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
+        let accountSession = readerAccountSessionAccess?.snapshot
+        let accountBoundaryID = readerAccountSessionAccess?.boundaryID
         let requireCurrentDocument = { @MainActor in
             try Task.checkCancellation()
-            guard !content.isInvalidated,
+            guard self.readerAccountSessionAccess?.snapshot == accountSession,
+                  self.readerAccountSessionAccess?.boundaryID == accountBoundaryID,
+                  !content.isInvalidated,
                   let currentContent = readerContent.validCachedContent,
                   // Match ReaderContent's selection ownership: a new cached
                   // wrapper does not inherit a suspended callback's authority.
@@ -3630,12 +3727,20 @@ public class ReaderModeViewModel: ObservableObject {
         documentIsCurrent: @MainActor () -> Bool = { true }
     ) async {
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
+        let accountSession = readerAccountSessionAccess?.snapshot
+        let accountBoundaryID = readerAccountSessionAccess?.boundaryID
+        let accountIsCurrent = { @MainActor in
+            self.readerAccountSessionAccess?.snapshot == accountSession
+                && self.readerAccountSessionAccess?.boundaryID == accountBoundaryID
+                && self.renderAccountIsCurrent(for: newState.pageURL)
+        }
+        guard accountIsCurrent() else { return }
         await injectSharedFontIfNeeded(
             scriptCaller: scriptCaller,
             pageURL: newState.pageURL,
             requiring: navigationBindingToken
         )
-        guard !Task.isCancelled, documentIsCurrent(),
+        guard !Task.isCancelled, documentIsCurrent(), accountIsCurrent(),
               ownsReaderDocumentBinding(
                 navigationBindingToken,
                 scriptCaller: scriptCaller
@@ -3673,7 +3778,7 @@ public class ReaderModeViewModel: ObservableObject {
                     scriptCaller: scriptCaller,
                     requiring: navigationBindingToken
                 )
-                guard !Task.isCancelled, documentIsCurrent(),
+                guard !Task.isCancelled, documentIsCurrent(), accountIsCurrent(),
                       ownsReaderDocumentBinding(
                         navigationBindingToken,
                         scriptCaller: scriptCaller
@@ -3685,7 +3790,7 @@ public class ReaderModeViewModel: ObservableObject {
                     readerModeLoading(false)
                 }
             } catch {
-                guard !Task.isCancelled, documentIsCurrent(),
+                guard !Task.isCancelled, documentIsCurrent(), accountIsCurrent(),
                       ownsReaderDocumentBinding(
                         navigationBindingToken,
                         scriptCaller: scriptCaller

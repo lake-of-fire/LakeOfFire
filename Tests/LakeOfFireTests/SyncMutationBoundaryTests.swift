@@ -1079,7 +1079,7 @@ final class SyncMutationBoundaryTests: XCTestCase {
 
 /// Holds a synchronous transaction on its own queue and Realm. Its transaction
 /// never suspends an actor or crosses a task boundary.
-private final class BookmarkWriterOwnerBarrier: @unchecked Sendable {
+final class BookmarkWriterOwnerBarrier: @unchecked Sendable {
     let entered = XCTestExpectation(description: "External bookmark writer owner entered")
     private let queue = DispatchQueue(label: "LakeOfFireTests.bookmark-external-owner")
     private let releaseSemaphore = DispatchSemaphore(value: 0)
