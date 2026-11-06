@@ -44,6 +44,27 @@ final class ReaderDocumentMutationAdmissionTests: XCTestCase {
         ))
     }
 
+    func testMissingMainDocumentURLAcceptsOnlyActualMainFrameRequest() {
+        XCTAssertEqual(ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: nil, requestURL: current, isMainFrame: true
+        ), current)
+        XCTAssertNil(ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: nil, requestURL: current, isMainFrame: false
+        ))
+        XCTAssertNil(ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: nil, requestURL: nil, isMainFrame: true
+        ))
+        let stale = URL(string: "https://example.com/previous")!
+        let provenance = ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: stale, requestURL: current, isMainFrame: true
+        )
+        XCTAssertEqual(provenance, stale)
+        XCTAssertFalse(ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+            claimedURL: current, frameMainDocumentURL: provenance,
+            currentPageURL: current, requiresMainFrame: true, isMainFrame: true
+        ))
+    }
+
     func testFrameTargetCannotNameAnUnrelatedRecord() {
         XCTAssertTrue(ReaderDocumentMutationAdmission.acceptsFrameTarget(
             claimedFrameURL: URL(string: "https://www.youtube.com/watch?v=abcdefghijk#captions"),
@@ -100,11 +121,19 @@ extension ReaderDocumentMutationAdmissionTests {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(probe, name: "receiptFrame")
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.loadHTMLString("<html><body><script>window.webkit.messageHandlers.receiptFrame.postMessage('ready')</script></body></html>", baseURL: url)
+        // A simulated navigation supplies real request provenance; loadHTMLString's
+        // base URL alone does not establish a mainDocumentURL on current WebKit.
+        var request = URLRequest(url: url)
+        request.mainDocumentURL = url
+        webView.loadSimulatedRequest(request, responseHTML:
+            "<html><body><script>window.webkit.messageHandlers.receiptFrame.postMessage('ready')</script></body></html>")
         await fulfillment(of: [received], timeout: 5)
         let frame = try XCTUnwrap(captured)
         XCTAssertTrue(frame.isMainFrame)
-        XCTAssertEqual(frame.request.mainDocumentURL?.removingFragmentIfNeeded(), url)
+        XCTAssertEqual(ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: frame.request.mainDocumentURL,
+            requestURL: frame.request.url, isMainFrame: frame.isMainFrame
+        )?.removingFragmentIfNeeded(), url)
         return (webView, frame)
     }
 

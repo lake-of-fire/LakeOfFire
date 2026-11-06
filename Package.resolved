@@ -1,5 +1,5 @@
 {
-  "originHash" : "1d69a2825aee20b7dc7f1f75d2e8582e82e46cc7b883fa95caff28274725d334",
+  "originHash" : "09e44675869c6f9f1e973eaafcbd09ae2118d91150f1afed0617a78557398b78",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -221,8 +221,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/sqlite-data.git",
       "state" : {
-        "revision" : "93e0540441a6bfdba51df27ca6d01eb6508c82a5",
-        "version" : "1.7.0"
+        "revision" : "26471412f457f2c640bf5759a63870353a19f9e1",
+        "version" : "1.8.2"
       }
     },
     {
@@ -397,21 +397,11 @@
       }
     },
     {
-      "identity" : "swiftbackports",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/shaps80/SwiftBackports",
-      "state" : {
-        "revision" : "19ce89c82df9c042f4153d204c03fc904cab9c98",
-        "version" : "26.0.1"
-      }
-    },
-    {
       "identity" : "swiftclouddrive",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lake-of-fire/SwiftCloudDrive.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "0a84ea27d394fe0ed92e9b7809d84cfaa1942442"
+        "revision" : "5f0d30e0e39fe9fd09e71b6ff1c01b444d8bdb9a"
       }
     },
     {
@@ -439,15 +429,6 @@
       "state" : {
         "revision" : "26986a57e31c813f98262ddb62d4b07d40008535",
         "version" : "26.0.1"
-      }
-    },
-    {
-      "identity" : "swiftuibackports",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/shaps80/SwiftUIBackports.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "173badb970b9645d921554f9aec381c643c4f823"
       }
     },
     {
