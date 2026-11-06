@@ -1151,8 +1151,12 @@ final class ReaderSnippetTitleTests: XCTestCase {
             let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "title-only"))
             let snippet = try XCTUnwrap(loaded)
             let rawHTML = "<html><head></head><body><div class='mnb-snippet'><p>Keep body bytes.</p></div></body></html>\n"
-            let editorHTML = ReaderContentLoader.snippetHTML(fromHTML: rawHTML)
-            XCTAssertNotEqual(rawHTML, editorHTML)
+            // Model editor serialization explicitly: normalization now preserves
+            // already-wrapped HTML, while an unchanged editor may format it differently.
+            let editorHTML = try SwiftSoup.parse(rawHTML).outerHtml()
+            XCTAssertNotEqual(Array(rawHTML.utf8), Array(editorHTML.utf8))
+            XCTAssertEqual(try SwiftSoup.parse(rawHTML).body()?.text(),
+                           try SwiftSoup.parse(editorHTML).body()?.text())
             let snippetKey = snippet.compoundKey
             try await { @RealmBackgroundActor in
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
