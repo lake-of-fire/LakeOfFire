@@ -4149,7 +4149,7 @@ private final class ReaderPreparationRetryUITestModel: ObservableObject {
     private enum InjectedFailure: Error { case requiredPreparation }
     let mode = ReaderModeViewModel()
     let reader = ReaderContent()
-    let viewModel = ReaderViewModel()
+    let viewModel = ReaderViewModel(systemScripts: [])
     let media = ReaderMediaPlayerViewModel()
     let navigator = WebViewNavigator()
     let caller = WebViewScriptCaller()
