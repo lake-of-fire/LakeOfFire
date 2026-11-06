@@ -11,6 +11,30 @@ import LakeOfFireCore
 import SwiftSoup
 
 final class ReaderSnippetTitleTests: XCTestCase {
+
+    func testStrippingRubyKeepsLiteralMarkupAndEntityText() {
+        let cases = [
+            ("前<ruby>&lt;猫&gt;<rt>ねこ</rt></ruby>後", "前<猫>後"),
+            ("<ruby>&amp;copy;<rt>読み</rt></ruby>", "&copy;"),
+            ("<ruby>&lt;b&gt;語&lt;/b&gt;<rp>(</rp><rt>ご</rt><rp>)</rp></ruby>", "<b>語</b>"),
+            ("<ruby>&amp;lt;猫&amp;gt;<rtc><rt>ねこ</rt></rtc></ruby>", "&lt;猫&gt;")
+        ]
+        for (html, expected) in cases {
+            XCTAssertEqual(html.strippingHTML(), expected, html)
+        }
+    }
+
+    func testStrippingRubyPreservesSurfaceFormattingAndNormalText() {
+        XCTAssertEqual(
+            "<p>前<ruby><strong>漢</strong>字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>後</p>".strippingHTML(),
+            "前漢字後"
+        )
+        XCTAssertEqual("<ruby>猫<rt>ねこ</rt></ruby>と<ruby>犬<rt>いぬ</rt></ruby>".strippingHTML(), "猫と犬")
+        XCTAssertEqual("<p>&lt;猫&gt; &amp;copy;</p>".strippingHTML(), "<猫> &copy;")
+        XCTAssertEqual("普通のテキスト".strippingHTML(), "普通のテキスト")
+    }
+
+
     func testReaderLoaderBuilderProducesOnlyRecoverableContentURLs() throws {
         let webURL = try XCTUnwrap(URL(
             string: "https://example.org/read?chapter=1&source=a%26b#part"
