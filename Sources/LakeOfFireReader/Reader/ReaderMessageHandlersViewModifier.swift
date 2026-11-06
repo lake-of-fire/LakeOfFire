@@ -930,10 +930,12 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                 guard receiptIsCurrent() else { return }
                 readerContent.refreshObservedContentState()
             }),
-            ("showOriginal", { @MainActor [weak self] _ in
-                guard let self else { return }
+            ("showOriginal", { @MainActor [weak self] message in
+                guard let self, let binding = message.javaScriptBindingToken else { return }
                 do {
-                    try await showOriginal()
+                    try await showOriginal(requiring: binding)
+                } catch is CancellationError {
+                    return
                 } catch {
                     print(error)
                 }
@@ -1232,20 +1234,75 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
     // MARK: Readability
     
     @MainActor
-    func showOriginal() async throws {
-        let contentURL = readerContent.content?.url
-            ?? ReaderContentLoader.getContentURL(fromLoaderURL: readerContent.pageURL)
-            ?? readerContent.pageURL
+    func showOriginal(requiring binding: WebViewScriptCaller.JavaScriptBindingToken) async throws {
+        try Task.checkCancellation()
+        let readerContent = self.readerContent
+        let scriptCaller = self.scriptCaller
+        let readerViewModel = self.readerViewModel
+        let readerModeViewModel = self.readerModeViewModel
+        let navigator = self.navigator
+        let willBegin = self.showOriginalWillBeginHandler
+        let pageURL = readerContent.pageURL
+        let selectionIsCurrent = readerContent.makeSelectionCommitFence(
+            requiring: readerContent.currentSelectionID
+        )
+        let content = readerContent.validCachedContent
+        // An invalidated managed row cannot provide its URL, flags or Realm.
+        guard readerContent.content == nil || content != nil else { throw CancellationError() }
+        let contentURL = content?.url
+            ?? ReaderContentLoader.getContentURL(fromLoaderURL: pageURL)
+            ?? pageURL
+        let contentRealm = content?.realm
+        let processingAccount = readerModeViewModel.readerAccountSessionAccess.map(ReaderModeProcessingAccount.init(access:))
+        let ownerLifetime = readabilityOwnerLifetime
+        guard let bindingIsCurrent = scriptCaller.makeJavaScriptBindingCommitFence(requiring: binding) else {
+            throw CancellationError()
+        }
+        let permitsCommit: @Sendable () -> Bool = {
+            ownerLifetime.permitsCommit() && selectionIsCurrent() && bindingIsCurrent()
+                && processingAccount?.isCurrent != false
+        }
+        @MainActor func requireCurrentAction() throws {
+            try Task.checkCancellation()
+            guard self.readerContent === readerContent,
+                  self.scriptCaller === scriptCaller,
+                  self.readerViewModel === readerViewModel,
+                  self.readerModeViewModel === readerModeViewModel,
+                  self.navigator === navigator,
+                  readerModeViewModel.readerAccountSessionAccess?.snapshot == processingAccount?.snapshot,
+                  readerModeViewModel.readerAccountSessionAccess?.boundaryID == processingAccount?.access.boundaryID,
+                  permitsCommit(),
+                  readerContent.pageURL.matchesReaderURL(pageURL),
+                  scriptCaller.currentJavaScriptBindingToken == binding else {
+                throw CancellationError()
+            }
+            let currentContent = readerContent.validCachedContent
+            if let content {
+                guard let currentContent, currentContent === content else { throw CancellationError() }
+            } else {
+                guard readerContent.content == nil else { throw CancellationError() }
+            }
+        }
+        try requireCurrentAction()
         let hasCapturedReadabilityContent =
             readerModeViewModel.readabilityContent?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        let shouldRestoreStoredFullContent = readerContent.content?.rssContainsFullContent == true
+        let shouldRestoreStoredFullContent = content?.rssContainsFullContent == true
         if shouldRestoreStoredFullContent {
             readerModeViewModel.readabilityContent = nil
+            try requireCurrentAction()
             readerModeViewModel.readabilityContainerSelector = nil
+            try requireCurrentAction()
             readerModeViewModel.readabilityContainerFrameInfo = nil
+            try requireCurrentAction()
         }
-        await showOriginalWillBeginHandler?(contentURL, readerContent.pageURL)
-        try await ReaderContentLoader.updateContent(url: contentURL) { object in
+        try requireCurrentAction()
+        await willBegin?(contentURL, pageURL)
+        try requireCurrentAction()
+        try await ReaderContentLoader.updateContent(
+            url: contentURL,
+            account: processingAccount.map { (access: $0.access, snapshot: $0.snapshot) },
+            permitsCommit: permitsCommit
+        ) { object in
             let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
                 currentFlags: ReaderHTTPErrorRecoveryPolicy.ReaderModeFlags(
                     isReaderModeByDefault: object.isReaderModeByDefault,
@@ -1260,7 +1317,9 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
             object.isReaderModeOfferHidden = update.flags.isReaderModeOfferHidden
             return update.didChange
         }
-        await readerContent.content?.realm?.asyncRefresh()
+        try requireCurrentAction()
+        await contentRealm?.asyncRefresh()
+        try requireCurrentAction()
         navigator.reload()
     }
 
