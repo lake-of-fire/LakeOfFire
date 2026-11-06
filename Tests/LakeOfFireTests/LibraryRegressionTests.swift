@@ -933,6 +933,91 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         return fileURL
     }
 
+
+    @RealmBackgroundActor
+    func testOPMLImportPreservesUTF16LittleEndianBytes() async throws {
+        try await verifyEncodedOPMLImport(encoding: .utf16LittleEndian, declaration: "UTF-16",
+                                         byteOrderMark: Data([0xff, 0xfe]))
+    }
+
+    @RealmBackgroundActor
+    func testOPMLImportPreservesUTF16BigEndianBytes() async throws {
+        try await verifyEncodedOPMLImport(encoding: .utf16BigEndian, declaration: "UTF-16",
+                                         byteOrderMark: Data([0xfe, 0xff]))
+    }
+
+    @RealmBackgroundActor
+    func testOPMLImportPreservesDeclaredLatin1Characters() async throws {
+        try await verifyEncodedOPMLImport(encoding: .isoLatin1, declaration: "ISO-8859-1",
+                                         title: "Café et français")
+    }
+
+    @RealmBackgroundActor
+    func testOPMLImportPreservesUTF8Characters() async throws {
+        try await verifyEncodedOPMLImport(encoding: .utf8, declaration: "UTF-8")
+    }
+
+    @RealmBackgroundActor
+    private func verifyEncodedOPMLImport(
+        encoding: String.Encoding,
+        declaration: String,
+        byteOrderMark: Data = Data(),
+        title: String = "日本語と café"
+    ) async throws {
+        let configuration = makeOPMLConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let categoryID = UUID()
+        let feedID = UUID()
+        let sourceURL = try XCTUnwrap(URL(string: "https://example.com/café/feed.xml"))
+        let xml = """
+        <?xml version="1.0" encoding="\(declaration)"?>
+        <opml version="2.0"><head/><body>
+          <outline text="\(title)" uuid="\(categoryID.uuidString)">
+            <outline text="\(title) feed" uuid="\(feedID.uuidString)" xmlUrl="https://example.com/café/feed.xml"/>
+          </outline>
+        </body></opml>
+        """
+        var bytes = byteOrderMark
+        bytes.append(try XCTUnwrap(xml.data(using: encoding, allowLossyConversion: false)))
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("encoded-opml-\(UUID().uuidString).opml")
+        try bytes.write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let manager = LibraryDataManager(observesChanges: false)
+        try await manager.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+
+        await realm.asyncRefresh()
+        let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+        let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+        let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: feedID))
+        XCTAssertEqual(category.title, title)
+        XCTAssertEqual(feed.title, title + " feed")
+        XCTAssertEqual(feed.rssUrl, sourceURL)
+        XCTAssertEqual(feed.categoryID, categoryID)
+        XCTAssertEqual(Array(library.categoryIDs), [categoryID])
+        XCTAssertEqual(realm.objects(FeedCategory.self).count, 1)
+        XCTAssertEqual(realm.objects(Feed.self).count, 1)
+        XCTAssertFalse(category.isDeleted)
+        XCTAssertFalse(feed.isDeleted)
+        for recordName in ["FeedCategory.\(categoryID)", "Feed.\(feedID)",
+                           "LibraryConfiguration.\(library.id)"] {
+            XCTAssertNotNil(realm.object(ofType: BigSyncPendingMutation.self,
+                                        forPrimaryKey: recordName)?.generation)
+        }
+        // Reimporting the same encoded file retains identity and no-op journaling.
+        let generations = Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) })
+        try await manager.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(realm.objects(FeedCategory.self).count, 1)
+        XCTAssertEqual(realm.objects(Feed.self).count, 1)
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) }), generations)
+    }
+
     private func makeOPMLConfiguration() -> Realm.Configuration {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [
