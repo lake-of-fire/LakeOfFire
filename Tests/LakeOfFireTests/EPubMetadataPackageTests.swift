@@ -1,9 +1,49 @@
 import Foundation
+import LakeOfFireContent
 import XCTest
 import ZIPFoundation
 @testable import LakeOfFireReader
 
 final class EPubMetadataPackageTests: XCTestCase {
+    func testStoredZIPRejectsChangedOPFBytesWithStaleChecksum() throws {
+        let opf = document(cover: nil).replacingOccurrences(of: "本の名前", with: "Original")
+        try withBothPackages(opf: opf, compressionMethod: .none) { package in
+            let baseline = try XCTUnwrap(EPubParser.parseMetadataAndCover(from: package))
+            XCTAssertEqual(baseline.title, "Original")
+            guard try package.resourceValues(forKeys: [.isDirectoryKey]).isDirectory != true else { return }
+
+            // Stored entries expose the actual payload bytes. Change one unique
+            // ASCII title byte, keeping the XML and byte count valid and leaving
+            // both ZIP headers' checksums unchanged.
+            var bytes = try Data(contentsOf: package)
+            let marker = Data("Original".utf8)
+            let titleRange = try XCTUnwrap(bytes.range(of: marker))
+            XCTAssertNil(bytes.range(of: marker, in: titleRange.upperBound..<bytes.endIndex))
+            bytes[titleRange.lowerBound] = 0x58 // Xriginal
+            try bytes.write(to: package)
+
+            let archive = try Archive(url: package, accessMode: .read)
+            let entry = try XCTUnwrap(archive["OPS/book.opf"])
+            var extracted = Data()
+            let checksum = try archive.extract(entry) { extracted.append($0) }
+            XCTAssertNotEqual(checksum, entry.checksum, "The fixture must retain a stale ZIP checksum")
+            XCTAssertNotNil(extracted.range(of: Data("Xriginal".utf8)))
+
+            let source = try ReaderPackageEntrySource(localURL: package)
+            XCTAssertThrowsError(try source.readEntry(subpath: "OPS/book.opf")) { error in
+                guard let packageError = error as? ReaderPackageEntrySourceError else {
+                    return XCTFail("Expected a package corruption error, got \(error)")
+                }
+                guard case .packageCorrupt = packageError else {
+                    return XCTFail("Expected packageCorrupt, got \(packageError)")
+                }
+            }
+            XCTAssertNil(archive.data(for: "OPS/book.opf"))
+            XCTAssertNil(try EPubParser.parseMetadataAndCover(from: package))
+        }
+    }
+
+
     func testZIPAndDirectoryCoverlessMetadata() throws {
         try withBothPackages(opf: document(cover: nil)) { package in
             let metadata = try XCTUnwrap(EPubParser.parseMetadataAndCover(from: package))
@@ -41,7 +81,8 @@ final class EPubMetadataPackageTests: XCTestCase {
         """
     }
 
-    private func withBothPackages(opf: String, verify: (URL) throws -> Void) throws {
+    private func withBothPackages(opf: String, compressionMethod: CompressionMethod = .deflate,
+                                  verify: (URL) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let directory = root.appendingPathComponent("book.epub", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -56,7 +97,7 @@ final class EPubMetadataPackageTests: XCTestCase {
         try Data([0xff, 0xd8, 0xff, 0xd9]).write(to: directory.appendingPathComponent("OPS/Images/表紙 #%.jpg"))
         try verify(directory)
         let zip = root.appendingPathComponent("archive.epub")
-        try FileManager.default.zipItem(at: directory, to: zip, shouldKeepParent: false, compressionMethod: .deflate)
+        try FileManager.default.zipItem(at: directory, to: zip, shouldKeepParent: false, compressionMethod: compressionMethod)
         try verify(zip)
     }
 }
