@@ -5,6 +5,126 @@ import XCTest
 
 @MainActor
 final class ReaderReadAloudSpeechOwnershipTests: XCTestCase {
+
+    func testAudioInterruptionResumesCurrentVisibleQueueOnlyOnce() {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+        let count = synthesizer.utterances.count
+
+        viewModel.beginReadAloudAudioInterruption()
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertTrue(synthesizer.isPaused)
+        XCTAssertEqual(lease.releaseCount, 1)
+        viewModel.endReadAloudAudioInterruption(permitsResume: true)
+
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertEqual(synthesizer.continueCount, 1)
+        XCTAssertEqual(synthesizer.utterances.count, count)
+        viewModel.endReadAloudAudioInterruption(permitsResume: true)
+        XCTAssertEqual(synthesizer.continueCount, 1)
+        XCTAssertEqual(synthesizer.utterances.count, count)
+    }
+
+    func testClosingDuringAudioInterruptionDoesNotResumeHiddenPreparedQueue() {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+        viewModel.beginReadAloudAudioInterruption()
+        viewModel.closePlaybackPresentation()
+        let count = synthesizer.utterances.count
+
+        viewModel.endReadAloudAudioInterruption(permitsResume: true)
+
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+        XCTAssertEqual(viewModel.playbackSource, .aiTextToSpeech)
+        XCTAssertFalse(viewModel.isMediaPlayerPresented)
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(synthesizer.continueCount, 0)
+        XCTAssertEqual(synthesizer.utterances.count, count)
+        XCTAssertEqual(lease.releaseCount, 1)
+        viewModel.transitionToReadAloudPresentation()
+        viewModel.playAITTS()
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertGreaterThan(synthesizer.utterances.count, count)
+    }
+
+    func testNewPlaybackIntentRetiresInterruptedResumeWithoutClearingPreparedQueue() {
+        for intent in ["pause", "seek", "replacement"] {
+            let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+            let lease = SpeechOwnershipTestAudioSessionLease()
+            let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+            defer { viewModel.clearAITTSPlaybackQueue() }
+            XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+            viewModel.beginReadAloudAudioInterruption()
+            switch intent {
+            case "pause":
+                viewModel.pauseAITTS()
+            case "seek":
+                viewModel.seekAITTS(toSentenceIdentifier: "admission-2", shouldPlay: false)
+            default:
+                XCTAssertTrue(viewModel.configureAITTSQueue(utterances: [
+                    ReaderTTSUtterance(sentenceIdentifier: "replacement", text: "新しい文章です。")
+                ]))
+            }
+            let count = synthesizer.utterances.count
+            let sentence = viewModel.ttsCurrentSentenceIdentifier
+
+            viewModel.endReadAloudAudioInterruption(permitsResume: true)
+
+            XCTAssertTrue(viewModel.hasPreparedAITTS, intent)
+            XCTAssertFalse(viewModel.isPlaying, intent)
+            XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, sentence, intent)
+            XCTAssertEqual(synthesizer.continueCount, 0, intent)
+            XCTAssertEqual(synthesizer.utterances.count, count, intent)
+            XCTAssertEqual(lease.releaseCount, 1, intent)
+        }
+    }
+
+    func testExplicitPlaySupersedesPendingInterruptionResume() {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+        viewModel.beginReadAloudAudioInterruption()
+        viewModel.playAITTS()
+        let count = synthesizer.utterances.count
+        XCTAssertTrue(viewModel.isPlaying)
+
+        viewModel.endReadAloudAudioInterruption(permitsResume: true)
+
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertEqual(synthesizer.continueCount, 1)
+        XCTAssertEqual(synthesizer.utterances.count, count)
+    }
+
+    func testTerminalFinishDuringInterruptionCannotRestartCompletedQueue() throws {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+        let terminal = try XCTUnwrap(synthesizer.utterances.last)
+        viewModel.beginReadAloudAudioInterruption()
+        let count = synthesizer.utterances.count
+        let completion = viewModel.ttsPlaybackCompletionGeneration
+        viewModel.speechSynthesizer(AVSpeechSynthesizer(), didFinish: terminal)
+        XCTAssertEqual(viewModel.ttsPlaybackCompletionGeneration, completion + 1)
+
+        viewModel.endReadAloudAudioInterruption(permitsResume: true)
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(synthesizer.continueCount, 0)
+        XCTAssertEqual(synthesizer.utterances.count, count)
+        XCTAssertEqual(viewModel.ttsPlaybackCompletionGeneration, completion + 1)
+    }
+
+
     func testInitialAdmissionFailurePreservesQueueAndRetryAcquiresOneLease() {
         let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
         let lease = SpeechOwnershipTestAudioSessionLease()
