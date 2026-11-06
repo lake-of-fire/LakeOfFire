@@ -70,3 +70,133 @@ test('media hydration ignores external sources', async () => {
     assert.deepEqual(results, [false]);
     assert.equal(audio.src, 'https://example.com/voice.m4a');
 });
+
+
+test('page hide while response blob is pending prevents late object URL creation', async () => {
+    const audio = makeElement(packageURL('voice.m4a'));
+    let hide, releaseBlob, enteredBlob;
+    let created = 0, loaded = 0;
+    const revoked = [];
+    const blob = new Promise(resolve => { releaseBlob = resolve; });
+    const blobEntered = new Promise(resolve => { enteredBlob = resolve; });
+    audio.load = () => { loaded += 1; };
+    const result = hydratePackageMedia({
+        document: { querySelectorAll: () => [audio] },
+        fetch: async () => ({
+            ok: true,
+            blob: () => { enteredBlob(); return blob; },
+        }),
+        addPageHideListener: listener => { hide = listener; },
+        createObjectURL: () => { created += 1; return 'blob:unexpected'; },
+        revokeObjectURL: url => revoked.push(url),
+    });
+    await blobEntered;
+    hide();
+    hide();
+    releaseBlob({});
+    assert.deepEqual(await result, [false]);
+    assert.equal(audio.src, packageURL('voice.m4a'));
+    assert.equal(created, 0);
+    assert.equal(loaded, 0);
+    assert.deepEqual(revoked, []);
+});
+
+test('late response cannot publish to a detached media element', async () => {
+    const audio = makeElement(packageURL('voice.m4a'));
+    let release, hide, enteredFetch, loaded = 0;
+    const fetchEntered = new Promise(resolve => { enteredFetch = resolve; });
+    const created = [], revoked = [];
+    audio.isConnected = true;
+    audio.load = () => { loaded += 1; };
+    const result = hydratePackageMedia({
+        document: { querySelectorAll: () => [audio] },
+        fetch: () => new Promise(resolve => { release = resolve; enteredFetch(); }),
+        createObjectURL: () => { created.push('blob:detached'); return 'blob:detached'; },
+        revokeObjectURL: url => revoked.push(url),
+        addPageHideListener: listener => { hide = listener; },
+    });
+    await fetchEntered;
+    audio.isConnected = false;
+    release({ ok: true, blob: async () => ({}) });
+    assert.deepEqual(await result, [false]);
+    assert.equal(audio.src, packageURL('voice.m4a'));
+    assert.equal(loaded, 0);
+    assert.deepEqual(created, ['blob:detached']);
+    assert.deepEqual(revoked, []);
+    hide();
+    hide();
+    assert.deepEqual(revoked, ['blob:detached']);
+});
+
+test('late response preserves a replacement media source without loading it', async () => {
+    const audio = makeElement(packageURL('voice.m4a'));
+    const replacement = 'https://example.com/replacement.m4a';
+    let release, hide, enteredFetch, loaded = 0;
+    const fetchEntered = new Promise(resolve => { enteredFetch = resolve; });
+    const revoked = [];
+    audio.load = () => { loaded += 1; };
+    const result = hydratePackageMedia({
+        document: { querySelectorAll: () => [audio] },
+        fetch: () => new Promise(resolve => { release = resolve; enteredFetch(); }),
+        createObjectURL: () => 'blob:replaced',
+        revokeObjectURL: url => revoked.push(url),
+        addPageHideListener: listener => { hide = listener; },
+    });
+    await fetchEntered;
+    audio.src = replacement;
+    release({ ok: true, blob: async () => ({}) });
+    assert.deepEqual(await result, [false]);
+    assert.equal(audio.src, replacement);
+    assert.equal(loaded, 0);
+    hide();
+    assert.deepEqual(revoked, ['blob:replaced']);
+});
+
+test('reentrant page hide during object URL creation releases it exactly once', async () => {
+    const audio = makeElement(`${packageURL('voice.m4a')}#t=1`);
+    const originalSource = audio.src;
+    let hide, created = 0, loaded = 0;
+    const revoked = [];
+    audio.load = () => { loaded += 1; };
+    const results = await hydratePackageMedia({
+        document: { querySelectorAll: () => [audio] },
+        fetch: async () => ({ ok: true, blob: async () => ({}) }),
+        createObjectURL: () => {
+            created += 1;
+            hide();
+            return 'blob:closing';
+        },
+        revokeObjectURL: url => revoked.push(url),
+        addPageHideListener: listener => { hide = listener; },
+    });
+    assert.deepEqual(results, [false]);
+    assert.equal(audio.src, originalSource);
+    assert.equal(created, 1);
+    assert.equal(loaded, 0);
+    assert.deepEqual(revoked, ['blob:closing']);
+    hide();
+    assert.deepEqual(revoked, ['blob:closing']);
+});
+
+test('page hide from the first media load prevents later media loads', async () => {
+    const first = makeElement(packageURL('first.m4a'));
+    const second = makeElement(packageURL('second.m4a'));
+    let hide, created = 0;
+    const loads = [], revoked = [];
+    first.load = () => { loads.push('first'); hide(); };
+    second.load = () => { loads.push('second'); };
+    const results = await hydratePackageMedia({
+        document: { querySelectorAll: () => [first, second] },
+        fetch: async () => ({ ok: true, blob: async () => ({}) }),
+        createObjectURL: () => `blob:media-${++created}`,
+        revokeObjectURL: url => revoked.push(url),
+        addPageHideListener: listener => { hide = listener; },
+    });
+    assert.deepEqual(results, [true, true]);
+    assert.equal(first.src, 'blob:media-1');
+    assert.equal(second.src, 'blob:media-2');
+    assert.deepEqual(loads, ['first']);
+    assert.deepEqual(revoked, ['blob:media-1', 'blob:media-2']);
+    hide();
+    assert.deepEqual(revoked, ['blob:media-1', 'blob:media-2']);
+});

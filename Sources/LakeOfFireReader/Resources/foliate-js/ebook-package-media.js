@@ -22,7 +22,10 @@ export const hydratePackageMedia = async ({
 
     const objectURLPromises = new Map();
     const ownedObjectURLs = new Set();
+    let closed = false;
     addPageHideListener?.(() => {
+        if (closed) return;
+        closed = true;
         for (const objectURL of ownedObjectURLs) revokeObjectURL(objectURL);
         ownedObjectURLs.clear();
     });
@@ -41,13 +44,19 @@ export const hydratePackageMedia = async ({
                     return response.blob();
                 })
                 .then(blob => {
+                    if (closed) return null;
                     const objectURL = createObjectURL(blob);
                     ownedObjectURLs.add(objectURL);
+                    if (closed) {
+                        ownedObjectURLs.delete(objectURL);
+                        revokeObjectURL(objectURL);
+                        return null;
+                    }
                     return objectURL;
                 });
             objectURLPromises.set(resourceURL, promise);
         }
-        return promise.then(objectURL => `${objectURL}${fragment}`);
+        return promise.then(objectURL => objectURL === null ? null : `${objectURL}${fragment}`);
     };
 
     const mediaElements = new Set();
@@ -57,12 +66,19 @@ export const hydratePackageMedia = async ({
         const owningMedia = element.matches?.('audio, video')
             ? element
             : element.closest?.('audio, video');
+        const objectURL = await objectURLFor(sourceURL);
+        // Late completions must not publish after closure, detachment, or replacement.
+        if (closed || objectURL === null || element.isConnected === false
+            || element.src !== sourceURL) return false;
+        element.src = objectURL;
         if (owningMedia) mediaElements.add(owningMedia);
-        element.src = await objectURLFor(sourceURL);
         return true;
     }));
 
-    for (const media of mediaElements) media.load?.();
+    for (const media of mediaElements) {
+        if (closed) break;
+        media.load?.();
+    }
     return results;
 };
 
