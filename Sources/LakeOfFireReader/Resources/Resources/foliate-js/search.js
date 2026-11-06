@@ -103,6 +103,9 @@ const foldedCandidates = function* (text, query, graphemes, collator, boundaries
         if (foldedSegments.has(segment)) return foldedSegments.get(segment)
         const value = segment.normalize('NFKD').toLocaleLowerCase(locale)
             .toLocaleUpperCase(locale).normalize('NFKD')
+            // These collation expansions have no Unicode decomposition.
+            // Original spans and the final collator still decide each match.
+            .replace(/Æ/g, 'AE').replace(/Œ/g, 'OE')
         const folded = ignoresMarks ? value.replace(/\p{Mark}/gu, '') : value
         foldedSegments.set(segment, folded)
         return folded
