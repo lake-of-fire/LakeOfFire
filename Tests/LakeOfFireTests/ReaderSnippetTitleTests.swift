@@ -3,7 +3,7 @@ import Combine
 import LakeKit
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 @testable import LakeOfFireContent
 import LakeOfFireCore
 @testable import LakeOfFireReader
@@ -2358,6 +2358,348 @@ extension ReaderSnippetTitleTests {
             XCTAssertTrue(row.isReaderModeByDefault)
             XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, before + 1,
                            "The accepted managed-row mutation must journal in its transaction")
+        }
+    }
+}
+#endif
+
+#if DEBUG
+/// Uses the real Session on MainActor while a real Realm writer runs on its
+/// owning actor. Semaphores coordinate only the test; no production lock/hook.
+private final class ReaderWriteRenewalProbe: @unchecked Sendable {
+    let session: Session
+    let attempted = DispatchSemaphore(value: 0)
+    let completed = DispatchSemaphore(value: 0)
+    let renewed = XCTestExpectation(description: "Same-user authorization renewed")
+
+    init(session: Session) { self.session = session }
+
+    func requestRenewal() {
+        Task { @MainActor in
+            self.attempted.signal()
+            self.session.authenticated(authToken: "writer-renewed", userID: 101)
+            self.completed.signal()
+            self.renewed.fulfill()
+        }
+        XCTAssertEqual(attempted.wait(timeout: .now() + 5), .success)
+    }
+}
+
+/// Captured Realm values remain on their owning actor; Sendable only carries
+/// the synchronous permission closure through the writer API.
+private final class ReaderProvisionalWriteRenewal: @unchecked Sendable {
+    let realm: Realm
+    let row: HistoryRecord
+    let probe: ReaderWriteRenewalProbe
+    let expectedMutations: Int
+
+    init(realm: Realm, row: HistoryRecord, probe: ReaderWriteRenewalProbe, expectedMutations: Int) {
+        self.realm = realm
+        self.row = row
+        self.probe = probe
+        self.expectedMutations = expectedMutations
+    }
+
+    func permitsCommit() -> Bool {
+        if row.title == "Provisional" {
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, expectedMutations)
+            probe.requestRenewal()
+            XCTAssertEqual(probe.completed.wait(timeout: .now() + 5), .success)
+        }
+        return true
+    }
+}
+
+/// Token is created, used and invalidated only on RealmBackgroundActor.
+private final class ReaderWriteCommitWitness: @unchecked Sendable {
+    var token: NotificationToken?
+    var observed = false
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testCapturedWritersExcludeSameUserRenewalThroughDurableCommit() async throws {
+        for writer in ["snippet", "secondary", "primary"] {
+            try await withSnippetRealm { configuration in
+                let realm = try await Realm(configuration: configuration)
+                let row = HistoryRecord()
+                row.url = writer == "snippet"
+                    ? ReaderContentLoader.snippetURL(key: UUID().uuidString)!
+                    : URL(string: "https://example.com/commit-\(writer)")!
+                row.title = ""
+                row.updateCompoundKey()
+                let bookmark = Bookmark()
+                bookmark.url = row.url
+                bookmark.title = row.title
+                bookmark.updateCompoundKey()
+                try realm.write {
+                    realm.add(row)
+                    if writer == "snippet" { realm.add(bookmark) }
+                }
+                let expectedMutations = writer == "snippet" ? 2 : 1
+                let key = row.compoundKey, url = row.url
+                let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+                let session = Session.ephemeralForTesting()
+                session.authenticated(authToken: "writer-original", userID: 101)
+                let access = AccountSessionAccess(session: session), probe = ReaderWriteRenewalProbe(session: session)
+                let account = (access: access, snapshot: access.snapshot)
+                let witness = ReaderWriteCommitWitness()
+                try await { @RealmBackgroundActor in
+                    let writerRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                    witness.token = writerRealm.observe { notification, committedRealm in
+                        guard notification == .didChange, !witness.observed,
+                              committedRealm.object(ofType: HistoryRecord.self, forPrimaryKey: key)?.title == "Committed" else { return }
+                        witness.observed = true
+                        XCTAssertFalse(committedRealm.isInWriteTransaction)
+                        XCTAssertEqual(committedRealm.objects(BigSyncPendingMutation.self).count, expectedMutations)
+                        // This notification is delivered by the SDK's actual
+                        // commitWrite. Renewal must wait until it returns and the
+                        // publication fence is released. No Session read here.
+                        probe.requestRenewal()
+                        XCTAssertEqual(probe.completed.wait(timeout: .now() + 0.1), .timedOut,
+                                       "\(writer) released account exclusion before durable commit returned")
+                    }
+                }()
+                do {
+                    if writer == "primary" {
+                        try await row.asyncWrite(account: account) { _, live in
+                            live.title = "Committed"
+                            live.refreshChangeMetadata(explicitlyModified: true)
+                        }
+                    } else if writer == "secondary" {
+                        try await ReaderContentLoader.propagateReaderModeDefaults(
+                            for: url, excludingPrimaryKey: "other", primaryClassName: "HistoryRecord",
+                            readabilityHTML: "<p>Committed</p>", resolvedTitle: "Committed",
+                            account: account, permitsCommit: { true })
+                    } else {
+                        let changed = try await ReaderContentLoader.updateSnippetTitle(
+                            contentURL: url, title: "Committed", storage: storage,
+                            account: account, permitsCommit: { true })
+                        XCTAssertTrue(changed)
+                    }
+                } catch {
+                    await { @RealmBackgroundActor in witness.token?.invalidate() }()
+                    throw error
+                }
+                await { @RealmBackgroundActor in
+                    witness.token?.invalidate()
+                    XCTAssertTrue(witness.observed, "Must observe the actual \(writer) durable commit")
+                }()
+                await self.fulfillment(of: [probe.renewed], timeout: 5)
+                await realm.asyncRefresh()
+                XCTAssertEqual(row.title, "Committed")
+                if writer == "snippet" { XCTAssertEqual(bookmark.title, "Committed") }
+                XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, expectedMutations)
+                XCTAssertNotEqual(access.snapshot, account.snapshot)
+            }
+        }
+    }
+
+    @MainActor
+    func testSameUserRenewalAfterProvisionalMutationRollsBackRowsAndJournal() async throws {
+        for writer in ["snippet", "secondary", "primary"] {
+            try await withSnippetRealm { configuration in
+                let realm = try await Realm(configuration: configuration)
+                let row = HistoryRecord()
+                row.url = writer == "snippet" ? ReaderContentLoader.snippetURL(key: UUID().uuidString)!
+                    : URL(string: "https://example.com/rollback-\(writer)")!
+                row.title = "Original"
+                row.updateCompoundKey()
+                let bookmark = Bookmark()
+                bookmark.url = row.url
+                bookmark.title = row.title
+                bookmark.updateCompoundKey()
+                try realm.write {
+                    realm.add(row)
+                    if writer == "snippet" { realm.add(bookmark) }
+                }
+                let expectedMutations = writer == "snippet" ? 2 : 1
+                let key = row.compoundKey, url = row.url
+                let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+                let session = Session.ephemeralForTesting()
+                session.authenticated(authToken: "writer-original", userID: 101)
+                let access = AccountSessionAccess(session: session), probe = ReaderWriteRenewalProbe(session: session)
+                let account = (access: access, snapshot: access.snapshot)
+                do {
+                    if writer == "primary" {
+                        try await row.asyncWrite(account: account) { _, live in
+                            live.title = "Provisional"
+                            live.refreshChangeMetadata(explicitlyModified: true)
+                            probe.requestRenewal()
+                            XCTAssertEqual(probe.completed.wait(timeout: .now() + 5), .success)
+                        }
+                    } else {
+                        try await { @RealmBackgroundActor in
+                            let writerRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                            let live = try XCTUnwrap(writerRealm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+                            // Permission is evaluated after provisional mutation
+                            // and journal refresh at the actual shared boundary.
+                            let permission = ReaderProvisionalWriteRenewal(
+                                realm: writerRealm, row: live, probe: probe, expectedMutations: expectedMutations)
+                            if writer == "snippet" {
+                                _ = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                                    contentURL: url, storage: storage, account: account,
+                                    permitsCommit: { permission.permitsCommit() }, mutate: { $0.title = "Provisional"; return true })
+                            } else {
+                                try await ReaderContentLoader.updateContent(
+                                    url: url, account: account, permitsCommit: { permission.permitsCommit() },
+                                    mutate: { $0.title = "Provisional"; return true })
+                            }
+                        }()
+                    }
+                    XCTFail("\(writer) must propagate failed account publication")
+                } catch is CancellationError { }
+                await self.fulfillment(of: [probe.renewed], timeout: 5)
+                await realm.asyncRefresh()
+                XCTAssertEqual(row.title, "Original")
+                if writer == "snippet" { XCTAssertEqual(bookmark.title, "Original") }
+                XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty,
+                              "Rejected \(writer) metadata must not leave an upload generation")
+            }
+        }
+    }
+
+    @MainActor
+    func testQueuedSecondaryReaderPropagationRejectsRetargetedPhysicalRow() async throws {
+        try await assertQueuedSecondaryReaderPropagation(recreate: false)
+    }
+
+    @MainActor
+    func testQueuedSecondaryReaderPropagationRejectsRecreatedPhysicalRow() async throws {
+        try await assertQueuedSecondaryReaderPropagation(recreate: true)
+    }
+
+    @MainActor
+    private func assertQueuedSecondaryReaderPropagation(recreate: Bool) async throws {
+        try await withSnippetRealm { configuration in
+            let realm = try await Realm(configuration: configuration)
+            let row = HistoryRecord()
+            row.url = URL(string: "https://example.com/queued-secondary")!
+            row.title = ""
+            row.updateCompoundKey()
+            try realm.write { realm.add(row) }
+            let key = row.compoundKey, url = row.url, created = row.createdAt
+            let session = Session.ephemeralForTesting()
+            session.authenticated(authToken: "queued-secondary", userID: 101)
+            let access = AccountSessionAccess(session: session)
+            let account = (access: access, snapshot: access.snapshot)
+            let barrier = BookmarkWriterOwnerBarrier()
+            let owner = Task {
+                try await barrier.hold(configuration: configuration) { ownerRealm in
+                    let original = try XCTUnwrap(ownerRealm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+                    if recreate {
+                        ownerRealm.delete(original)
+                        let successor = HistoryRecord()
+                        successor.url = url
+                        successor.createdAt = created
+                        successor.compoundKey = key
+                        successor.title = ""
+                        ownerRealm.add(successor)
+                    } else {
+                        original.url = URL(string: "https://example.com/retargeted-secondary")!
+                    }
+                }
+            }
+            defer { barrier.release() }
+            await self.fulfillment(of: [barrier.entered], timeout: 5)
+            let submitted = self.expectation(description: "Secondary writer queued after physical row capture")
+            submitted.assertForOverFulfill = false
+            let propagation = Task {
+                try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                    try await ReaderContentLoader.propagateReaderModeDefaults(
+                        for: url, excludingPrimaryKey: "other", primaryClassName: "HistoryRecord",
+                        readabilityHTML: "<p>Old document</p>", resolvedTitle: "Old document",
+                        account: account, permitsCommit: { true })
+                }
+            }
+            self.addTeardownBlock {
+                barrier.release()
+                _ = await owner.result
+                _ = await propagation.result
+            }
+            await self.fulfillment(of: [submitted], timeout: 5)
+            barrier.release()
+            try await owner.value
+            try await propagation.value
+            await realm.asyncRefresh()
+            let successor = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+            XCTAssertEqual(successor.title, "")
+            XCTAssertNil(successor.html)
+            XCTAssertFalse(successor.isReaderModeByDefault)
+            XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+            XCTAssertEqual(access.snapshot, account.snapshot)
+            if recreate {
+                XCTAssertTrue(row.isInvalidated)
+                XCTAssertEqual(successor.url, url)
+                XCTAssertEqual(successor.createdAt, created)
+            } else {
+                XCTAssertNotEqual(successor.url, url)
+            }
+        }
+    }
+
+    @MainActor
+    func testScopedPropagationPreservesCanonicalHistoryAndHTTPSFeedDiscovery() async throws {
+        try await withSnippetRealm { configuration in
+            let realm = try await Realm(configuration: configuration)
+            let url = URL(string: "https://example.com/canonical-propagation")!
+            let history = HistoryRecord()
+            history.url = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+            history.title = ""
+            history.updateCompoundKey()
+            let feed = FeedEntry()
+            feed.url = URL(string: "http://example.com/canonical-propagation")!
+            feed.compoundKey = "http-feed-propagation"
+            let unrelated = FeedEntry()
+            unrelated.url = URL(string: "https://example.com/unrelated")!
+            unrelated.compoundKey = "unrelated-feed-propagation"
+            try realm.write { realm.add([history]); realm.add([feed, unrelated]) }
+            let session = Session.ephemeralForTesting()
+            let access = AccountSessionAccess(session: session)
+            try await ReaderContentLoader.propagateReaderModeDefaults(
+                for: url, excludingPrimaryKey: "other", primaryClassName: "HistoryRecord",
+                readabilityHTML: "<p>Canonical HTML</p>", resolvedTitle: "Canonical title",
+                account: (access, access.snapshot), permitsCommit: { true })
+            await realm.asyncRefresh()
+            XCTAssertEqual(history.title, "Canonical title")
+            XCTAssertEqual(feed.title, "Canonical title")
+            XCTAssertEqual(history.html, "<p>Canonical HTML</p>")
+            XCTAssertEqual(feed.html, "<p>Canonical HTML</p>")
+            XCTAssertEqual(unrelated.title, "")
+            XCTAssertNil(unrelated.html)
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 2)
+        }
+    }
+
+    @MainActor
+    func testPrimaryMetadataMutationFailurePropagatesAndRollsBackJournal() async throws {
+        enum Failure: Error { case metadata }
+        try await withSnippetRealm { configuration in
+            let realm = try await Realm(configuration: configuration)
+            let row = HistoryRecord()
+            row.url = URL(string: "https://example.com/throwing-primary")!
+            row.title = "Original"
+            row.updateCompoundKey()
+            try realm.write { realm.add(row) }
+            let session = Session.ephemeralForTesting() // Guest is intentionally admitted.
+            let access = AccountSessionAccess(session: session)
+            do {
+                try await row.asyncWrite(account: (access, access.snapshot)) { _, live in
+                    live.title = "Provisional"
+                    live.refreshChangeMetadata(explicitlyModified: true)
+                    throw Failure.metadata
+                }
+                XCTFail("The owning metadata failure must escape the write callback")
+            } catch Failure.metadata { }
+            await realm.asyncRefresh()
+            XCTAssertEqual(row.title, "Original")
+            XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+            try await row.asyncWrite(account: (access, access.snapshot)) { _, live in
+                live.title = "Guest saved"
+                live.refreshChangeMetadata(explicitlyModified: true)
+            }
+            XCTAssertEqual(row.title, "Guest saved")
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
         }
     }
 }

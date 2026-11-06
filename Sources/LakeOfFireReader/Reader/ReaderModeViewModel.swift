@@ -1269,23 +1269,19 @@ private func propagateReaderModeDefaults(
     fallbackTitle: String?,
     derivedTitle: String? = nil,
     permitsCommit: @escaping @Sendable () -> Bool
-) async {
+) async throws {
     guard !url.isSnippetURL, permitsCommit(), !Task.isCancelled else { return }
     let storageReadabilityHTML = stripRuntimeReadabilityAssets(from: readabilityHTML)
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle
-    do {
-        try await ReaderContentLoader.propagateReaderModeDefaults(
-            for: url,
-            excludingPrimaryKey: primaryKey,
-            primaryClassName: primaryClassName,
-            readabilityHTML: storageReadabilityHTML,
-            resolvedTitle: resolvedTitle,
-            account: ReaderModeProcessingAccountContext.account.map { ($0.access, $0.snapshot) },
-            permitsCommit: permitsCommit
-        )
-    } catch {
-        // Propagation is optional; never let its failure publish a retired render.
-    }
+    try await ReaderContentLoader.propagateReaderModeDefaults(
+        for: url,
+        excludingPrimaryKey: primaryKey,
+        primaryClassName: primaryClassName,
+        readabilityHTML: storageReadabilityHTML,
+        resolvedTitle: resolvedTitle,
+        account: ReaderModeProcessingAccountContext.account.map { ($0.access, $0.snapshot) },
+        permitsCommit: permitsCommit
+    )
 }
 
 // Shared DOM operations used by the native prepared dispatcher and the
@@ -3075,31 +3071,24 @@ public class ReaderModeViewModel: ObservableObject {
         }
         if needsAsyncWrite {
             let processingAccount = ReaderModeProcessingAccountContext.account
-            try await content.asyncWrite { _, content in
-                // Realm can begin this transaction after selection/account
-                // replacement. Keep its bounded writes inside the captured
-                // Session publication fence; no account is sampled on this actor.
-                let update = {
-                    guard selectionIsCurrent(), !Task.isCancelled else { return }
-                    content.isReaderModeByDefault = true
-                    content.isReaderModeAvailable = false
-                    content.isReaderModeOfferHidden = false
-                    if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                        if let resolvedStoredHTML {
-                            content.html = resolvedStoredHTML
-                        }
-                        if let resolvedTitleIfNeeded {
-                            content.title = resolvedTitleIfNeeded
-                        }
-                        content.rssContainsFullContent = true
+            try await content.asyncWrite(
+                account: processingAccount.map { ($0.access, $0.snapshot) }
+            ) { _, content in
+                guard selectionIsCurrent(), !Task.isCancelled else { throw CancellationError() }
+                content.isReaderModeByDefault = true
+                content.isReaderModeAvailable = false
+                content.isReaderModeOfferHidden = false
+                if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                    if let resolvedStoredHTML {
+                        content.html = resolvedStoredHTML
                     }
-                    content.refreshChangeMetadata(explicitlyModified: true)
+                    if let resolvedTitleIfNeeded {
+                        content.title = resolvedTitleIfNeeded
+                    }
+                    content.rssContainsFullContent = true
                 }
-                if let processingAccount {
-                    _ = try? processingAccount.access.publish(ifCurrent: processingAccount.snapshot, update)
-                } else {
-                    update()
-                }
+                content.refreshChangeMetadata(explicitlyModified: true)
+                guard selectionIsCurrent(), !Task.isCancelled else { throw CancellationError() }
             }
         }
 
@@ -3209,7 +3198,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
-            await propagateReaderModeDefaults(
+            try await propagateReaderModeDefaults(
                 for: url,
                 primaryKey: primaryRecordCompoundKey,
                 primaryClassName: primaryRecordClassName,
