@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+@testable import LakeOfFireCore
 import Combine
 import RealmSwift
 import RealmSwiftGaps
@@ -522,4 +523,21 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertEqual(historyRecord.audioSubtitlesURL, URL(string: "https://example.com/new-subtitles.vtt")!)
         XCTAssertEqual(historyRecord.audioSubtitlesRole, AudioSubtitlesRole.content)
     }
+
+    func testShortDurationRejectsIndefiniteAndOutOfRangeMediaLengths() {
+        for duration in [
+            Double.infinity, -Double.infinity, Double.nan,
+            Double.greatestFiniteMagnitude, Double(Int.max), -1, 0
+        ] {
+            XCTAssertNil(ReaderDateFormatter.shortDurationString(from: duration),
+                         "Unsafe duration: \(duration)")
+        }
+    }
+
+    func testShortDurationRetainsFiniteMetadataFormatting() {
+        XCTAssertEqual(ReaderDateFormatter.shortDurationString(from: 59), "1m")
+        XCTAssertEqual(ReaderDateFormatter.shortDurationString(from: 3600), "1h")
+        XCTAssertEqual(ReaderDateFormatter.shortDurationString(from: 86_400), "1d")
+    }
+
 }
