@@ -271,8 +271,10 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationFinished(state: WebViewState) {
-        navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
-            guard let self else { return }
+        // The admitted finish belongs to this handler even if SwiftUI replaces
+        // the callback relay while semantic commit work is suspended. The task
+        // manager still fences cancellation and replacement document generations.
+        navigationTaskManager.startOnNavigationFinished { @MainActor [self] in
             await self.handleNavigationFinished(state: state)
             guard !Task.isCancelled else { return }
             self.onNavigationFinished?(state)
