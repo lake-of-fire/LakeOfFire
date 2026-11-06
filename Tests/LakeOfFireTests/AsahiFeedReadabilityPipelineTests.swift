@@ -9,6 +9,91 @@ import XCTest
 
 final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     @MainActor
+    func testRSSMediaImageSelectionUsesURLPathAndPreservesQueryAndFragment() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        let originalHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = originalHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock { await ReaderContentLoader.resetTransientCachesForTesting() }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://example.com/media.rss")!
+        try realm.write { realm.add(feed) }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+
+        func escapedAttribute(_ value: String) -> String {
+            value.replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "'", with: "&apos;")
+        }
+        let cases: [(media: [String], enclosure: String?, expected: String?)] = [
+            (["https://cdn.example.com/photo.jpg?width=300&token=a%2Fb"], nil,
+             "https://cdn.example.com/photo.jpg?width=300&token=a%2Fb"),
+            (["https://cdn.example.com/photo.PNG#preview"], nil,
+             "https://cdn.example.com/photo.PNG#preview"),
+            (["https://cdn.example.com/clip.mp4?poster=wrong.jpg",
+              "https://cdn.example.com/photo.webp?width=300"], nil,
+             "https://cdn.example.com/photo.webp?width=300"),
+            (["https://cdn.example.com/clip.mp4?poster=wrong.jpg"], nil, nil),
+            (["https://cdn.example.com/clip.mp4#poster.jpg"], nil, nil),
+            (["https://cdn.example.com/photo.jpg?download=clip.mp4"], nil,
+             "https://cdn.example.com/photo.jpg?download=clip.mp4"),
+            (["https://cdn.example.com/media.jpg"], "https://cdn.example.com/enclosure.png?size=2",
+             "https://cdn.example.com/enclosure.png?size=2"),
+            (["https://cdn.example.com/first.gif", "https://cdn.example.com/second.jpeg"], nil,
+             "https://cdn.example.com/first.gif"),
+            (["https://cdn.example.com:invalid/bad.jpg",
+              "https://cdn.example.com/photo.jpeg?quality=90"], nil,
+             "https://cdn.example.com/photo.jpeg?quality=90"),
+        ]
+        for (revision, fixture) in cases.enumerated() {
+            let media = fixture.media.map { "<media:content url='\(escapedAttribute($0))'/>" }
+                .joined()
+            let enclosure = fixture.enclosure.map {
+                "<enclosure url='\(escapedAttribute($0))' type='image/png' length='1'/>"
+            } ?? ""
+            let body = Data("""
+            <rss version='2.0' xmlns:media='http://search.yahoo.com/mrss/'>
+              <channel><title>Feed</title><link>https://example.com/</link><description>Feed</description>
+                <item><guid>https://example.com/article</guid><link>https://example.com/article</link>
+                  <title>Article</title><description>Body</description>\(enclosure)\(media)
+                </item>
+              </channel>
+            </rss>
+            """.utf8)
+            FeedURLProtocol.requestHandler = { _ in
+                (200, ["Content-Type": "application/rss+xml", "ETag": "\"image-\(revision)\""], body)
+            }
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let entries = Array(realm.objects(FeedEntry.self).filter { $0.feedID == feed.id && !$0.isDeleted })
+            XCTAssertEqual(entries.count, 1)
+            let entry = try XCTUnwrap(entries.first)
+            XCTAssertEqual(entry.imageUrl?.absoluteString, fixture.expected, "Media selection case \(revision)")
+            XCTAssertEqual(feed.lastFetchedETag, "\"image-\(revision)\"")
+        }
+    }
+
+    @MainActor
     func testAtomRefreshPrefersHTMLAlternatesRegardlessOfLinkOrder() async throws {
         let configuration = makeRealmConfiguration()
         let originalLibrary = LibraryDataManager.realmConfiguration

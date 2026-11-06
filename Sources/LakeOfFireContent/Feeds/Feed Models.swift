@@ -1606,11 +1606,12 @@ public extension Feed {
 //                } else if let rawImageURL = item.media?.contents?
 //                    .lazy.compactMap({ $0.attributes?.url })
 //                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
-                } else if let rawImageURL = item.media?.mediaContents?
+                } else if let mediaImageURL = item.media?.mediaContents?
                     .lazy.compactMap({ $0.attributes?.url })
-                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
+                    .compactMap({ URL(string: $0) })
+                    .first(where: { entryImageExtensions.contains($0.pathExtension.lowercased()) })
                 {
-                    imageUrl = URL(string: rawImageURL)
+                    imageUrl = mediaImageURL
                 }
                 let content = item.content?.contentEncoded ?? item.description
                 let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
