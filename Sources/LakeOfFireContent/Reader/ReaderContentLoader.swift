@@ -1,5 +1,6 @@
 import SwiftUI
 import LakeOfFireCore
+import LakeKit
 import RealmSwift
 import MarkdownKit
 import SwiftSoup
@@ -170,21 +171,68 @@ public struct ReaderContentLoader {
         public let bookmarkConfiguration: Realm.Configuration
         public let historyConfiguration: Realm.Configuration
 
+        fileprivate let bookmarkAdmission: RealmStorageAdmission
+        fileprivate let historyAdmission: RealmStorageAdmission
+        // Frozen rows are immutable and cross-actor safe. Recreate a one-use
+        // reference per operation so repeated saves retain the original ObjKey,
+        // even if a row is deleted and recreated with the same primary key.
+        private let target: CapturedSnippetTarget?
+
+        private final class CapturedSnippetTarget: @unchecked Sendable {
+            let row: any ReaderContentProtocol
+            init(_ content: any ReaderContentProtocol) { row = content.freeze() }
+        }
+
+        fileprivate func containsCapturedTarget(in realm: Realm) -> Bool {
+            guard let target else { return true } // Legacy multi-store API.
+            return Self.containsFrozenTarget(target.row, in: realm)
+        }
+
+        // Open the existential only within this generic call. The invariant
+        // ThreadSafeReference<T> stays local; no erased reference escapes.
+        private static func containsFrozenTarget<T: ReaderContentProtocol>(
+            _ target: T, in realm: Realm
+        ) -> Bool {
+            guard let row = realm.resolve(ThreadSafeReference(to: target)),
+                  !row.isInvalidated, !row.isDeleted,
+                  row.url.matchesReaderURL(target.url) else { return false }
+            return true
+        }
+
+        @MainActor
         private init(
             bookmarkConfiguration: Realm.Configuration,
-            historyConfiguration: Realm.Configuration
+            historyConfiguration: Realm.Configuration,
+            target: (any ReaderContentProtocol)? = nil
         ) {
+            self.target = target.map(CapturedSnippetTarget.init)
             self.bookmarkConfiguration = bookmarkConfiguration
             self.historyConfiguration = historyConfiguration
+            bookmarkAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: bookmarkConfiguration)
+            historyAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: historyConfiguration)
         }
 
         /// The app stores both snippet representations in the selected
         /// content's Reader Realm. Its owning Realm outranks mutable globals.
         @MainActor
         public init?(content: any ReaderContentProtocol) {
-            guard let configuration = content.realm?.configuration else { return nil }
-            bookmarkConfiguration = configuration
-            historyConfiguration = configuration
+            guard !content.isInvalidated, !content.isDeleted,
+                  let configuration = content.realm?.configuration else { return nil }
+            self.init(bookmarkConfiguration: configuration, historyConfiguration: configuration, target: content)
+        }
+
+        @MainActor
+        public func containsOriginalTarget(for content: any ReaderContentProtocol) -> Bool {
+            guard !content.isInvalidated, !content.isDeleted, let realm = content.realm else { return false }
+            return containsCapturedTarget(in: realm)
+        }
+
+        public func validateStorage() throws {
+            guard bookmarkAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: bookmarkConfiguration)
+            }), historyAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: historyConfiguration)
+            }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
         }
 
         /// Legacy storage can span two Realms. Its edits are atomic per Realm,
@@ -317,56 +365,98 @@ public struct ReaderContentLoader {
             try Task.checkCancellation()
             await loadAllDiscoveryGateForTesting?()
 
-            let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: storage.historyConfiguration, storageAdmission: storage.historyAdmission
+            return try await discoverCapturedContent(
+                url: url, skipContentFiles: skipContentFiles,
+                skipFeedEntries: skipFeedEntries, storage: storage,
+                capture: { storage.reference(for: $0) }
             )
-            let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: storage.bookmarkConfiguration, storageAdmission: storage.bookmarkAdmission
-            )
-            await historyRealm.asyncRefresh()
-            await bookmarkRealm.asyncRefresh()
-
-            let feedRealm: Realm?
-            if skipFeedEntries {
-                feedRealm = nil
-            } else {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.feedConfiguration, storageAdmission: storage.feedAdmission)
-                await realm.asyncRefresh()
-                feedRealm = realm
-            }
-            try Task.checkCancellation()
-
-            try storage.validate(includeFeed: !skipFeedEntries)
-            var contentFile: ContentFile?
-            if !skipContentFiles {
-                contentFile = historyRealm.objects(ContentFile.self)
-                    .filter(NSPredicate(format: "isDeleted == false AND url == %@", url.absoluteString as CVarArg))
-                    .sorted(byKeyPath: "createdAt", ascending: false)
-                    .first
-            }
-            let history = HistoryRecord.getOpenedRecord(forURL: url, in: historyRealm)
-            let bookmark = Bookmark.get(forURL: url, realm: bookmarkRealm)
-
-            var feed: FeedEntry?
-            if let feedRealm {
-                let feeds = feedRealm.objects(FeedEntry.self)
-                    .where { !$0.isDeleted }
-                    .sorted(by: \.createdAt, ascending: false)
-
-                if url.scheme == "https" {
-                    feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
-                } else if !url.isReaderFileURL {
-                    feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
-                }
-            }
-
-            let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
-            return candidates.compactMap { storage.reference(for: $0) }
         }
 
         inFlightLoadAllTasks[taskKey] = task
         defer { inFlightLoadAllTasks[taskKey] = nil }
         return try await task.value
+    }
+
+    /// Capture on the discovery actor immediately after matching, before another
+    /// suspension can retarget or replace a selected row. Legacy references keep
+    /// their existing semantics; only scoped Reader writes retain row lifetimes.
+    @RealmBackgroundActor
+    private static func discoverCapturedContent<Value>(
+        url: URL, skipContentFiles: Bool, skipFeedEntries: Bool,
+        storage: DiscoveryStorage,
+        capture: (any ReaderContentProtocol) -> Value?
+    ) async throws -> [Value] {
+        let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: storage.historyConfiguration, storageAdmission: storage.historyAdmission
+        )
+        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: storage.bookmarkConfiguration, storageAdmission: storage.bookmarkAdmission
+        )
+        await historyRealm.asyncRefresh()
+        await bookmarkRealm.asyncRefresh()
+
+        let feedRealm: Realm?
+        if skipFeedEntries {
+            feedRealm = nil
+        } else {
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.feedConfiguration, storageAdmission: storage.feedAdmission)
+            await realm.asyncRefresh()
+            feedRealm = realm
+        }
+        try Task.checkCancellation()
+
+        try storage.validate(includeFeed: !skipFeedEntries)
+        var contentFile: ContentFile?
+        if !skipContentFiles {
+            contentFile = historyRealm.objects(ContentFile.self)
+                .filter(NSPredicate(format: "isDeleted == false AND url == %@", url.absoluteString as CVarArg))
+                .sorted(byKeyPath: "createdAt", ascending: false)
+                .first
+        }
+        let history = HistoryRecord.getOpenedRecord(forURL: url, in: historyRealm)
+        let bookmark = Bookmark.get(forURL: url, realm: bookmarkRealm)
+
+        var feed: FeedEntry?
+        if let feedRealm {
+            let feeds = feedRealm.objects(FeedEntry.self)
+                .where { !$0.isDeleted }
+                .sorted(by: \.createdAt, ascending: false)
+
+            if url.scheme == "https" {
+                feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
+            } else if !url.isReaderFileURL {
+                feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
+            }
+        }
+
+        let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
+        return candidates.compactMap(capture)
+    }
+
+    private final class CapturedReaderPropagationRow: @unchecked Sendable {
+        let reference: ContentReference
+        let row: any ReaderContentProtocol
+        let intendedURL: URL
+
+        init?(content: any ReaderContentProtocol, storage: DiscoveryStorage) {
+            guard let reference = storage.reference(for: content) else { return nil }
+            self.reference = reference
+            intendedURL = content.url
+            row = content.freeze()
+        }
+
+        func resolve(in realm: Realm) -> (Object & ReaderContentProtocol)? {
+            Self.resolve(row, intendedURL: intendedURL, in: realm)
+        }
+
+        private static func resolve<T: ReaderContentProtocol>(
+            _ row: T, intendedURL: URL, in realm: Realm
+        ) -> (Object & ReaderContentProtocol)? {
+            guard let live = realm.resolve(ThreadSafeReference(to: row)),
+                  !live.isInvalidated, !live.isDeleted,
+                  live.url == intendedURL else { return nil }
+            return live as? (Object & ReaderContentProtocol)
+        }
     }
 
     @RealmBackgroundActor
@@ -518,11 +608,12 @@ public struct ReaderContentLoader {
         primaryClassName: String,
         readabilityHTML: String,
         resolvedTitle: String?,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool
     ) async throws {
         guard permitsCommit() else { return }
         try Task.checkCancellation()
-        try await updateContent(url: url) { record in
+        try await updateContent(url: url, account: account, permitsCommit: permitsCommit) { record in
             guard permitsCommit(), !Task.isCancelled,
                   !(record.compoundKey == primaryKey
                     && record.objectSchema.className == primaryClassName) else {
@@ -567,17 +658,30 @@ public struct ReaderContentLoader {
         url: URL,
         skipContentFiles: Bool = false,
         skipFeedEntries: Bool = false,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
+        permitsCommit: (@Sendable () -> Bool)? = nil,
         mutate: (Object & ReaderContentProtocol) -> Bool
     ) async throws {
         let storage = DiscoveryStorage()
-        let references = try await discoverContentReferences(
-            url: url,
-            skipContentFiles: skipContentFiles,
-            skipFeedEntries: skipFeedEntries,
-            storage: storage
-        )
+        let scoped = account != nil || permitsCommit != nil
+        let captures: [CapturedReaderPropagationRow]
+        let references: [ContentReference]
+        if scoped {
+            captures = try await discoverCapturedContent(
+                url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries,
+                storage: storage, capture: { CapturedReaderPropagationRow(content: $0, storage: storage) }
+            )
+            references = captures.map(\.reference)
+        } else {
+            captures = []
+            references = try await discoverContentReferences(
+                url: url, skipContentFiles: skipContentFiles,
+                skipFeedEntries: skipFeedEntries, storage: storage
+            )
+        }
         let timestamp = Date()
-        for reference in references {
+        for (index, reference) in references.enumerated() {
+            let captured = scoped ? captures[index] : nil
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
             try await realm.asyncWritePreservingOwnership {
                 // Realm's async transaction can begin after its caller was
@@ -585,11 +689,33 @@ public struct ReaderContentLoader {
                 // Fence the actual commit, not only the preceding lookup.
                 guard !Task.isCancelled else { return }
                 try reference.validateStorage()
-                guard let object = realm.object(ofType: reference.contentType,
-                    forPrimaryKey: reference.contentKey) as? (Object & ReaderContentProtocol),
-                    !object.isDeleted else { return }
+                let resolved: (Object & ReaderContentProtocol)?
+                if let captured {
+                    resolved = captured.resolve(in: realm)
+                } else {
+                    resolved = realm.object(ofType: reference.contentType,
+                        forPrimaryKey: reference.contentKey) as? (Object & ReaderContentProtocol)
+                }
+                guard let object = resolved, !object.isDeleted else { return }
+                // Legacy callers retain their original write boundary. Reader
+                // propagation explicitly supplies its captured selection/account.
+                if account == nil, permitsCommit == nil {
+                    if mutate(object) {
+                        object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                    }
+                    return
+                }
+                // All arbitrary permission callbacks and mutation preparation run
+                // outside Session's nonrecursive lock. Only durable commit is fenced.
+                guard permitsCommit?() != false, !Task.isCancelled else { throw CancellationError() }
                 if mutate(object) {
                     object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                }
+                guard permitsCommit?() != false, !Task.isCancelled else { throw CancellationError() }
+                try reference.validateStorage()
+                guard captured?.resolve(in: realm) != nil else { throw CancellationError() }
+                if let account {
+                    try ReaderContentAccountCommit.commit(in: realm, account: account)
                 }
             }
         }
@@ -1412,13 +1538,14 @@ This snippet loads when the pasteboard is empty in a debug build.
         _ appendedHTML: String,
         toContentURL contentURL: URL,
         storage: SnippetStorage,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool
     ) async throws -> Bool {
         guard contentURL.isSnippetURL, permitsCommit() else { return false }
         let normalizedAppendedHTML = normalizeSnippetSourceHTML(appendedHTML)
         return try await { @RealmBackgroundActor in
             try await updateCapturedSnippetRecords(
-                contentURL: contentURL, storage: storage, permitsCommit: permitsCommit
+                contentURL: contentURL, storage: storage, account: account, permitsCommit: permitsCommit
             ) { object in
                 let currentHTML = object.html
                 guard let mergedHTML = try? appendSnippetHTML(
@@ -1524,13 +1651,14 @@ This snippet loads when the pasteboard is empty in a debug build.
         contentURL: URL,
         title: String,
         storage: SnippetStorage,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool
     ) async throws -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard contentURL.isSnippetURL, !trimmedTitle.isEmpty, permitsCommit() else { return false }
         return try await { @RealmBackgroundActor in
             try await updateCapturedSnippetRecords(
-                contentURL: contentURL, storage: storage, permitsCommit: permitsCommit
+                contentURL: contentURL, storage: storage, account: account, permitsCommit: permitsCommit
             ) { object in
                 let isTitlePrefixOfContent = snippetTitleMatchesGeneratedPrefix(
                     trimmedTitle, sourceHTML: object.html
@@ -1568,13 +1696,14 @@ This snippet loads when the pasteboard is empty in a debug build.
         html: String,
         originalEditorHTML: String? = nil,
         storage: SnippetStorage,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool
     ) async throws -> Bool {
         guard contentURL.isSnippetURL, permitsCommit() else { return false }
         let normalizedHTML = snippetHTML(fromHTML: html)
         return try await { @RealmBackgroundActor in
             try await updateCapturedSnippetRecords(
-                contentURL: contentURL, storage: storage, permitsCommit: permitsCommit
+                contentURL: contentURL, storage: storage, account: account, permitsCommit: permitsCommit
             ) { object in
                 // The unchanged draft is the exact source supplied to the
                 // editor. Do not reserialize its body, even if current storage
@@ -1612,14 +1741,16 @@ This snippet loads when the pasteboard is empty in a debug build.
     static func updateCapturedSnippetRecords(
         contentURL: URL,
         storage: SnippetStorage,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool,
         mutate: (any ReaderContentProtocol) -> Bool
     ) async throws -> Bool {
+        try storage.validateStorage()
         let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: storage.bookmarkConfiguration
+            for: storage.bookmarkConfiguration, storageAdmission: storage.bookmarkAdmission
         )
         let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: storage.historyConfiguration
+            for: storage.historyConfiguration, storageAdmission: storage.historyAdmission
         )
         // App-owned snippets put both representations in the same Realm.
         // Group before writing so an account/cancellation change cannot commit
@@ -1630,7 +1761,10 @@ This snippet loads when the pasteboard is empty in a debug build.
         var didChange = false
         for group in groups {
             let groupDidChange = try await group.realm.asyncWritePreservingOwnership { () throws -> Bool in
+                try storage.validateStorage()
+                guard storage.containsCapturedTarget(in: group.realm) else { return false }
                 guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                try storage.validateStorage()
                 // Query live records only after acquiring the write. No
                 // managed object selected before an await can be revived or
                 // mutated after another writer deletes/replaces it.
@@ -1652,7 +1786,13 @@ This snippet loads when the pasteboard is empty in a debug build.
                         changed = true
                     }
                 }
-                guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                try storage.validateStorage()
+                guard !Task.isCancelled, permitsCommit(),
+                      storage.containsCapturedTarget(in: group.realm) else { throw CancellationError() }
+                try storage.validateStorage()
+                if let account {
+                    try ReaderContentAccountCommit.commit(in: group.realm, account: account)
+                }
                 return changed
             }
             didChange = didChange || groupDidChange
