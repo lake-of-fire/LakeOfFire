@@ -4184,7 +4184,7 @@ private final class ReaderPreparationRetryUITestModel: ObservableObject {
         // The live script binding is the startup prerequisite. A synthetic
         // bootstrap navigation would introduce unrelated content resolution
         // before this isolated fixture has installed its own Reader row.
-        guard realm == nil else { return }
+        guard !Task.isCancelled, caller.canEvaluateJavaScript, realm == nil else { return }
         do {
             // Finish isolated MainActor fixture setup before rendering can suspend.
             let realm = try Realm(configuration: .init(

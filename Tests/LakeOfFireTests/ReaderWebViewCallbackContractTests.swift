@@ -763,6 +763,15 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     func testNavigationFinishRetainsTransientHandlerUntilObserverRuns() async throws {
         let fixture = makeReaderWebViewHandlerFixture()
         let gate = ReaderCallbackGate()
+        let commitStarted = expectation(description: "semantic commit is suspended")
+        addTeardownBlock { @MainActor in
+            await gate.release()
+            let commit = fixture.taskManager.onNavigationCommittedTask
+            let finish = fixture.taskManager.onNavigationFinishedTask
+            fixture.taskManager.cancelNavigationWork()
+            _ = try? await commit?.value
+            _ = try? await finish?.value
+        }
         var observedFinishes = 0
         var transientHandler: ReaderWebViewHandler? = ReaderWebViewHandler(
             navigationTaskManager: fixture.taskManager,
@@ -774,7 +783,11 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             scriptCaller: fixture.handler.scriptCaller,
             navigator: fixture.handler.navigator
         )
-        fixture.taskManager.startOnNavigationCommitted { await gate.wait() }
+        fixture.taskManager.startOnNavigationCommitted {
+            commitStarted.fulfill()
+            await gate.wait()
+        }
+        await fulfillment(of: [commitStarted], timeout: 5)
         transientHandler?.onNavigationFinished(state: .empty)
         let finish = try XCTUnwrap(fixture.taskManager.onNavigationFinishedTask)
         // SwiftUI can replace its callback relay's handler while semantic
