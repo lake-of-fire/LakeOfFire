@@ -1,4 +1,6 @@
 import Foundation
+import struct LakeKit.AccountSessionAccess
+import struct LakeKit.AccountSessionSnapshot
 import LakeOfFireCore
 import RealmSwift
 import SwiftUIWebView
@@ -268,7 +270,10 @@ public extension ReaderContentProtocol {
     }
     
     @MainActor
-    func asyncWrite(_ block: @escaping ((Realm, any ReaderContentProtocol) -> Void)) async throws {
+    func asyncWrite(
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
+        _ block: @escaping (Realm, any ReaderContentProtocol) throws -> Void
+    ) async throws {
         guard !isInvalidated, !isDeleted, let owningRealm = realm else { return }
         let config = owningRealm.configuration
         // Preserve the physical row, including when nominated by a frozen
@@ -286,7 +291,17 @@ public extension ReaderContentProtocol {
                 guard let content = realm.resolve(reference),
                       !content.isInvalidated, !content.isDeleted,
                       content.url == sourceURL else { return }
-                block(realm, content)
+                try block(realm, content)
+                if let account {
+                    try Task.checkCancellation()
+                    guard !content.isInvalidated, !content.isDeleted, content.url == sourceURL else {
+                        throw CancellationError()
+                    }
+                    guard admission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: config) }) else {
+                        throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                    }
+                    try ReaderContentAccountCommit.commit(in: realm, account: account)
+                }
             }
         }()
         if !owningRealm.isFrozen {
@@ -973,4 +988,22 @@ public func makeReaderContentCompoundKey(url: URL?, html: String?) -> String? {
         key.append((String(format: "%02X", stableHash(html))))
     }
     return key
+}
+
+/// Settle an already admitted, validated write before releasing Session's
+/// publication fence. Callbacks and Session reads must finish before this call.
+/// RealmOwnedWriteBridge recognizes synchronous settlement and does not submit
+/// a second async commit or roll back a notification's successor transaction.
+enum ReaderContentAccountCommit {
+    @RealmBackgroundActor
+    static func commit(
+        in realm: Realm,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)
+    ) throws {
+        guard account.snapshot.identity != .transitioning else { throw CancellationError() }
+        guard try account.access.publish(ifCurrent: account.snapshot, {
+            try Task.checkCancellation()
+            try realm.commitWrite()
+        }) else { throw CancellationError() }
+    }
 }
