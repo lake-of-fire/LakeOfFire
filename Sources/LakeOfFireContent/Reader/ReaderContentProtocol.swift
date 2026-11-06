@@ -1,5 +1,6 @@
 import Foundation
-import LakeKit
+import struct LakeKit.AccountSessionAccess
+import struct LakeKit.AccountSessionSnapshot
 import LakeOfFireCore
 import RealmSwift
 import SwiftUIWebView

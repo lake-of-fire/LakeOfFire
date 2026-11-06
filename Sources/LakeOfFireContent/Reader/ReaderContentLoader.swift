@@ -1,6 +1,7 @@
 import SwiftUI
 import LakeOfFireCore
-import LakeKit
+import struct LakeKit.AccountSessionAccess
+import struct LakeKit.AccountSessionSnapshot
 import RealmSwift
 import MarkdownKit
 import SwiftSoup
@@ -1966,7 +1967,7 @@ open class PasteboardHTMLGenerator: HtmlGenerator {
 
 fileprivate extension URL {
     var contentType: UTType {
-        return UTType(filenameExtension: self.pathExtension) ?? .data
+        return UTType(filenameExtension: (self as NSURL).pathExtension ?? "") ?? .data
     }
 }
 
