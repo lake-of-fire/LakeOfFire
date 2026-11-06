@@ -8,6 +8,125 @@ import XCTest
 @testable import LakeOfFireReader
 
 final class AsahiFeedReadabilityPipelineTests: XCTestCase {
+
+    @MainActor
+    func testAtomRefreshResolvesDocumentAndScopedXMLBasesForEveryLinkConsumer() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        let originalHandler = FeedURLProtocol.requestHandler
+        let originalResponseURL = FeedURLProtocol.responseURLOverride
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = originalHandler
+            FeedURLProtocol.responseURLOverride = originalResponseURL
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock { await ReaderContentLoader.resetTransientCachesForTesting() }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://origin.example/request.atom")!
+        feed.deleteOrphans = true
+        try realm.write { realm.add(feed) }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        // URLSession exposes a redirect's final document location on the response.
+        // The requested subscription URL intentionally has a different host/path.
+        FeedURLProtocol.responseURLOverride = URL(string: "https://cdn.example/feeds/current.atom?revision=7")!
+        let cases: [(feedBase: String, entryBase: String, linkBase: String, href: String, expected: String)] = [
+            ("", "", "", "article?edition=ja&amp;from=feed#body",
+             "https://cdn.example/feeds/article?edition=ja&from=feed#body"),
+            ("xml:base='../library/'", "xml:base='volume/'", "xml:base='../articles/'", "one%2Ftwo?x=%26#part",
+             "https://cdn.example/library/articles/one%2Ftwo?x=%26#part"),
+            ("xml:base='https://publisher.example/root/'", "xml:base='volume/'", "", "/article?q=1#body",
+             "https://publisher.example/article?q=1#body"),
+            ("", "", "", "//articles.example/one", "https://articles.example/one"),
+            ("", "", "", "?edition=ja#body", "https://cdn.example/feeds/current.atom?edition=ja#body"),
+            ("", "", "", "#body", "https://cdn.example/feeds/current.atom?revision=7#body"),
+            ("", "", "", "https://other.example/absolute?x=%2F#body", "https://other.example/absolute?x=%2F#body"),
+            ("", "", "", "article with space", "https://cdn.example/feeds/article%20with%20space"),
+            ("", "", "", "", "https://cdn.example/feeds/current.atom?revision=7"),
+            ("", "", "", "legacy-article", "https://cdn.example/feeds/legacy-article"),
+        ]
+        for (revision, fixture) in cases.enumerated() {
+            let namespace = revision == cases.count - 1 ? "" : "xmlns='http://www.w3.org/2005/Atom'"
+            let body = Data("""
+            <feed \(namespace) \(fixture.feedBase)>
+              <title>Feed</title><id>urn:feed:1</id><updated>2026-11-06T00:00:00Z</updated>
+              <entry \(fixture.entryBase)><id>urn:entry:1</id><title>Article</title>
+                <updated>2026-11-06T00:00:00Z</updated>
+                <link \(fixture.linkBase) type='text/html' href='\(fixture.href)'/>
+                <link xml:base='https://media.example/assets/' rel='enclosure' type='image/jpeg' href='cover.jpg'/>
+                <link xml:base='https://media.example/assets/' rel='voice-frame' href='frame'/>
+                <link xml:base='https://media.example/assets/' rel='voice-audio' href='one.mp3'/>
+                <link xml:base='https://media.example/assets/' rel='voice-audio' href='two.mp3'/>
+                <link xml:base='https://media.example/assets/' rel='voice-audio-subtitles' type='text/vtt' href='captions.vtt'/>
+                <link xml:base='https://media.example/assets/' rel='reddit-translations' href='discussion?lang=ja&amp;sort=new#text'/>
+                <summary>Summary</summary>
+                <foreign:link xmlns:foreign='urn:foreign' xml:base='https://wrong.example/' href='wrong'/>
+                <atom:link xmlns:atom='http://www.w3.org/2005/Atom' href='https://wrong.example/prefixed'/>
+                <link xmlns='urn:foreign' xml:base='https://foreign.example/' rel='related' href='extension'/>
+                <content type='xhtml'><div xmlns='http://www.w3.org/1999/xhtml' xml:base='https://wrong.example/'>
+                  <a href='wrong'>Body</a>
+                </div></content>
+              </entry>
+              <entry><id>urn:entry:2</id><title>Sibling</title>
+                <updated>2026-11-06T00:00:00Z</updated>
+                <link type='text/html' href='https://sibling.example/article'/>
+                <link rel='voice-frame' href='sibling-frame'/>
+              </entry>
+              <entry xmlns='urn:foreign'><id>urn:foreign:entry</id><title>Legacy extension</title>
+                <link href='https://foreign.example/article'/>
+              </entry>
+            </feed>
+            """.utf8)
+            FeedURLProtocol.requestHandler = { _ in
+                (200, ["Content-Type": "application/atom+xml", "ETag": "\"bases-\(revision)\""], body)
+            }
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let active = Array(realm.objects(FeedEntry.self).filter { $0.feedID == feed.id && !$0.isDeleted })
+            XCTAssertEqual(active.count, 3)
+            XCTAssertEqual(active.first { $0.title == "Legacy extension" }?.url.absoluteString,
+                           "https://foreign.example/article",
+                           "URL resolution preserves FeedKit's raw-path namespace conventions")
+            let article = try XCTUnwrap(active.first { $0.title == "Article" })
+            XCTAssertEqual(article.url.absoluteString, fixture.expected)
+            XCTAssertEqual(article.imageUrl?.absoluteString, "https://media.example/assets/cover.jpg")
+            XCTAssertEqual(article.voiceFrameUrl?.absoluteString, "https://media.example/assets/frame")
+            XCTAssertEqual(Array(article.voiceAudioURLs).map(\.absoluteString),
+                           ["https://media.example/assets/one.mp3", "https://media.example/assets/two.mp3"])
+            XCTAssertEqual(article.voiceAudioURL?.absoluteString, "https://media.example/assets/one.mp3")
+            XCTAssertEqual(article.audioSubtitlesURL?.absoluteString, "https://media.example/assets/captions.vtt")
+            XCTAssertEqual(article.redditTranslationsUrl?.absoluteString,
+                           "https://media.example/assets/discussion?lang=ja&sort=new#text")
+            let sibling = try XCTUnwrap(active.first { $0.title == "Sibling" })
+            let siblingBase = fixture.feedBase.isEmpty
+                ? "https://cdn.example/feeds/"
+                : (fixture.feedBase.contains("publisher.example")
+                   ? "https://publisher.example/root/" : "https://cdn.example/library/")
+            XCTAssertEqual(sibling.voiceFrameUrl?.absoluteString, siblingBase + "sibling-frame")
+            XCTAssertEqual(feed.rssUrl.absoluteString, "https://origin.example/request.atom")
+            XCTAssertEqual(feed.lastFetchedRSSURL, feed.rssUrl,
+                           "Document resolution must not alter subscription validator provenance")
+        }
+    }
+
+
     @MainActor
     func testAtomRefreshPrefersHTMLAlternatesRegardlessOfLinkOrder() async throws {
         let configuration = makeRealmConfiguration()
@@ -152,6 +271,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     }
 
     private final class FeedURLProtocol: URLProtocol {
+        nonisolated(unsafe) static var responseURLOverride: URL?
         nonisolated(unsafe) static var responses = [URL: Data]()
         nonisolated(unsafe) static var requestHandler:
             ((URLRequest) -> (statusCode: Int, headers: [String: String], data: Data))?
@@ -195,7 +315,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
                 return
             }
             let response = HTTPURLResponse(
-                url: url,
+                url: Self.responseURLOverride ?? url,
                 statusCode: responsePayload.statusCode,
                 httpVersion: "HTTP/1.1",
                 headerFields: responsePayload.headers
