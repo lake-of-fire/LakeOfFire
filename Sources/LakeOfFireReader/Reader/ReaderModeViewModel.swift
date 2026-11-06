@@ -1540,6 +1540,59 @@ public class ReaderModeViewModel: ObservableObject {
     ) async -> ReaderModeFrameContentReplacement?)?
     
     @Published public var isReaderMode = false
+    public struct PreparationFailure: Identifiable, Equatable {
+        public let id: UUID
+        public let message: String
+    }
+
+    @Published public private(set) var preparationFailure: PreparationFailure?
+    private var preparationFailureIsCurrent: (@MainActor () -> Bool)?
+    private var preparationRetry: (@MainActor () -> Void)?
+
+    /// Presentation and action share the original selection/account fence.
+    public func currentPreparationFailure() -> PreparationFailure? {
+        guard preparationFailureIsCurrent?() == true else { return nil }
+        return preparationFailure
+    }
+
+    public func retryPreparation(failureID: UUID) {
+        guard preparationFailure?.id == failureID,
+              preparationFailureIsCurrent?() == true,
+              let retry = preparationRetry else { return }
+        clearPreparationFailure()
+        retry()
+    }
+
+    private func clearPreparationFailure() {
+        preparationFailure = nil
+        preparationFailureIsCurrent = nil
+        preparationRetry = nil
+    }
+
+    private func failPreparation(
+        for url: URL, generation: UUID, readerContent: ReaderContent,
+        scriptCaller: WebViewScriptCaller
+    ) {
+        guard let originatingContentIsCurrent = activeRendersByURL[canonicalRenderKey(url)]?.originatingContentIsCurrent,
+              originatingContentIsCurrent(), isCurrentRender(for: url, generation: generation) else { return }
+        cancelReaderModeLoad(for: url, readerContent: readerContent)
+        navigator?.forceClearLoadingIndicators(reason: "readerMode.preparationFailed", pageURL: url)
+        let failedBinding = scriptCaller.currentJavaScriptBindingToken
+        preparationFailureIsCurrent = { [weak scriptCaller] in
+            guard let scriptCaller else { return false }
+            return originatingContentIsCurrent()
+                && scriptCaller.currentJavaScriptBindingToken == failedBinding
+        }
+        preparationRetry = { [weak self, weak readerContent] in
+            guard let self, let readerContent else { return }
+            self.showReaderView(readerContent: readerContent, scriptCaller: scriptCaller)
+        }
+        preparationFailure = PreparationFailure(
+            id: UUID(),
+            message: "Reader preparation failed. Check your connection and available storage, then try again."
+        )
+    }
+
     public let loadingState = ReaderModeLoadingState()
     @Published public var isReaderModeLoading = false {
         didSet { updateLoadingStateSnapshot() }
@@ -1639,6 +1692,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func beginReaderModeLoad(for url: URL, suppressSpinner: Bool = false) {
+        clearPreparationFailure()
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         if !pendingMatches {
@@ -1662,6 +1716,7 @@ public class ReaderModeViewModel: ObservableObject {
         if let url, let pendingReaderModeURL, !pendingKeysMatch(pendingReaderModeURL, url) {
             return
         }
+        clearPreparationFailure()
         let completedURL = pendingReaderModeURL ?? url ?? lastRenderedURL
         if let url {
             cancelActiveRender(for: url)
@@ -2631,8 +2686,9 @@ public class ReaderModeViewModel: ObservableObject {
         let processingAccount = readerAccountSessionAccess.map(ReaderModeProcessingAccount.init(access:))
         let accountSession = processingAccount?.snapshot
         let accountBoundaryID = processingAccount?.access.boundaryID
-        let originatingContentIsCurrent = { @MainActor in
-            self.readerAccountSessionAccess?.snapshot == accountSession
+        let originatingContentIsCurrent = { @MainActor [weak self, weak readerContent] in
+            guard let self, let readerContent else { return false }
+            return self.readerAccountSessionAccess?.snapshot == accountSession
                 && self.readerAccountSessionAccess?.boundaryID == accountBoundaryID
                 && selectionIsCurrent()
                 && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
@@ -2740,11 +2796,9 @@ public class ReaderModeViewModel: ObservableObject {
                     )
                 } catch {
                     print(error)
-                    await self.cancelReaderModeLoad(
-                        for: contentURL,
-                        ifOwnedBy: generation,
-                        readerContent: readerContent,
-                        originatingContentIsCurrent: originatingContentIsCurrent
+                    await self.failPreparation(
+                        for: contentURL, generation: generation,
+                        readerContent: readerContent, scriptCaller: scriptCaller
                     )
                 }
             case .unavailable:
@@ -2939,11 +2993,9 @@ public class ReaderModeViewModel: ObservableObject {
             guard selectionIsCurrent(), resolvedContentIsCurrent?() ?? true,
                   urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL) else { return }
             print(error)
-            cancelReaderModeLoad(
-                for: contentURL,
-                ifOwnedBy: renderGeneration,
-                readerContent: readerContent,
-                originatingContentIsCurrent: originatingContentIsCurrent
+            failPreparation(
+                for: contentURL, generation: renderGeneration,
+                readerContent: readerContent, scriptCaller: scriptCaller
             )
         }
     }
@@ -3588,6 +3640,9 @@ public class ReaderModeViewModel: ObservableObject {
         }
         try Task.checkCancellation()
         
+        if preparationFailure != nil, preparationFailureIsCurrent?() != true {
+            clearPreparationFailure()
+        }
         let committedURL = content.url
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
         let accountSession = readerAccountSessionAccess?.snapshot
