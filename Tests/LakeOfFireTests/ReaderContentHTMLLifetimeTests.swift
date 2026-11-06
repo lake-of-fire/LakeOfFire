@@ -1093,3 +1093,48 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertNotEqual(mode.currentPreparationFailure()?.id, failure.id)
     }
 }
+
+extension ReaderContentHTMLLifetimeTests {
+    func testRetiredDocumentPreparationFailureCannotSettleReplacement() async throws {
+        for initiallyMounted in [true, false] {
+            let (realm, row, reader, mode, _) = try renderFixture()
+            defer { withExtendedLifetime(realm) {} }
+            try prepareFinalTransformMetadata(row, in: realm)
+            mode.readabilityContent = "<html><body><div id='reader-content'>Binding article.</div></body></html>"
+            let caller = WebViewScriptCaller()
+            if initiallyMounted {
+                caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                    .init(true)
+                }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+            }
+            var replacedBinding = false
+            mode.processReadabilityContent = { _, _, _, _, _, _, _ in
+                await MainActor.run {
+                    caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                        .init(true)
+                    }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+                    reader.isRenderingReaderHTML = true
+                    replacedBinding = true
+                }
+                throw RequiredPreparationFailure()
+            }
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            await mode.waitForReaderModeRender(for: fileURL)
+            XCTAssertTrue(replacedBinding)
+            if initiallyMounted {
+                XCTAssertNil(mode.currentPreparationFailure(), "An old error cannot adopt the replacement binding")
+                XCTAssertNil(mode.preparationFailure)
+                XCTAssertTrue(mode.isReaderModeLoading, "Retired work cannot clear replacement loading")
+                XCTAssertTrue(reader.isRenderingReaderHTML)
+                XCTAssertNotNil(mode.pendingReaderModeURL)
+                XCTAssertEqual(mode.currentRenderGenerationDescription(for: fileURL), "nil",
+                    "Retired failed work cannot become a completed render owner")
+            } else {
+                XCTAssertNotNil(mode.currentPreparationFailure(), "First mounting must preserve a current preparation error")
+                XCTAssertFalse(mode.isReaderModeLoading)
+                XCTAssertFalse(reader.isRenderingReaderHTML)
+                XCTAssertNil(mode.pendingReaderModeURL)
+            }
+        }
+    }
+}

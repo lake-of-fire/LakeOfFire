@@ -4088,32 +4088,50 @@ nonisolated public func processForReaderMode(
 }
 
 #if DEBUG && os(iOS)
-/// Local UI-test host for the production failure overlay and real render retry.
-/// The only substitution is a processor error on the first attempt.
+/// Mount the real Reader/WebView, overlay and document-ready message handling
+/// around controlled HTML. The first processing attempt fails; Retry returns
+/// the fixture article through the same rendering entrypoint.
 @MainActor
 public struct ReaderPreparationRetryUITestHost: View {
     @StateObject private var fixture: ReaderPreparationRetryUITestModel
     @ObservedObject private var mode: ReaderModeViewModel
+    @ObservedObject private var caller: WebViewScriptCaller
+    @ObservedObject private var readerViewModel: ReaderViewModel
 
     public init() {
         let fixture = ReaderPreparationRetryUITestModel()
         _fixture = StateObject(wrappedValue: fixture)
         _mode = ObservedObject(wrappedValue: fixture.mode)
+        _caller = ObservedObject(wrappedValue: fixture.caller)
+        _readerViewModel = ObservedObject(wrappedValue: fixture.viewModel)
     }
 
     public var body: some View {
-        let failure = mode.currentPreparationFailure()
-        Text(fixture.report)
-            .accessibilityIdentifier("ReaderPreparationRetry.Report")
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .modifier(ReaderLoadingProgressOverlayViewModifier(
-                isLoading: mode.isReaderModeLoading,
-                failureMessage: failure?.message,
-                retry: {
-                    if let failure { fixture.retry(failureID: failure.id) }
-                }
-            ))
-            .task { await fixture.start() }
+        WithPerceptionTracking {
+            let fixture = fixture
+            let hasCaller = caller.hasAsyncCaller
+            let renderReady = readerViewModel.state.hasReaderRenderReady
+            let isLoading = mode.isReaderModeLoading
+            VStack(spacing: 0) {
+                Reader(onNavigationFinished: { [weak fixture] _ in
+                    Task { @MainActor [weak fixture] in await fixture?.start() }
+                })
+                .environmentObject(fixture.reader)
+                .environmentObject(readerViewModel)
+                .environmentObject(mode)
+                .environmentObject(caller)
+                .environmentObject(fixture.media)
+                .environment(\.webViewNavigator, fixture.navigator)
+                Text(fixture.report)
+                    .font(.caption)
+                    .accessibilityIdentifier("ReaderPreparationRetry.Report")
+            }
+            .task(id: hasCaller) {
+                if hasCaller { fixture.bootstrap() }
+            }
+            .onChange(of: renderReady) { _ in fixture.recordRecoveryIfReady() }
+            .onChange(of: isLoading) { _ in fixture.recordRecoveryIfReady() }
+        }
     }
 }
 
@@ -4121,17 +4139,22 @@ public struct ReaderPreparationRetryUITestHost: View {
 private final class ReaderPreparationRetryUITestModel: ObservableObject {
     private enum InjectedFailure: Error { case requiredPreparation }
     let mode = ReaderModeViewModel()
-    private let reader = ReaderContent()
-    private let navigator = WebViewNavigator()
-    private let caller = WebViewScriptCaller()
+    let reader = ReaderContent()
+    let viewModel = ReaderViewModel()
+    let media = ReaderMediaPlayerViewModel()
+    let navigator = WebViewNavigator()
+    let caller = WebViewScriptCaller()
     private let url = URL(string: "reader-file://file/load/ui-test/preparation-retry.txt")!
     private var realm: Realm?
     private var attempts = 0
+    private var requestedBootstrap = false
     @Published private(set) var report = "Preparing reader"
 
     init() {
         let html = "<html><body><div id='reader-content'><p>Recovered reader content.</p></div></body></html>"
         mode.navigator = navigator
+        viewModel.navigator = navigator
+        viewModel.scriptCaller = caller
         mode.readerLocalHTMLLoader = { _ in html }
         mode.readerPublicationDateLoader = { _ in nil }
         mode.swiftReadabilityProcessor = { _, _, _, _ in html }
@@ -4147,8 +4170,15 @@ private final class ReaderPreparationRetryUITestModel: ObservableObject {
         }
     }
 
+    func bootstrap() {
+        guard !requestedBootstrap else { return }
+        requestedBootstrap = true
+        navigator.loadHTML("<html><body><p>Preparing Reader.</p></body></html>",
+            baseURL: URL(string: "https://example.invalid/reader-preparation-bootstrap")!)
+    }
+
     func start() async {
-        guard realm == nil else { return }
+        guard requestedBootstrap, realm == nil else { return }
         do {
             let realm = try Realm(configuration: .init(
                 inMemoryIdentifier: UUID().uuidString,
@@ -4166,30 +4196,25 @@ private final class ReaderPreparationRetryUITestModel: ObservableObject {
             self.realm = realm
             reader.pageURL = url
             reader.content = row
+            reader.isRenderingReaderHTML = true
             mode.showReaderView(readerContent: reader, scriptCaller: caller)
             await mode.waitForReaderModeRender(for: url)
-            report = mode.currentPreparationFailure() == nil ? "Missing expected failure" : "Failed attempt 1"
+            if attempts == 1 {
+                report = mode.currentPreparationFailure() == nil ? "Missing expected failure" : "Failed attempt 1"
+            }
+            recordRecoveryIfReady()
         } catch {
             report = "Fixture setup failed: \(error)"
         }
     }
 
-    func retry(failureID: UUID) {
-        mode.retryPreparation(failureID: failureID)
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            await mode.waitForReaderModeRender(for: url)
-            guard attempts == 2,
-                  navigator.debugLoadSnapshot.lastDataLoadBaseURL == url.absoluteString,
-                  let generation = UUID(uuidString: mode.currentRenderGenerationDescription(for: url)),
-                  mode.handleRenderedReaderDocumentReady(
-                    pageURL: url, hasReaderContent: true, renderGeneration: generation
-                  ) else {
-                report = "Retry did not dispatch its document"
-                return
-            }
-            report = "Recovered after 2 attempts"
-        }
+    func recordRecoveryIfReady() {
+        guard attempts == 2,
+              viewModel.state.hasReaderRenderReady,
+              !mode.isReaderModeLoading,
+              mode.currentPreparationFailure() == nil,
+              navigator.debugLoadSnapshot.lastDataLoadBaseURL == url.absoluteString else { return }
+        report = "Recovered after 2 attempts"
     }
 }
 #endif
