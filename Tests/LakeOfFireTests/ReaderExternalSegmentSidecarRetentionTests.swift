@@ -251,7 +251,7 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         XCTAssertEqual(invocationCount, 1)
     }
 
-    func testSchemaNineRequiresExplicitSentenceIdentityAndExactRuntimeMapping() {
+    func testCurrentSchemaRequiresExplicitSentenceIdentityAndExactRuntimeMapping() {
         let validCloneSidecar = sidecarData(
             runtimeIDTokens: ["!runtime-0", "!runtime-1"],
             segmentHashIndexes: [0, 0],
@@ -291,6 +291,22 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         ))
     }
 
+    func testLegacyAndFutureSchemasRequireRegeneration() {
+        let current = ReaderCompactSegmentSidecarSchema.currentVersion
+        for version in [current - 1, current + 1] {
+            let sidecar = sidecarData(
+                runtimeIDTokens: ["!runtime-0"],
+                segmentHashIndexes: [0],
+                sentenceIdentifierIndexes: [0],
+                paragraphIdentifierIndexes: [0],
+                schemaVersion: version
+            )
+            XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(
+                inlineHTML(sidecarData: sidecar)
+            ), "Only the current schema may reuse durable segment identities: \(version)")
+        }
+    }
+
     private func temporaryDirectoryURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("reader-sidecar-\(UUID().uuidString)", isDirectory: true)
@@ -309,7 +325,8 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         runtimeIDTokens: [String],
         segmentHashIndexes: [Int?],
         sentenceIdentifierIndexes: [Int?],
-        paragraphIdentifierIndexes: [Int?]
+        paragraphIdentifierIndexes: [Int?],
+        schemaVersion: Int = ReaderCompactSegmentSidecarSchema.currentVersion
     ) -> Data {
         let segments = zip(
             runtimeIDTokens,
@@ -327,7 +344,7 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
             ]
         }
         return try! JSONSerialization.data(withJSONObject: [
-            "v": 9,
+            "v": schemaVersion,
             "t": [
                 "j": [],
                 "n": [],
