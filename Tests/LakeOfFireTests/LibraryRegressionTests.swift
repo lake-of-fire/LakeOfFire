@@ -1,4 +1,5 @@
 import BigSyncKit
+import SwiftUIDownloads
 import RealmSwift
 @testable import RealmSwiftGaps
 import XCTest
@@ -837,6 +838,289 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(realm.objects(Feed.self).count, 1)
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
             .map { ($0.recordName, $0.generation) }), generations)
+    }
+
+
+    @RealmBackgroundActor
+    func testStandardOPMLImportsNestedFoldersAndKeepsSameURLInDifferentFolders() async throws {
+        try await withStandardOPMLFixture { realm, configuration, directory, manager in
+            let file = try self.writeStandardOPML("""
+            <outline text="Courses">
+              <outline text="First"><outline text="News" xmlUrl="https://example.com/news.xml"/></outline>
+              <outline text="Second"><outline text="News" xmlUrl="https://example.com/news.xml"/></outline>
+            </outline>
+            """, in: directory)
+            try await manager.importOPML(fileURL: file, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let category = try XCTUnwrap(realm.objects(FeedCategory.self).first)
+            let folders = Array(realm.objects(FeedDirectory.self))
+            let feeds = Array(realm.objects(Feed.self))
+            XCTAssertEqual(category.title, "Courses")
+            XCTAssertEqual(Set(folders.map(\.title)), ["First", "Second"])
+            XCTAssertEqual(feeds.count, 2)
+            XCTAssertEqual(Set(feeds.compactMap(\.directoryID)), Set(folders.map(\.id)))
+            XCTAssertTrue(feeds.allSatisfy { $0.categoryID == category.id })
+            XCTAssertTrue(feeds.allSatisfy { $0.rssUrl == URL(string: "https://example.com/news.xml")! })
+            let identities = Set(feeds.map(\.id))
+            let generations = self.standardOPMLGenerations(in: realm)
+            try await manager.importOPML(fileURL: file, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            XCTAssertEqual(realm.objects(FeedCategory.self).count, 1)
+            XCTAssertEqual(realm.objects(FeedDirectory.self).count, 2)
+            XCTAssertEqual(Set(realm.objects(Feed.self).map(\.id)), identities)
+            XCTAssertEqual(self.standardOPMLGenerations(in: realm), generations)
+        }
+    }
+
+    @RealmBackgroundActor
+    func testStandardFlatOPMLUsesMyLibraryAndReimportsWithoutDuplicates() async throws {
+        try await withStandardOPMLFixture { realm, configuration, directory, manager in
+            let file = try self.writeStandardOPML("""
+            <outline text="日本語 News" type="rss" xmlUrl="https://example.com/news.xml"/>
+            <outline text="Podcast" type="rss" xmlUrl="https://example.com/podcast.xml"/>
+            """, in: directory)
+            try await manager.importOPML(fileURL: file, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let category = try XCTUnwrap(realm.objects(FeedCategory.self).first)
+            let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+            XCTAssertEqual(category.title, "My Library")
+            XCTAssertEqual(Array(library.categoryIDs), [category.id])
+            XCTAssertEqual(realm.objects(Feed.self).count, 2)
+            XCTAssertTrue(realm.objects(Feed.self).allSatisfy { $0.categoryID == category.id && $0.directoryID == nil })
+            let generations = self.standardOPMLGenerations(in: realm)
+            try await manager.importOPML(fileURL: file, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            XCTAssertEqual(realm.objects(FeedCategory.self).count, 1)
+            XCTAssertEqual(realm.objects(Feed.self).count, 2)
+            XCTAssertEqual(self.standardOPMLGenerations(in: realm), generations)
+        }
+    }
+
+    @RealmBackgroundActor
+    func testStandardOPMLPreservesCustomizedRowsAndExistingCategoryOrder() async throws {
+        try await withStandardOPMLFixture { realm, configuration, directory, manager in
+            let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+            let category = FeedCategory()
+            category.title = "Courses"
+            category.isArchived = true
+            let other = FeedCategory()
+            other.title = "Other"
+            let folder = FeedDirectory()
+            folder.title = "First"
+            folder.categoryID = category.id
+            folder.ordinal = 91
+            folder.isArchived = true
+            let feed = Feed()
+            feed.categoryID = category.id
+            feed.directoryID = folder.id
+            feed.rssUrl = URL(string: "https://example.com/news.xml")!
+            feed.title = "My edited title"
+            feed.ordinal = 73
+            feed.isArchived = true
+            feed.rssContainsFullContent = true
+            feed.isReaderModeByDefault = false
+            feed.extractImageFromContent = false
+            feed.meaningfulContentMinLength = 321
+            try realm.write {
+                realm.add([category, other, folder, feed])
+                library.categoryIDs.append(objectsIn: [category.id, other.id])
+                category.refreshChangeMetadata(explicitlyModified: true)
+                other.refreshChangeMetadata(explicitlyModified: true)
+                folder.refreshChangeMetadata(explicitlyModified: true)
+                feed.refreshChangeMetadata(explicitlyModified: true)
+                library.refreshChangeMetadata(explicitlyModified: true)
+            }
+            let generations = self.standardOPMLGenerations(in: realm)
+            let file = try self.writeStandardOPML("""
+            <outline text="Other"/>
+            <outline text="Courses"><outline text="First">
+              <outline text="Publisher title" xmlUrl="https://example.com/news.xml"/>
+            </outline></outline>
+            """, in: directory)
+            try await manager.importOPML(fileURL: file, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            XCTAssertEqual(Array(library.categoryIDs), [category.id, other.id])
+            XCTAssertEqual(feed.title, "My edited title")
+            XCTAssertEqual(feed.ordinal, 73)
+            XCTAssertTrue(feed.isArchived)
+            XCTAssertTrue(feed.rssContainsFullContent)
+            XCTAssertFalse(feed.isReaderModeByDefault)
+            XCTAssertFalse(feed.extractImageFromContent)
+            XCTAssertEqual(feed.meaningfulContentMinLength, 321)
+            XCTAssertTrue(category.isArchived)
+            XCTAssertTrue(folder.isArchived)
+            XCTAssertEqual(folder.ordinal, 91)
+            XCTAssertEqual(feed.directoryID, folder.id)
+            XCTAssertEqual(realm.objects(FeedCategory.self).count, 2)
+            XCTAssertEqual(realm.objects(FeedDirectory.self).count, 1)
+            XCTAssertEqual(realm.objects(Feed.self).count, 1)
+            XCTAssertEqual(self.standardOPMLGenerations(in: realm), generations)
+        }
+    }
+
+
+    @RealmBackgroundActor
+    func testStandardOPMLAppliesCategoryAttributesOnlyAtFirstCreation() async throws {
+        try await withStandardOPMLFixture { realm, configuration, directory, manager in
+            let file = try self.writeStandardOPML("""
+            <outline text="Courses" isCommented="true" backgroundImageUrl="https://example.com/original.jpg"/>
+            """, head: "<ownerName>Original publisher</ownerName>", in: directory)
+            try await manager.importOPML(fileURL: file, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let category = try XCTUnwrap(realm.objects(FeedCategory.self).first)
+            XCTAssertEqual(category.title, "Courses")
+            XCTAssertEqual(category.opmlOwnerName, "Original publisher")
+            XCTAssertEqual(category.backgroundImageUrl, URL(string: "https://example.com/original.jpg")!)
+            XCTAssertTrue(category.isArchived)
+            XCTAssertNil(category.opmlURL)
+            let generations = self.standardOPMLGenerations(in: realm)
+            let changed = try self.writeStandardOPML("""
+            <outline text="Courses" isCommented="false" backgroundImageUrl="https://example.com/changed.jpg"/>
+            """, head: "<ownerName>Changed publisher</ownerName>", in: directory)
+            try await manager.importOPML(fileURL: changed, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            XCTAssertEqual(realm.objects(FeedCategory.self).count, 1)
+            XCTAssertEqual(category.opmlOwnerName, "Original publisher")
+            XCTAssertEqual(category.backgroundImageUrl, URL(string: "https://example.com/original.jpg")!)
+            XCTAssertTrue(category.isArchived)
+            XCTAssertEqual(self.standardOPMLGenerations(in: realm), generations)
+        }
+    }
+
+    @RealmBackgroundActor
+    func testStandardOPMLRejectsAmbiguousLocalCategoryWithoutChoosingARow() async throws {
+        try await withStandardOPMLFixture { realm, configuration, directory, manager in
+            let first = FeedCategory()
+            first.title = "Courses"
+            let second = FeedCategory()
+            second.title = "Courses"
+            try realm.write { realm.add([first, second]) }
+            let generations = self.standardOPMLGenerations(in: realm)
+            let file = try self.writeStandardOPML("""
+            <outline text="Courses"><outline text="News" xmlUrl="https://example.com/news.xml"/></outline>
+            """, in: directory)
+            do {
+                try await manager.importOPML(fileURL: file, realmConfiguration: configuration)
+                XCTFail("Ambiguous local identities must not choose a category")
+            } catch {
+                XCTAssertEqual((error as NSError).domain, NSCocoaErrorDomain)
+                XCTAssertEqual((error as NSError).code, CocoaError.fileReadCorruptFile.rawValue)
+            }
+            XCTAssertEqual(realm.objects(FeedCategory.self).count, 2)
+            XCTAssertTrue(realm.objects(Feed.self).isEmpty)
+            XCTAssertEqual(self.standardOPMLGenerations(in: realm), generations)
+        }
+    }
+
+    @RealmBackgroundActor
+    func testConcurrentStandardOPMLImportsShareTheOwnedIdentityLookup() async throws {
+        try await withStandardOPMLFixture { realm, configuration, directory, manager in
+            let file = try self.writeStandardOPML("""
+            <outline text="Courses"><outline text="News" xmlUrl="https://example.com/news.xml"/></outline>
+            """, in: directory)
+            let first = Task { @RealmBackgroundActor in
+                try await manager.importOPML(fileURL: file, realmConfiguration: configuration)
+            }
+            let second = Task { @RealmBackgroundActor in
+                try await manager.importOPML(fileURL: file, realmConfiguration: configuration)
+            }
+            let firstResult = await first.result
+            let secondResult = await second.result
+            try firstResult.get()
+            try secondResult.get()
+            await realm.asyncRefresh()
+            XCTAssertEqual(realm.objects(FeedCategory.self).count, 1)
+            XCTAssertEqual(realm.objects(Feed.self).count, 1)
+        }
+    }
+
+    @RealmBackgroundActor
+    func testStandardOPMLDoesNotAdoptManagedCategoriesOrMalformedUUIDs() async throws {
+        try await withStandardOPMLFixture { realm, configuration, directory, manager in
+            let managed = FeedCategory()
+            managed.title = "Courses"
+            managed.opmlURL = URL(string: "https://example.com/managed.opml")!
+            try realm.write { realm.add(managed) }
+            let file = try self.writeStandardOPML("""
+            <outline text="Courses"><outline text="News" xmlUrl="https://example.com/news.xml"/></outline>
+            <outline text="Ignored" uuid="not-a-uuid"><outline text="Ignored child" xmlUrl="https://example.com/ignored.xml"/></outline>
+            """, in: directory)
+            try await manager.importOPML(fileURL: file, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let local = try XCTUnwrap(realm.objects(FeedCategory.self).first { $0.opmlURL == nil })
+            XCTAssertNotEqual(local.id, managed.id)
+            XCTAssertEqual(local.title, "Courses")
+            XCTAssertEqual(realm.objects(FeedCategory.self).count, 2)
+            XCTAssertEqual(realm.objects(Feed.self).count, 1)
+            XCTAssertEqual(realm.objects(Feed.self).first?.categoryID, local.id)
+            XCTAssertFalse(managed.isDeleted)
+        }
+    }
+
+    @RealmBackgroundActor
+    func testStandardOPMLKeepsSuppliedUUIDAndManagedDownloadContracts() async throws {
+        try await withStandardOPMLFixture { realm, configuration, directory, manager in
+            let categoryID = UUID()
+            let feedID = UUID()
+            let file = try self.writeStandardOPML("""
+            <outline text="Managed" uuid="\(categoryID)">
+              <outline text="Managed news" uuid="\(feedID)" xmlUrl="https://example.com/news.xml"/>
+            </outline>
+            """, in: directory)
+            let download = await MainActor.run {
+                Downloadable(url: URL(string: "https://example.com/managed.opml")!,
+                             name: "Managed", localDestination: file)
+            }
+            try await manager.importOPML(fileURL: file, fromDownload: download, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+            let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: feedID))
+            XCTAssertEqual(category.opmlURL, download.url)
+            XCTAssertEqual(feed.categoryID, categoryID)
+            let generations = self.standardOPMLGenerations(in: realm)
+            try await manager.importOPML(fileURL: file, fromDownload: download, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            XCTAssertEqual(self.standardOPMLGenerations(in: realm), generations)
+
+            let ordinary = try self.writeStandardOPML("""
+            <outline text="Ignored"><outline text="Ignored" xmlUrl="https://example.com/ordinary.xml"/></outline>
+            """, in: directory)
+            try await manager.importOPML(fileURL: ordinary, fromDownload: download, realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            XCTAssertEqual(realm.objects(FeedCategory.self).count, 1)
+            XCTAssertEqual(realm.objects(Feed.self).count, 1)
+            XCTAssertTrue(category.isDeleted, "Managed orphan reconciliation retains its existing contract")
+            XCTAssertTrue(feed.isDeleted)
+        }
+    }
+
+    @RealmBackgroundActor
+    private func withStandardOPMLFixture(
+        _ body: @RealmBackgroundActor (Realm, Realm.Configuration, URL, LibraryDataManager) async throws -> Void
+    ) async throws {
+        let configuration = makeOPMLConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        _ = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: configuration)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        addTeardownBlock { _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
+        try await body(realm, configuration, directory, LibraryDataManager(observesChanges: false))
+    }
+
+    private func writeStandardOPML(_ body: String, head: String = "", in directory: URL) throws -> URL {
+        let file = directory.appendingPathComponent(UUID().uuidString + ".opml")
+        try Data(("""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="2.0"><head>\(head)</head><body>\(body)</body></opml>
+        """).utf8).write(to: file)
+        return file
+    }
+
+    @RealmBackgroundActor
+    private func standardOPMLGenerations(in realm: Realm) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) })
     }
 
     private func makeOPMLConfiguration() -> Realm.Configuration {
