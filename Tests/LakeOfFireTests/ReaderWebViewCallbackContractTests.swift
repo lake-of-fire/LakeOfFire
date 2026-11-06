@@ -1288,7 +1288,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []
         )
         fixture.handler.readerViewModel = callbackReader
-        fixture.handler.readerMediaPlayerViewModel = ReaderCallbackMediaViewModel()
+        fixture.handler.readerMediaPlayerViewModel = ReaderCallbackMediaViewModel(readAloudController: ReaderReadAloudController())
         let url = URL(string: "internal://local/snippet?key=prepared-selection")!
         let (realm, row) = try cachedHistoryRecord(url: url)
         try realm.write {
