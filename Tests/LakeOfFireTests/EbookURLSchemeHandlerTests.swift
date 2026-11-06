@@ -1425,6 +1425,55 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(String(decoding: try source.readEntry(subpath: chapterPath), as: UTF8.self), chapterHTML)
     }
 
+    func testPackageSourcesPreserveDecodedFilenameWhitespace() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directory = root.appendingPathComponent("unpacked", isDirectory: true)
+        let archiveURL = root.appendingPathComponent("book.epub")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = [
+            "chapter.xhtml", " chapter.xhtml", "chapter.xhtml ", " chapter.xhtml ",
+            "OPS/chapter.xhtml", "OPS/chapter.xhtml ", " ", "chapter%20.xhtml",
+        ]
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("OPS", isDirectory: true),
+            withIntermediateDirectories: true)
+        let archive = try XCTUnwrap(Archive(url: archiveURL, accessMode: .create))
+        for (index, path) in paths.enumerated() {
+            let data = Data("chapter-\(index)".utf8)
+            try data.write(to: directory.appendingPathComponent(path))
+            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) {
+                position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        }
+
+        for packageURL in [directory, archiveURL] {
+            let source = try ReaderPackageEntrySource(localURL: packageURL)
+            let entries = try source.enumerateEntries()
+            XCTAssertEqual(Set(entries.map(\.path)), Set(paths), packageURL.path)
+            for (index, path) in paths.enumerated() {
+                XCTAssertEqual(try ReaderPackageEntrySource.sanitizeSubpath(path), path)
+                XCTAssertEqual(try source.readEntry(subpath: path),
+                    Data("chapter-\(index)".utf8), path)
+            }
+        }
+    }
+
+    func testDecodedPackagePathValidationStillRejectsUnsafeComponents() {
+        for path in [
+            "", "/", "/chapter.xhtml", "../chapter.xhtml", "./chapter.xhtml",
+            "OPS/../chapter.xhtml", "OPS/./chapter.xhtml", "OPS//chapter.xhtml",
+            "OPS/chapter.xhtml/", "OPS\\chapter.xhtml",
+        ] {
+            XCTAssertThrowsError(try ReaderPackageEntrySource.sanitizeSubpath(path), path) { error in
+                guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                    return XCTFail("Expected invalidSubpath for \(path), got \(error)")
+                }
+            }
+        }
+    }
+
     func testReaderPackageArchiveSourceAdvertisesOnlyFirstAddressableEntryPerPath() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
