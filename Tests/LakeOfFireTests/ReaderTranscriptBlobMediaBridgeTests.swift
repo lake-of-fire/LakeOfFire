@@ -90,6 +90,23 @@ final class ReaderTranscriptBlobMediaBridgeTests: XCTestCase {
         XCTAssertThrowsError(try Bridge.decodeRead(String(repeating: " ", count: 400_000)))
     }
 
+    func testOversizedEscapedJSONIsRejectedBeforeChunkDecoding() throws {
+        // JSON.stringify, used by the actual bridge, does not escape base64 slashes.
+        // Foundation's default output can exceed the predecode bound even when
+        // the decoded data would fit; that larger wire representation stays rejected.
+        let bytes = Data((0..<Bridge.chunkByteCount).map { UInt8($0 % 256) })
+        let object: [String: Any] = [
+            "status": "ok", "transferID": token, "offset": 0,
+            "base64": bytes.base64EncodedString(), "done": false
+        ]
+        let escaped = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        let maximumBase64Bytes = ((Bridge.chunkByteCount + 2) / 3) * 4
+        XCTAssertGreaterThan(escaped.utf8.count, maximumBase64Bytes + 4_096)
+        XCTAssertThrowsError(try Bridge.decodeRead(escaped)) {
+            XCTAssertEqual($0 as? Bridge.Failure, .invalidResponse)
+        }
+    }
+
     func testTypedFailuresAndCancellationArePreserved() throws {
         for code in ["staleSelection", "unsupportedSource", "unreadableMedia", "emptyMedia",
                      "tooLarge", "incompleteMedia", "busy", "invalidRequest"] {
@@ -113,6 +130,6 @@ final class ReaderTranscriptBlobMediaBridgeTests: XCTestCase {
     }
 
     private func json(_ object: [String: Any]) throws -> String {
-        String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes]), as: UTF8.self)
     }
 }
