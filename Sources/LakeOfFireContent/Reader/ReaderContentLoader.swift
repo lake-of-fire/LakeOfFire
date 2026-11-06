@@ -174,21 +174,68 @@ public struct ReaderContentLoader {
         public let bookmarkConfiguration: Realm.Configuration
         public let historyConfiguration: Realm.Configuration
 
+        fileprivate let bookmarkAdmission: RealmStorageAdmission
+        fileprivate let historyAdmission: RealmStorageAdmission
+        // Frozen rows are immutable and cross-actor safe. Recreate a one-use
+        // reference per operation so repeated saves retain the original ObjKey,
+        // even if a row is deleted and recreated with the same primary key.
+        private let target: CapturedSnippetTarget?
+
+        private final class CapturedSnippetTarget: @unchecked Sendable {
+            let row: any ReaderContentProtocol
+            init(_ content: any ReaderContentProtocol) { row = content.freeze() }
+        }
+
+        fileprivate func containsCapturedTarget(in realm: Realm) -> Bool {
+            guard let target else { return true } // Legacy multi-store API.
+            return Self.containsFrozenTarget(target.row, in: realm)
+        }
+
+        // Open the existential only within this generic call. The invariant
+        // ThreadSafeReference<T> stays local; no erased reference escapes.
+        private static func containsFrozenTarget<T: ReaderContentProtocol>(
+            _ target: T, in realm: Realm
+        ) -> Bool {
+            guard let row = realm.resolve(ThreadSafeReference(to: target)),
+                  !row.isInvalidated, !row.isDeleted,
+                  row.url.matchesReaderURL(target.url) else { return false }
+            return true
+        }
+
+        @MainActor
         private init(
             bookmarkConfiguration: Realm.Configuration,
-            historyConfiguration: Realm.Configuration
+            historyConfiguration: Realm.Configuration,
+            target: (any ReaderContentProtocol)? = nil
         ) {
+            self.target = target.map(CapturedSnippetTarget.init)
             self.bookmarkConfiguration = bookmarkConfiguration
             self.historyConfiguration = historyConfiguration
+            bookmarkAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: bookmarkConfiguration)
+            historyAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: historyConfiguration)
         }
 
         /// The app stores both snippet representations in the selected
         /// content's Reader Realm. Its owning Realm outranks mutable globals.
         @MainActor
         public init?(content: any ReaderContentProtocol) {
-            guard let configuration = content.realm?.configuration else { return nil }
-            bookmarkConfiguration = configuration
-            historyConfiguration = configuration
+            guard !content.isInvalidated, !content.isDeleted,
+                  let configuration = content.realm?.configuration else { return nil }
+            self.init(bookmarkConfiguration: configuration, historyConfiguration: configuration, target: content)
+        }
+
+        @MainActor
+        public func containsOriginalTarget(for content: any ReaderContentProtocol) -> Bool {
+            guard !content.isInvalidated, !content.isDeleted, let realm = content.realm else { return false }
+            return containsCapturedTarget(in: realm)
+        }
+
+        public func validateStorage() throws {
+            guard bookmarkAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: bookmarkConfiguration)
+            }), historyAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: historyConfiguration)
+            }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
         }
 
         /// Legacy storage can span two Realms. Its edits are atomic per Realm,
@@ -1652,11 +1699,12 @@ This snippet loads when the pasteboard is empty in a debug build.
         permitsCommit: @escaping @Sendable () -> Bool,
         mutate: (any ReaderContentProtocol) -> Bool
     ) async throws -> Bool {
+        try storage.validateStorage()
         let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: storage.bookmarkConfiguration
+            for: storage.bookmarkConfiguration, storageAdmission: storage.bookmarkAdmission
         )
         let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: storage.historyConfiguration
+            for: storage.historyConfiguration, storageAdmission: storage.historyAdmission
         )
         // App-owned snippets put both representations in the same Realm.
         // Group before writing so an account/cancellation change cannot commit
@@ -1667,7 +1715,10 @@ This snippet loads when the pasteboard is empty in a debug build.
         var didChange = false
         for group in groups {
             let groupDidChange = try await group.realm.asyncWritePreservingOwnership { () throws -> Bool in
+                try storage.validateStorage()
+                guard storage.containsCapturedTarget(in: group.realm) else { return false }
                 guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                try storage.validateStorage()
                 // Query live records only after acquiring the write. No
                 // managed object selected before an await can be revived or
                 // mutated after another writer deletes/replaces it.
@@ -1689,7 +1740,10 @@ This snippet loads when the pasteboard is empty in a debug build.
                         changed = true
                     }
                 }
-                guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                try storage.validateStorage()
+                guard !Task.isCancelled, permitsCommit(),
+                      storage.containsCapturedTarget(in: group.realm) else { throw CancellationError() }
+                try storage.validateStorage()
                 return changed
             }
             didChange = didChange || groupDidChange

@@ -1428,6 +1428,26 @@ func readerModeReadyGenerationIsCurrent(
     return reportedGeneration == nil
 }
 
+/// The account that initiated one foreground render, captured before suspension.
+/// Core consumes this same value through admission retries and native publication.
+@_spi(ReaderProcessing)
+public struct ReaderModeProcessingAccount: Sendable {
+    public let access: AccountSessionAccess
+    public let snapshot: AccountSessionSnapshot
+
+    public init(access: AccountSessionAccess) {
+        self.access = access
+        snapshot = access.snapshot
+    }
+
+    public var isCurrent: Bool { access.snapshot == snapshot }
+}
+
+@_spi(ReaderProcessing)
+public enum ReaderModeProcessingAccountContext {
+    @TaskLocal public static var account: ReaderModeProcessingAccount?
+}
+
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
@@ -1491,6 +1511,10 @@ public class ReaderModeViewModel: ObservableObject {
     public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil {
         willSet { processingDependencyWillChange() }
     }
+    /// The host's causal account boundary, retained by active and completed renders.
+    /// Hosts without account state may leave this unset.
+    public var readerAccountSessionAccess: AccountSessionAccess?
+
     public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil {
         willSet { processingDependencyWillChange() }
     }
@@ -1516,6 +1540,59 @@ public class ReaderModeViewModel: ObservableObject {
     ) async -> ReaderModeFrameContentReplacement?)?
     
     @Published public var isReaderMode = false
+    public struct PreparationFailure: Identifiable, Equatable {
+        public let id: UUID
+        public let message: String
+    }
+
+    @Published public private(set) var preparationFailure: PreparationFailure?
+    private var preparationFailureIsCurrent: (@MainActor () -> Bool)?
+    private var preparationRetry: (@MainActor () -> Void)?
+
+    /// Presentation and action share the original selection/account fence.
+    public func currentPreparationFailure() -> PreparationFailure? {
+        guard preparationFailureIsCurrent?() == true else { return nil }
+        return preparationFailure
+    }
+
+    public func retryPreparation(failureID: UUID) {
+        guard preparationFailure?.id == failureID,
+              preparationFailureIsCurrent?() == true,
+              let retry = preparationRetry else { return }
+        clearPreparationFailure()
+        retry()
+    }
+
+    private func clearPreparationFailure() {
+        preparationFailure = nil
+        preparationFailureIsCurrent = nil
+        preparationRetry = nil
+    }
+
+    private func failPreparation(
+        for url: URL, generation: UUID, readerContent: ReaderContent,
+        scriptCaller: WebViewScriptCaller
+    ) {
+        guard let originatingContentIsCurrent = activeRendersByURL[canonicalRenderKey(url)]?.originatingContentIsCurrent,
+              originatingContentIsCurrent(), isCurrentRender(for: url, generation: generation) else { return }
+        cancelReaderModeLoad(for: url, readerContent: readerContent)
+        navigator?.forceClearLoadingIndicators(reason: "readerMode.preparationFailed", pageURL: url)
+        let failedBinding = scriptCaller.currentJavaScriptBindingToken
+        preparationFailureIsCurrent = { [weak scriptCaller] in
+            guard let scriptCaller else { return false }
+            return originatingContentIsCurrent()
+                && scriptCaller.currentJavaScriptBindingToken == failedBinding
+        }
+        preparationRetry = { [weak self, weak readerContent] in
+            guard let self, let readerContent else { return }
+            self.showReaderView(readerContent: readerContent, scriptCaller: scriptCaller)
+        }
+        preparationFailure = PreparationFailure(
+            id: UUID(),
+            message: "Reader preparation failed. Check your connection and available storage, then try again."
+        )
+    }
+
     public let loadingState = ReaderModeLoadingState()
     @Published public var isReaderModeLoading = false {
         didSet { updateLoadingStateSnapshot() }
@@ -1570,12 +1647,16 @@ public class ReaderModeViewModel: ObservableObject {
     private struct CompletedRenderOwner: Equatable {
         let key: String
         let generation: UUID
+        let accountSession: AccountSessionSnapshot?
+        let accountBoundaryID: AccountSessionBoundaryID?
     }
 
     private struct ActiveRender {
         let task: Task<Void, Never>
         let generation: UUID
         let originatingContentIsCurrent: @MainActor () -> Bool
+        let accountSession: AccountSessionSnapshot?
+        let accountBoundaryID: AccountSessionBoundaryID?
     }
 
     private var activeRendersByURL: [String: ActiveRender] = [:]
@@ -1611,6 +1692,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func beginReaderModeLoad(for url: URL, suppressSpinner: Bool = false) {
+        clearPreparationFailure()
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         if !pendingMatches {
@@ -1634,6 +1716,7 @@ public class ReaderModeViewModel: ObservableObject {
         if let url, let pendingReaderModeURL, !pendingKeysMatch(pendingReaderModeURL, url) {
             return
         }
+        clearPreparationFailure()
         let completedURL = pendingReaderModeURL ?? url ?? lastRenderedURL
         if let url {
             cancelActiveRender(for: url)
@@ -1666,6 +1749,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func markReaderModeLoadComplete(for url: URL) {
+        guard renderAccountIsCurrent(for: url) else { return }
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let matchesPending = pendingKeysMatch(pendingReaderModeURL, canonicalURL)
         let matchesLastRendered = pendingKeysMatch(lastRenderedURL, canonicalURL)
@@ -1684,10 +1768,12 @@ public class ReaderModeViewModel: ObservableObject {
         expectedSyntheticReaderLoaderURL = nil
         readerModeLoading(false)
         let renderKey = canonicalRenderKey(canonicalURL)
-        if let activeGeneration = activeRendersByURL[renderKey]?.generation {
+        if let activeRender = activeRendersByURL[renderKey] {
             completedRenderOwner = CompletedRenderOwner(
                 key: renderKey,
-                generation: activeGeneration
+                generation: activeRender.generation,
+                accountSession: activeRender.accountSession,
+                accountBoundaryID: activeRender.accountBoundaryID
             )
         }
         lastRenderedURL = canonicalURL
@@ -1865,7 +1951,14 @@ public class ReaderModeViewModel: ObservableObject {
         requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil
     ) async {
         let bindingToken = bindingToken ?? scriptCaller.currentJavaScriptBindingToken
-        guard pageURL.absoluteString != "about:blank" else {
+        let accountSession = readerAccountSessionAccess?.snapshot
+        let accountBoundaryID = readerAccountSessionAccess?.boundaryID
+        let accountIsCurrent = { @MainActor in
+            self.readerAccountSessionAccess?.snapshot == accountSession
+                && self.readerAccountSessionAccess?.boundaryID == accountBoundaryID
+                && self.renderAccountIsCurrent(for: pageURL)
+        }
+        guard accountIsCurrent(), pageURL.absoluteString != "about:blank" else {
             return
         }
         let fontValues = readerFontCSSValues(horizontalFamily: readerFontFamilyName)
@@ -2003,6 +2096,7 @@ public class ReaderModeViewModel: ObservableObject {
                 });
             })();
             """
+            guard accountIsCurrent() else { return }
             _ = try? await evaluateReaderDocumentJavaScript(
                 js,
                 arguments: [
@@ -2193,6 +2287,7 @@ public class ReaderModeViewModel: ObservableObject {
             });
         })();
         """
+        guard accountIsCurrent() else { return }
         _ = try? await evaluateReaderDocumentJavaScript(
             js,
             arguments: [
@@ -2280,6 +2375,7 @@ public class ReaderModeViewModel: ObservableObject {
         reportedGeneration: UUID?
     ) -> Bool {
         let key = canonicalRenderKey(url)
+        guard renderAccountIsCurrent(for: url) else { return false }
         return readerModeReadyGenerationIsCurrent(
             activeGeneration: activeRendersByURL[key]?.generation,
             completedGeneration: completedRenderOwner?.key == key
@@ -2287,6 +2383,23 @@ public class ReaderModeViewModel: ObservableObject {
                 : nil,
             reportedGeneration: reportedGeneration
         )
+    }
+
+    private func renderAccountIsCurrent(for url: URL) -> Bool {
+        let key = canonicalRenderKey(url)
+        let accountSession: AccountSessionSnapshot?
+        let accountBoundaryID: AccountSessionBoundaryID?
+        if let render = activeRendersByURL[key] {
+            accountSession = render.accountSession
+            accountBoundaryID = render.accountBoundaryID
+        } else if let completed = completedRenderOwner, completed.key == key {
+            accountSession = completed.accountSession
+            accountBoundaryID = completed.accountBoundaryID
+        } else {
+            return true
+        }
+        return readerAccountSessionAccess?.snapshot == accountSession
+            && readerAccountSessionAccess?.boundaryID == accountBoundaryID
     }
 
     private func urlMatchesLastRendered(_ url: URL) -> Bool {
@@ -2312,8 +2425,10 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func isCurrentRender(for url: URL, generation: UUID) -> Bool {
-        readerModeRenderGenerationIsCurrent(
-            activeGeneration: activeRendersByURL[canonicalRenderKey(url)]?.generation,
+        guard let render = activeRendersByURL[canonicalRenderKey(url)],
+              render.originatingContentIsCurrent() else { return false }
+        return readerModeRenderGenerationIsCurrent(
+            activeGeneration: render.generation,
             expectedGeneration: generation,
             taskIsCancelled: Task.isCancelled
         )
@@ -2339,6 +2454,9 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     private func shouldSkipDuplicateLoaderRender(for url: URL) -> (skip: Bool, reason: String) {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
+        guard renderAccountIsCurrent(for: canonicalURL) else {
+            return (false, "retiredAccount")
+        }
         if hasActiveRender(for: canonicalURL) {
             return (true, "activeRender")
         }
@@ -2357,7 +2475,11 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         if !render.task.isCancelled, render.originatingContentIsCurrent() {
-            completedRenderOwner = CompletedRenderOwner(key: key, generation: generation)
+            completedRenderOwner = CompletedRenderOwner(
+                key: key, generation: generation,
+                accountSession: render.accountSession,
+                accountBoundaryID: render.accountBoundaryID
+            )
         }
         activeRendersByURL.removeValue(forKey: key)
     }
@@ -2382,6 +2504,7 @@ public class ReaderModeViewModel: ObservableObject {
     private func startRenderTaskIfNeeded(
         for url: URL,
         originatingContentIsCurrent: @escaping @MainActor () -> Bool,
+        processingAccount: ReaderModeProcessingAccount?,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
@@ -2400,13 +2523,17 @@ public class ReaderModeViewModel: ObservableObject {
         completedRenderOwner = nil
         let task = Task { @ReaderViewModelActor [weak self] in
             guard let self else { return }
-            await operation(generation)
+            await ReaderModeProcessingAccountContext.$account.withValue(processingAccount) {
+                await operation(generation)
+            }
             await self.finishRenderTask(for: canonicalURL, generation: generation)
         }
         activeRendersByURL[key] = ActiveRender(
             task: task,
             generation: generation,
-            originatingContentIsCurrent: originatingContentIsCurrent
+            originatingContentIsCurrent: originatingContentIsCurrent,
+            accountSession: processingAccount?.snapshot,
+            accountBoundaryID: processingAccount?.access.boundaryID
         )
         return true
     }
@@ -2556,8 +2683,14 @@ public class ReaderModeViewModel: ObservableObject {
         let requiresOriginalFrameBinding = cachedContainerFrameInfo?.isMainFrame == false
         let initialContent = readerContent.content
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
-        let originatingContentIsCurrent = { @MainActor in
-            selectionIsCurrent()
+        let processingAccount = readerAccountSessionAccess.map(ReaderModeProcessingAccount.init(access:))
+        let accountSession = processingAccount?.snapshot
+        let accountBoundaryID = processingAccount?.access.boundaryID
+        let originatingContentIsCurrent = { @MainActor [weak self, weak readerContent] in
+            guard let self, let readerContent else { return false }
+            return self.readerAccountSessionAccess?.snapshot == accountSession
+                && self.readerAccountSessionAccess?.boundaryID == accountBoundaryID
+                && selectionIsCurrent()
                 && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
                 && (initialContent.map { self.readerModeContentIsCurrent($0, readerContent: readerContent) } ?? true)
                 && initialContent?.isInvalidated != true
@@ -2568,7 +2701,8 @@ public class ReaderModeViewModel: ObservableObject {
         beginReaderModeLoad(for: contentURL)
         startRenderTaskIfNeeded(
             for: contentURL,
-            originatingContentIsCurrent: originatingContentIsCurrent
+            originatingContentIsCurrent: originatingContentIsCurrent,
+            processingAccount: processingAccount
         ) { [weak self] generation in
             guard let self else { return }
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
@@ -2662,11 +2796,9 @@ public class ReaderModeViewModel: ObservableObject {
                     )
                 } catch {
                     print(error)
-                    await self.cancelReaderModeLoad(
-                        for: contentURL,
-                        ifOwnedBy: generation,
-                        readerContent: readerContent,
-                        originatingContentIsCurrent: originatingContentIsCurrent
+                    await self.failPreparation(
+                        for: contentURL, generation: generation,
+                        readerContent: readerContent, scriptCaller: scriptCaller
                     )
                 }
             case .unavailable:
@@ -2861,11 +2993,9 @@ public class ReaderModeViewModel: ObservableObject {
             guard selectionIsCurrent(), resolvedContentIsCurrent?() ?? true,
                   urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL) else { return }
             print(error)
-            cancelReaderModeLoad(
-                for: contentURL,
-                ifOwnedBy: renderGeneration,
-                readerContent: readerContent,
-                originatingContentIsCurrent: originatingContentIsCurrent
+            failPreparation(
+                for: contentURL, generation: renderGeneration,
+                readerContent: readerContent, scriptCaller: scriptCaller
             )
         }
     }
@@ -2979,23 +3109,32 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         if needsAsyncWrite {
+            let processingAccount = ReaderModeProcessingAccountContext.account
             try await content.asyncWrite { _, content in
-                // Realm can begin this transaction after the page was replaced.
-                // The captured lifetime is safe to query off the main actor.
-                guard selectionIsCurrent() else { return }
-                content.isReaderModeByDefault = true
-                content.isReaderModeAvailable = false
-                content.isReaderModeOfferHidden = false
-                if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                    if let resolvedStoredHTML {
-                        content.html = resolvedStoredHTML
+                // Realm can begin this transaction after selection/account
+                // replacement. Keep its bounded writes inside the captured
+                // Session publication fence; no account is sampled on this actor.
+                let update = {
+                    guard selectionIsCurrent() else { return }
+                    content.isReaderModeByDefault = true
+                    content.isReaderModeAvailable = false
+                    content.isReaderModeOfferHidden = false
+                    if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                        if let resolvedStoredHTML {
+                            content.html = resolvedStoredHTML
+                        }
+                        if let resolvedTitleIfNeeded {
+                            content.title = resolvedTitleIfNeeded
+                        }
+                        content.rssContainsFullContent = true
                     }
-                    if let resolvedTitleIfNeeded {
-                        content.title = resolvedTitleIfNeeded
-                    }
-                    content.rssContainsFullContent = true
+                    content.refreshChangeMetadata(explicitlyModified: true)
                 }
-                content.refreshChangeMetadata(explicitlyModified: true)
+                if let processingAccount {
+                    _ = try? processingAccount.access.publish(ifCurrent: processingAccount.snapshot, update)
+                } else {
+                    update()
+                }
             }
         }
 
@@ -3501,11 +3640,18 @@ public class ReaderModeViewModel: ObservableObject {
         }
         try Task.checkCancellation()
         
+        if preparationFailure != nil, preparationFailureIsCurrent?() != true {
+            clearPreparationFailure()
+        }
         let committedURL = content.url
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
+        let accountSession = readerAccountSessionAccess?.snapshot
+        let accountBoundaryID = readerAccountSessionAccess?.boundaryID
         let requireCurrentDocument = { @MainActor in
             try Task.checkCancellation()
-            guard !content.isInvalidated,
+            guard self.readerAccountSessionAccess?.snapshot == accountSession,
+                  self.readerAccountSessionAccess?.boundaryID == accountBoundaryID,
+                  !content.isInvalidated,
                   let currentContent = readerContent.validCachedContent,
                   // Match ReaderContent's selection ownership: a new cached
                   // wrapper does not inherit a suspended callback's authority.
@@ -3632,12 +3778,20 @@ public class ReaderModeViewModel: ObservableObject {
         documentIsCurrent: @MainActor () -> Bool = { true }
     ) async {
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
+        let accountSession = readerAccountSessionAccess?.snapshot
+        let accountBoundaryID = readerAccountSessionAccess?.boundaryID
+        let accountIsCurrent = { @MainActor in
+            self.readerAccountSessionAccess?.snapshot == accountSession
+                && self.readerAccountSessionAccess?.boundaryID == accountBoundaryID
+                && self.renderAccountIsCurrent(for: newState.pageURL)
+        }
+        guard accountIsCurrent() else { return }
         await injectSharedFontIfNeeded(
             scriptCaller: scriptCaller,
             pageURL: newState.pageURL,
             requiring: navigationBindingToken
         )
-        guard !Task.isCancelled, documentIsCurrent(),
+        guard !Task.isCancelled, documentIsCurrent(), accountIsCurrent(),
               ownsReaderDocumentBinding(
                 navigationBindingToken,
                 scriptCaller: scriptCaller
@@ -3675,7 +3829,7 @@ public class ReaderModeViewModel: ObservableObject {
                     scriptCaller: scriptCaller,
                     requiring: navigationBindingToken
                 )
-                guard !Task.isCancelled, documentIsCurrent(),
+                guard !Task.isCancelled, documentIsCurrent(), accountIsCurrent(),
                       ownsReaderDocumentBinding(
                         navigationBindingToken,
                         scriptCaller: scriptCaller
@@ -3687,7 +3841,7 @@ public class ReaderModeViewModel: ObservableObject {
                     readerModeLoading(false)
                 }
             } catch {
-                guard !Task.isCancelled, documentIsCurrent(),
+                guard !Task.isCancelled, documentIsCurrent(), accountIsCurrent(),
                       ownsReaderDocumentBinding(
                         navigationBindingToken,
                         scriptCaller: scriptCaller
@@ -3939,3 +4093,110 @@ nonisolated public func processForReaderMode(
         }
     }
 }
+
+#if DEBUG && os(iOS)
+/// Local UI-test host for the production failure overlay and real render retry.
+/// The only substitution is a processor error on the first attempt.
+@MainActor
+public struct ReaderPreparationRetryUITestHost: View {
+    @StateObject private var fixture: ReaderPreparationRetryUITestModel
+    @ObservedObject private var mode: ReaderModeViewModel
+
+    public init() {
+        let fixture = ReaderPreparationRetryUITestModel()
+        _fixture = StateObject(wrappedValue: fixture)
+        _mode = ObservedObject(wrappedValue: fixture.mode)
+    }
+
+    public var body: some View {
+        let failure = mode.currentPreparationFailure()
+        Text(fixture.report)
+            .accessibilityIdentifier("ReaderPreparationRetry.Report")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .modifier(ReaderLoadingProgressOverlayViewModifier(
+                isLoading: mode.isReaderModeLoading,
+                failureMessage: failure?.message,
+                retry: {
+                    if let failure { fixture.retry(failureID: failure.id) }
+                }
+            ))
+            .task { await fixture.start() }
+    }
+}
+
+@MainActor
+private final class ReaderPreparationRetryUITestModel: ObservableObject {
+    private enum InjectedFailure: Error { case requiredPreparation }
+    let mode = ReaderModeViewModel()
+    private let reader = ReaderContent()
+    private let navigator = WebViewNavigator()
+    private let caller = WebViewScriptCaller()
+    private let url = URL(string: "reader-file://file/load/ui-test/preparation-retry.txt")!
+    private var realm: Realm?
+    private var attempts = 0
+    @Published private(set) var report = "Preparing reader"
+
+    init() {
+        let html = "<html><body><div id='reader-content'><p>Recovered reader content.</p></div></body></html>"
+        mode.navigator = navigator
+        mode.readerLocalHTMLLoader = { _ in html }
+        mode.readerPublicationDateLoader = { _ in nil }
+        mode.swiftReadabilityProcessor = { _, _, _, _ in html }
+        mode.processReadabilityContent = { [weak self] content, _, _, _, _, _, _ in
+            let attempt = await MainActor.run {
+                guard let self else { return 0 }
+                self.attempts += 1
+                return self.attempts
+            }
+            guard attempt > 0 else { throw CancellationError() }
+            if attempt == 1 { throw InjectedFailure.requiredPreparation }
+            return try SwiftSoup.parse(content)
+        }
+    }
+
+    func start() async {
+        guard realm == nil else { return }
+        do {
+            let realm = try Realm(configuration: .init(
+                inMemoryIdentifier: UUID().uuidString,
+                objectTypes: [HistoryRecord.self]
+            ))
+            let row = HistoryRecord()
+            row.url = url
+            row.title = "Retry fixture"
+            row.isReaderModeByDefault = true
+            row.isReaderModeAvailable = false
+            row.isReaderModeOfferHidden = false
+            row.rssContainsFullContent = true
+            row.updateCompoundKey()
+            try realm.write { realm.add(row) }
+            self.realm = realm
+            reader.pageURL = url
+            reader.content = row
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            await mode.waitForReaderModeRender(for: url)
+            report = mode.currentPreparationFailure() == nil ? "Missing expected failure" : "Failed attempt 1"
+        } catch {
+            report = "Fixture setup failed: \(error)"
+        }
+    }
+
+    func retry(failureID: UUID) {
+        mode.retryPreparation(failureID: failureID)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await mode.waitForReaderModeRender(for: url)
+            guard attempts == 2,
+                  navigator.debugLoadSnapshot.lastDataLoadBaseURL == url.absoluteString,
+                  let generation = UUID(uuidString: mode.currentRenderGenerationDescription(for: url)),
+                  mode.handleRenderedReaderDocumentReady(
+                    pageURL: url, hasReaderContent: true, renderGeneration: generation
+                  ) else {
+                report = "Retry did not dispatch its document"
+                return
+            }
+            report = "Recovered after 2 attempts"
+        }
+    }
+}
+#endif
