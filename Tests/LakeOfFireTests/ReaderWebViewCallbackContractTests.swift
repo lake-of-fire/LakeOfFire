@@ -381,12 +381,12 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         return ReaderOriginalReloadProbe(frame: .zero, configuration: configuration)
     }
 
-    private func showOriginalRecord(in realm: Realm, url: URL) throws -> HistoryRecord {
+    private func showOriginalRecord(in realm: Realm, url: URL, offerHidden: Bool = true) throws -> HistoryRecord {
         let record = HistoryRecord()
         record.url = url
         record.isReaderModeByDefault = true
         record.isReaderModeAvailable = false
-        record.isReaderModeOfferHidden = true
+        record.isReaderModeOfferHidden = offerHidden
         record.rssContainsFullContent = true
         record.updateCompoundKey()
         try realm.write {
@@ -419,7 +419,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         try await withShowOriginalRealm { realm in
             let fixture = makeReaderWebViewHandlerFixture()
             let source = try XCTUnwrap(URL(string: "https://example.com/show-original-current"))
-            let record = try self.showOriginalRecord(in: realm, url: source)
+            let record = try self.showOriginalRecord(in: realm, url: source, offerHidden: false)
             try await fixture.readerContent.load(url: source, resolveContent: { _ in record })
             fixture.readerModeViewModel.readabilityContent = "Captured reader content"
             fixture.readerModeViewModel.readabilityContainerSelector = "#reader-content"
@@ -442,7 +442,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             XCTAssertEqual(webView.reloadCount, 1)
             XCTAssertFalse(record.isReaderModeByDefault)
             XCTAssertTrue(record.isReaderModeAvailable)
-            XCTAssertFalse(record.isReaderModeOfferHidden)
+            // Explicit Original keeps Reader recovery available and suppresses its automatic offer.
+            XCTAssertTrue(record.isReaderModeOfferHidden)
             XCTAssertNil(fixture.readerModeViewModel.readabilityContent)
             XCTAssertNil(fixture.readerModeViewModel.readabilityContainerSelector)
         }
