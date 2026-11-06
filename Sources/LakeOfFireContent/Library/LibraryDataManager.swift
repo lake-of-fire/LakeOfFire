@@ -1898,7 +1898,7 @@ public class LibraryDataManager: NSObject {
         let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
             realmConfiguration: realmConfiguration
         )
-        let userCategories = (configuration.getCategories() ?? []).filter { $0.opmlOwnerName == nil && $0.opmlURL == nil }
+        let userCategories = (configuration.getCategories() ?? []).filter { $0.opmlURL == nil }
         
         let scriptEntries = OPMLEntry(text: "User Scripts", attributes: [
             Attribute(name: "isUserScriptList", value: "true"),
@@ -1920,6 +1920,7 @@ public class LibraryDataManager: NSObject {
                 Attribute(name: "uuid", value: feed.id.uuidString),
                 Attribute(name: "type", value: "rss"),
                 Attribute(name: "xmlUrl", value: feed.rssUrl.absoluteString),
+                Attribute(name: "entryContentKind", value: feed.entryContentKind.rawValue),
                 Attribute(name: "extractImageFromContent", value: feed.extractImageFromContent ? "true" : "false"),
                 Attribute(name: "isReaderModeByDefault", value: feed.isReaderModeByDefault ? "true" : "false"),
                 Attribute(name: "iconUrl", value: feed.iconUrl.absoluteString),

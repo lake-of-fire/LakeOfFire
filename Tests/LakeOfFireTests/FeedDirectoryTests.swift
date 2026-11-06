@@ -1,3 +1,4 @@
+import BigSyncKit
 import XCTest
 import RealmSwift
 import RealmSwiftGaps
@@ -5,6 +6,130 @@ import SwiftUIDownloads
 @testable import LakeOfFireContent
 
 final class FeedDirectoryTests: XCTestCase {
+    @RealmBackgroundActor
+    func testExportedFeedContentKindSurvivesXMLImportWithoutRejournaling() async throws {
+        let realm = try await makeOPMLRoundTripRealm()
+        let manager = LibraryDataManager(observesChanges: false)
+        let categoryID = UUID()
+        let feedID = UUID()
+        let inputURL = try writeOPMLRoundTripXML("""
+        <opml version="2.0"><head/><body>
+          <outline text="Local" uuid="\(categoryID)">
+            <outline text="Listing" uuid="\(feedID)" type="rss" xmlUrl="https://example.org/listing.xml" entryContentKind="contentListing"/>
+          </outline>
+        </body></opml>
+        """)
+        try await manager.importOPML(fileURL: inputURL, realmConfiguration: realm.configuration)
+        realm.refresh()
+        XCTAssertEqual(
+            realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.entryContentKind,
+            .contentListing
+        )
+
+        let exported = try await manager.exportUserOPML(realmConfiguration: realm.configuration)
+        let exportedURL = try writeOPMLRoundTripXML(exported.xml)
+        try await manager.importOPML(fileURL: exportedURL, realmConfiguration: realm.configuration)
+        realm.refresh()
+
+        let importedFeed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: feedID))
+        XCTAssertEqual(importedFeed.entryContentKind, .contentListing)
+        let generations = Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self).map {
+            ($0.recordName, $0.generation)
+        })
+        XCTAssertFalse(generations.isEmpty)
+
+        try await manager.importOPML(fileURL: exportedURL, realmConfiguration: realm.configuration)
+        realm.refresh()
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self).map {
+                ($0.recordName, $0.generation)
+            }),
+            generations
+        )
+        XCTAssertEqual(
+            realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.entryContentKind,
+            .contentListing
+        )
+    }
+
+    @RealmBackgroundActor
+    func testExportRetainsAttributedLocalCategoriesAndExcludesManagedCategories() async throws {
+        let source = try await makeOPMLRoundTripRealm()
+        let manager = LibraryDataManager(observesChanges: false)
+        let categoryID = UUID()
+        let feedID = UUID()
+        let inputURL = try writeOPMLRoundTripXML("""
+        <opml version="2.0"><head><ownerName>Alice</ownerName></head><body>
+          <outline text="Local" uuid="\(categoryID)">
+            <outline text="Local Feed" uuid="\(feedID)" type="rss" xmlUrl="https://example.org/local.xml"/>
+          </outline>
+        </body></opml>
+        """)
+        try await manager.importOPML(fileURL: inputURL, realmConfiguration: source.configuration)
+        source.refresh()
+        let localCategory = try XCTUnwrap(source.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+        XCTAssertEqual(localCategory.opmlOwnerName, "Alice")
+        XCTAssertTrue(localCategory.isUserEditable)
+
+        let managedCategory = FeedCategory()
+        managedCategory.title = "Managed"
+        managedCategory.opmlURL = try XCTUnwrap(URL(string: "https://example.org/managed.opml"))
+        let configuration = try XCTUnwrap(source.objects(LibraryConfiguration.self).filter("isDeleted == false").first)
+        let now = Date()
+        try source.write {
+            source.add(managedCategory)
+            managedCategory.refreshChangeMetadata(explicitlyModified: true, at: now)
+            configuration.categoryIDs.append(managedCategory.id)
+            configuration.refreshChangeMetadata(explicitlyModified: true, at: now)
+        }
+
+        let exported = try await manager.exportUserOPML(realmConfiguration: source.configuration)
+        let localOutline = try XCTUnwrap(exported.entries.first { $0.attributeUUIDValue("uuid") == categoryID })
+        XCTAssertTrue(localOutline.children?.contains { $0.attributeUUIDValue("uuid") == feedID } == true)
+        XCTAssertFalse(exported.entries.contains { $0.attributeUUIDValue("uuid") == managedCategory.id })
+        XCTAssertEqual(localCategory.opmlOwnerName, "Alice")
+        XCTAssertNil(localCategory.opmlURL)
+
+        let destination = try await makeOPMLRoundTripRealm()
+        let exportedURL = try writeOPMLRoundTripXML(exported.xml)
+        try await manager.importOPML(fileURL: exportedURL, realmConfiguration: destination.configuration)
+        destination.refresh()
+        let importedCategory = try XCTUnwrap(destination.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+        XCTAssertTrue(importedCategory.isUserEditable)
+        XCTAssertNil(importedCategory.opmlURL)
+        XCTAssertNotNil(destination.object(ofType: Feed.self, forPrimaryKey: feedID))
+        XCTAssertNil(destination.object(ofType: FeedCategory.self, forPrimaryKey: managedCategory.id))
+
+        let reexported = try await manager.exportUserOPML(realmConfiguration: destination.configuration)
+        XCTAssertTrue(reexported.entries.contains { $0.attributeUUIDValue("uuid") == categoryID })
+    }
+
+    @RealmBackgroundActor
+    private func makeOPMLRoundTripRealm() async throws -> Realm {
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [
+            LibraryConfiguration.self, FeedCategory.self, FeedDirectory.self, Feed.self,
+            UserScript.self, UserScriptAllowedDomain.self,
+        ]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let fixtureConfiguration = configuration
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+        }
+        return try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+    }
+
+    private func writeOPMLRoundTripXML(_ xml: String) throws -> URL {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("library-roundtrip-\(UUID().uuidString).opml")
+        try xml.write(to: fileURL, atomically: true, encoding: .utf8)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        return fileURL
+    }
+
+
     private static let realmConfigurationSemaphore = DispatchSemaphore(value: 1)
 
     func testCategoryExposesRootDirectoriesAndRootFeedsSeparately() throws {
