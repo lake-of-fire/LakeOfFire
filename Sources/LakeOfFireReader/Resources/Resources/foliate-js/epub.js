@@ -11,6 +11,7 @@ const NS = {
     ENC: 'http://www.w3.org/2001/04/xmlenc#',
     NCX: 'http://www.daisy.org/z3986/2005/ncx/',
     XLINK: 'http://www.w3.org/1999/xlink',
+    SVG: 'http://www.w3.org/2000/svg',
     SMIL: 'http://www.w3.org/ns/SMIL',
 }
 
@@ -1033,9 +1034,19 @@ export class Loader {
             })
             for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
             for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
-            for (const el of Array.from(doc.getElementsByTagName('*'))
-                .filter(el => !el.hasAttribute('href') && el.hasAttributeNS(NS.XLINK, 'href'))) {
-                el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(el.getAttributeNS(NS.XLINK, 'href'), href, parents))
+            // SVG 2 resource references use unnamespaced href. Navigation and
+            // scripts have different ownership, so only rewrite resource users.
+            const svgResourceElements = new Set([
+                'image', 'use', 'feImage', 'linearGradient', 'radialGradient',
+                'pattern', 'textPath', 'mpath',
+            ])
+            for (const el of Array.from(doc.getElementsByTagName('*'))) {
+                if (el.namespaceURI === NS.SVG
+                    && svgResourceElements.has(el.localName) && el.hasAttribute('href')) {
+                    await replace(el, 'href')
+                } else if (!el.hasAttribute('href') && el.hasAttributeNS(NS.XLINK, 'href')) {
+                    el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(el.getAttributeNS(NS.XLINK, 'href'), href, parents))
+                }
             }
             // replace inline styles
             for (const el of doc.getElementsByTagName('style'))
