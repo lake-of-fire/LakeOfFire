@@ -155,6 +155,28 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
     }
 
     @MainActor
+    func testInternalHandlerStopsAfterResponseCallback() async throws {
+        let handler = InternalURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "internal://local/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: true
+        )
+    }
+
+    @MainActor
+    func testInternalHandlerStopsAfterDataCallback() async throws {
+        let handler = InternalURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "internal://local/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: false
+        )
+    }
+
+    @MainActor
     func testInternalReaderLoaderRejectsMalformedOrAmbiguousSource() throws {
         let handler = InternalURLSchemeHandler()
         let webView = WKWebView()
