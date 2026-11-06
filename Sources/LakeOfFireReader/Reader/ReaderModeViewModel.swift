@@ -4130,6 +4130,7 @@ public struct ReaderPreparationRetryUITestHost: View {
                 .environmentObject(mode)
                 .environmentObject(caller)
                 .environmentObject(fixture.media)
+                .environmentObject(fixture.fileManager)
                 .environment(\.webViewNavigator, fixture.navigator)
                 Text(fixture.report)
                     .font(.caption)
@@ -4151,6 +4152,7 @@ private final class ReaderPreparationRetryUITestModel: ObservableObject {
     let reader = ReaderContent()
     let viewModel = ReaderViewModel(systemScripts: [])
     let media = ReaderMediaPlayerViewModel()
+    let fileManager = ReaderFileManager()
     let navigator = WebViewNavigator()
     let caller = WebViewScriptCaller()
     private let url = URL(string: "reader-file://file/load/ui-test/preparation-retry.txt")!
