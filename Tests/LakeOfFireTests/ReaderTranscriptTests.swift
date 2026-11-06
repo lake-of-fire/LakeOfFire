@@ -484,6 +484,23 @@ final class ReaderTranscriptTests: XCTestCase {
         XCTAssertEqual(cues.map(\.endTimestamp), ["00:02.500", "123:01:03.000", "00:05.000"])
     }
 
+    func testCueIdentifiersTakePrecedenceOverReservedBlockNames() {
+        let identifiers = ["STYLE", "REGION", "STYLE-identifier", "REGION-identifier", "NOTE-identifier"]
+        let blocks = identifiers.enumerated().map { index, identifier in
+            "\(identifier)\n00:01.000 --> 00:02.000\nCaption \(index)"
+        }
+        let text = "WEBVTT Header\n\nSTYLE\n::cue { color: white }\n\nREGION\nid:main\n\n"
+            + "NOTE Comment\nNot a cue identifier\n00:03.000 --> 00:04.000\nNot a caption\n\n"
+            + blocks.joined(separator: "\n\n")
+        for input in [text, text.replacingOccurrences(of: "\n", with: "\r\n")] {
+            let cues = TranscriptPageAsset.cues(fromWebVTT: input)
+            XCTAssertEqual(cues.map(\.identifier), identifiers)
+            XCTAssertEqual(cues.map(\.text), identifiers.indices.map { "Caption \($0)" })
+            XCTAssertEqual(cues.map(\.startTimestamp), Array(repeating: "00:01.000", count: identifiers.count))
+            XCTAssertEqual(cues.map(\.endTimestamp), Array(repeating: "00:02.000", count: identifiers.count))
+        }
+    }
+
     func testSchemeStopDuringResponsePreventsDataAndFinish() async throws {
         let key = UUID().uuidString
         let asset = TranscriptPageAsset.fromWebVTT(key: key, canonicalContentURL: URL(string: "https://example.com")!,

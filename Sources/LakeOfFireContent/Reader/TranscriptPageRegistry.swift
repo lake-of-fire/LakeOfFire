@@ -157,7 +157,6 @@ public struct TranscriptPageAsset: Sendable, Hashable {
             guard !trimmed.isEmpty else { return nil }
             let firstLine = trimmed.components(separatedBy: .newlines)[0]
             if firstLine == "WEBVTT" || firstLine.hasPrefix("WEBVTT ") || firstLine.hasPrefix("WEBVTT\t")
-                || firstLine == "STYLE" || firstLine == "REGION"
                 || firstLine == "NOTE" || firstLine.hasPrefix("NOTE ") || firstLine.hasPrefix("NOTE\t") {
                 return nil
             }
@@ -169,7 +168,10 @@ public struct TranscriptPageAsset: Sendable, Hashable {
             if lines.first?.contains("-->") == true {
                 timingIndex = 0
             } else {
-                timingIndex = lines.dropFirst().firstIndex(where: { $0.contains("-->") })
+                // A cue identifier occupies exactly one line. A timing line on
+                // line two takes precedence over STYLE/REGION block detection;
+                // those words can themselves identify a cue.
+                timingIndex = lines.count > 1 && lines[1].contains("-->") ? 1 : nil
             }
             guard let timingIndex else { return nil }
 
