@@ -2708,6 +2708,8 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedReadabilityContent = readabilityContent
         let cachedContainerSelector = readabilityContainerSelector
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
+        let renderBinding = scriptCaller.currentJavaScriptBindingToken
+        let requiresOriginalFrameBinding = cachedContainerFrameInfo?.isMainFrame == false
         let initialContent = readerContent.content
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         let processingAccount = readerAccountSessionAccess.map(ReaderModeProcessingAccount.init(access:))
@@ -2721,6 +2723,8 @@ public class ReaderModeViewModel: ObservableObject {
                 && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
                 && (initialContent.map { self.readerModeContentIsCurrent($0, readerContent: readerContent) } ?? true)
                 && initialContent?.isInvalidated != true
+                && (!requiresOriginalFrameBinding
+                    || scriptCaller.currentJavaScriptBindingToken == renderBinding)
         }
         let publicationDateLoader = readerPublicationDateLoader
         beginReaderModeLoad(for: contentURL)
@@ -3510,9 +3514,14 @@ public class ReaderModeViewModel: ObservableObject {
                             arguments: ["readerModeScript": Readability.shared.scripts],
                             in: frameInfo, requiring: requiredReplacementBinding)
                     } else {
+                        guard let frameReplacementBinding,
+                              scriptCaller.currentJavaScriptBindingToken == frameReplacementBinding else {
+                            throw CancellationError()
+                        }
                         _ = try await scriptCaller.evaluateJavaScript(
                             replacementScript + "\n" + readerModeInitializationScript,
-                            arguments: replacementArguments, in: frameInfo)
+                            arguments: replacementArguments, in: frameInfo,
+                            requiring: frameReplacementBinding)
                     }
                     guard isCurrentRender(
                         for: requestedURL,

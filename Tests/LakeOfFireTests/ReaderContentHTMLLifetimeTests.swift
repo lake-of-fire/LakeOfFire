@@ -3,6 +3,7 @@ import SwiftSoup
 import LakeKit
 import RealmSwift
 import XCTest
+import WebKit
 @testable import LakeOfFireContent
 @_spi(ReaderProcessing) @testable import LakeOfFireReader
 @testable import SwiftUIWebView
@@ -1094,8 +1095,44 @@ extension ReaderContentHTMLLifetimeTests {
     }
 }
 
+// WebKit supplies the real child-frame identity; the script caller below records
+// dispatch without relying on timing of JavaScript execution in that document.
+private final class ReaderHTMLFrameProbe: NSObject, WKScriptMessageHandler {
+    var onMessage: ((WKScriptMessage) -> Void)?
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        onMessage?(message)
+    }
+}
+
 extension ReaderContentHTMLLifetimeTests {
-    func testRetiredDocumentPreparationFailureCannotSettleReplacement() async throws {
+    private func childFrameFixture() async throws -> (WKWebView, WKFrameInfo) {
+        let configuration = WKWebViewConfiguration()
+        let probe = ReaderHTMLFrameProbe()
+        configuration.userContentController.add(probe, name: "readerHTMLFrameProbe")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 320, height: 480),
+                                configuration: configuration)
+        let arrived = expectation(description: "reader child frame")
+        var childFrame: WKFrameInfo?
+        probe.onMessage = { message in
+            guard !message.frameInfo.isMainFrame, childFrame == nil else { return }
+            childFrame = message.frameInfo
+            arrived.fulfill()
+        }
+        let child = "<script>window.webkit.messageHandlers.readerHTMLFrameProbe.postMessage('ready')</script>"
+        let escapedChild = child.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+        webView.loadHTMLString("<iframe srcdoc=\"\(escapedChild)\"></iframe>",
+                              baseURL: URL(string: "https://example.com/reader-frame"))
+        await fulfillment(of: [arrived], timeout: 3)
+        return (webView, try XCTUnwrap(childFrame))
+    }
+
+}
+
+extension ReaderContentHTMLLifetimeTests {
+    func testFullPagePreparationFailureSurvivesSameContentWebViewHandoff() async throws {
         for initiallyMounted in [true, false] {
             let (realm, row, reader, mode, _) = try renderFixture()
             defer { withExtendedLifetime(realm) {} }
@@ -1121,20 +1158,51 @@ extension ReaderContentHTMLLifetimeTests {
             mode.showReaderView(readerContent: reader, scriptCaller: caller)
             await mode.waitForReaderModeRender(for: fileURL)
             XCTAssertTrue(replacedBinding)
-            if initiallyMounted {
-                XCTAssertNil(mode.currentPreparationFailure(), "An old error cannot adopt the replacement binding")
-                XCTAssertNil(mode.preparationFailure)
-                XCTAssertTrue(mode.isReaderModeLoading, "Retired work cannot clear replacement loading")
-                XCTAssertTrue(reader.isRenderingReaderHTML)
-                XCTAssertNotNil(mode.pendingReaderModeURL)
-                XCTAssertEqual(mode.currentRenderGenerationDescription(for: fileURL), "nil",
-                    "Retired failed work cannot become a completed render owner")
-            } else {
-                XCTAssertNotNil(mode.currentPreparationFailure(), "First mounting must preserve a current preparation error")
-                XCTAssertFalse(mode.isReaderModeLoading)
-                XCTAssertFalse(reader.isRenderingReaderHTML)
-                XCTAssertNil(mode.pendingReaderModeURL)
+            XCTAssertNotNil(mode.currentPreparationFailure(), "Same-content page work must retain its failure presentation")
+            XCTAssertFalse(mode.isReaderModeLoading)
+            XCTAssertFalse(reader.isRenderingReaderHTML)
+            XCTAssertNil(mode.pendingReaderModeURL)
+        }
+    }
+
+    func testRetiredFramePreparationCannotPublishOrSettleReplacement() async throws {
+        let (webView, frame) = try await childFrameFixture()
+        defer { withExtendedLifetime(webView) {} }
+        for failsPreparation in [false, true] {
+            let (realm, row, reader, mode, _) = try renderFixture()
+            defer { withExtendedLifetime(realm) {} }
+            try prepareFinalTransformMetadata(row, in: realm)
+            mode.readabilityContent = "<html><body><div id='reader-content'>Frame article.</div></body></html>"
+            mode.readabilityContainerFrameInfo = frame
+            let caller = WebViewScriptCaller()
+            var dispatches = 0
+            caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                dispatches += 1
+                return .init(true)
+            }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+            var replacedBinding = false
+            mode.processReadabilityContent = { html, _, _, _, _, _, _ in
+                await MainActor.run {
+                    caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                        dispatches += 1
+                        return .init(true)
+                    }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+                    reader.isRenderingReaderHTML = true
+                    replacedBinding = true
+                }
+                if failsPreparation { throw RequiredPreparationFailure() }
+                return try SwiftSoup.parse(html)
             }
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            await mode.waitForReaderModeRender(for: fileURL)
+            XCTAssertTrue(replacedBinding)
+            XCTAssertEqual(dispatches, 0, "An old frame payload cannot enter the replacement document")
+            XCTAssertNil(mode.currentPreparationFailure())
+            XCTAssertNil(mode.preparationFailure)
+            XCTAssertTrue(mode.isReaderModeLoading, "Retired frame work cannot settle replacement loading")
+            XCTAssertTrue(reader.isRenderingReaderHTML)
+            XCTAssertNotNil(mode.pendingReaderModeURL)
+            XCTAssertEqual(mode.currentRenderGenerationDescription(for: fileURL), "nil")
         }
     }
 }
