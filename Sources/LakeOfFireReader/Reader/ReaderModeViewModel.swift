@@ -942,6 +942,7 @@ internal enum ReaderSnippetFinalDocumentDiagnostics {
 #if DEBUG
         guard contentURL.canonicalReaderContentURLForHotfix().isSnippetURL,
               ProcessInfo.processInfo.arguments.contains("--ui-test-enable-presentation-routing-diagnostics")
+                || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-snippet-processing-diagnostics")
                 || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-lookup-probe") else { return }
         NSLog("ReaderSnippetProcessingDiagnostics phase=%@ generation=%@ cancelled=%@",
               phase, generation?.uuidString ?? "nil", String(Task.isCancelled))
@@ -952,7 +953,8 @@ internal enum ReaderSnippetFinalDocumentDiagnostics {
 #if DEBUG
         guard contentURL.isSnippetURL,
               ProcessInfo.processInfo.arguments.contains("--ui-test-enable-lookup-probe")
-                || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-presentation-routing-diagnostics") else {
+                || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-presentation-routing-diagnostics")
+                || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-snippet-processing-diagnostics") else {
             return
         }
         let snapshot = ReaderSnippetFinalDocumentSnapshot.make(htmlBytes: htmlBytes)
