@@ -10,6 +10,91 @@ import XCTest
 
 final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     @MainActor
+    func testAtomRefreshPrefersHTMLAlternatesRegardlessOfLinkOrder() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        let originalHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = originalHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock { await ReaderContentLoader.resetTransientCachesForTesting() }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://example.com/alternates.atom")!
+        feed.deleteOrphans = true
+        try realm.write { realm.add(feed) }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        let html = "<link rel='alternate' type=' Text/HTML; charset=utf-8 ' href='https://example.com/article?edition=ja&amp;source=feed#body'/>"
+        let pdf = "<link rel='alternate' type='application/pdf' href='https://example.com/article.pdf'/>"
+        let cases: [(links: String, expectedURL: String)] = [
+            (html + pdf, "https://example.com/article?edition=ja&source=feed#body"),
+            (pdf + html, "https://example.com/article?edition=ja&source=feed#body"),
+            (html + "<link rel='alternate' type='text/html' hreflang='en' href='https://example.com/english'/>" + pdf,
+             "https://example.com/article?edition=ja&source=feed#body"),
+            ("<link rel='alternate' type='text/html' href='https://example.com:invalid/article'/>" + pdf,
+             "https://example.com/article.pdf"),
+            ("<link type='application/xhtml+xml' href='https://example.com/article.xhtml'/>" + pdf,
+             "https://example.com/article.xhtml"),
+            ("<link href='https://example.com/untyped'/>", "https://example.com/untyped"),
+            ("<link href='https://example.com/untyped'/>" + pdf, "https://example.com/article.pdf"),
+            (pdf, "https://example.com/article.pdf"),
+        ]
+        var htmlIdentity: String?
+        var htmlCreatedAt: Date?
+        for (revision, fixture) in cases.enumerated() {
+            let body = Data("""
+            <feed xmlns='http://www.w3.org/2005/Atom'>
+              <title>Feed</title><id>https://example.com/alternates.atom</id>
+              <updated>2026-11-06T00:00:00Z</updated>
+              <entry><id>urn:article:1</id><title>Article</title>
+                <updated>2026-11-06T00:00:00Z</updated>
+                \(fixture.links)
+                <summary>Article summary</summary>
+              </entry>
+            </feed>
+            """.utf8)
+            FeedURLProtocol.requestHandler = { _ in
+                (200, ["Content-Type": "application/atom+xml", "ETag": "\"revision-\(revision)\""], body)
+            }
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let activeEntries = Array(realm.objects(FeedEntry.self).filter { $0.feedID == feed.id && !$0.isDeleted })
+            XCTAssertEqual(activeEntries.count, 1)
+            let entry = try XCTUnwrap(activeEntries.first)
+            XCTAssertEqual(entry.url.absoluteString, fixture.expectedURL)
+            XCTAssertEqual(entry.title, "Article")
+            XCTAssertEqual(feed.lastFetchedETag, "\"revision-\(revision)\"")
+            if revision == 0 {
+                htmlIdentity = entry.compoundKey
+                htmlCreatedAt = entry.createdAt
+            } else if revision == 1 {
+                XCTAssertEqual(entry.compoundKey, htmlIdentity)
+                XCTAssertEqual(entry.createdAt, htmlCreatedAt)
+                XCTAssertEqual(realm.objects(FeedEntry.self).count, 1,
+                               "Reordering representations must not tombstone or duplicate the article")
+            }
+        }
+    }
+
+    @MainActor
     func testRefreshFallsBackFromUnsupportedHEADAndHonorsChangedETag() async throws {
         let configuration = makeRealmConfiguration()
         let originalLibrary = LibraryDataManager.realmConfiguration
