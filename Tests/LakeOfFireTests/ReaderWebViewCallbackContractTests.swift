@@ -334,8 +334,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         withExtendedLifetime((fixture, nativeFixture, webView)) {}
     }
 
-    private func cachedHistoryRecord(url: URL) throws -> (Realm, HistoryRecord) {
-        let realm = try Realm(configuration: .init(
+    private func cachedHistoryRecord(url: URL, in renderingRealm: Realm? = nil) throws -> (Realm, HistoryRecord) {
+        let realm = try renderingRealm ?? Realm(configuration: .init(
             inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]
         ), queue: nil)
         let record = HistoryRecord()
@@ -1166,7 +1166,9 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             let reader = fixture.readerContent
             let navigator = fixture.handler.navigator
             let url = URL(string: "reader-file://file/load/local/retired-render.txt")!
-            let (realm, row) = try cachedHistoryRecord(url: url)
+            let (realm, row) = try cachedHistoryRecord(
+                url: url, in: makeReaderHTMLRenderingRealm()
+            )
             defer {
                 mode.processHTMLBytes = nil
                 withExtendedLifetime(realm) {}
