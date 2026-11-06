@@ -4187,10 +4187,11 @@ private final class ReaderPreparationRetryUITestModel: ObservableObject {
     func start() async {
         guard requestedBootstrap, realm == nil else { return }
         do {
+            // Finish isolated MainActor fixture setup before rendering can suspend.
             let realm = try Realm(configuration: .init(
                 inMemoryIdentifier: UUID().uuidString,
                 objectTypes: [HistoryRecord.self]
-            ))
+            ), queue: nil)
             let row = HistoryRecord()
             row.url = url
             row.title = "Retry fixture"
