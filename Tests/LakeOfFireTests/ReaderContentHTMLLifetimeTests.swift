@@ -1,9 +1,11 @@
 import Foundation
+import SwiftSoup
+import LakeKit
 import RealmSwift
 import XCTest
 import WebKit
 @testable import LakeOfFireContent
-@testable import LakeOfFireReader
+@_spi(ReaderProcessing) @testable import LakeOfFireReader
 @testable import SwiftUIWebView
 
 @MainActor
@@ -11,9 +13,11 @@ final class ReaderContentHTMLLifetimeTests: XCTestCase {
     private let fileURL = URL(string: "reader-file://file/load/local/example.txt")!
 
     private func fixture() throws -> (Realm, HistoryRecord) {
-        let realm = try Realm(configuration: Realm.Configuration(
+        var configuration = Realm.Configuration(
             inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]
-        ))
+        )
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let realm = try Realm(configuration: configuration)
         let record = HistoryRecord()
         record.url = fileURL
         record.rssContainsFullContent = false
@@ -853,6 +857,219 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
         XCTAssertTrue(mode.isReaderModeLoading)
     }
+
+#if DEBUG
+    func testInitiatingAccountContextSurvivesSuspensionInRealProcessingCallback() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let session = Session.ephemeralForTesting()
+        session.authenticated(authToken: "isolated-context-a", userID: 101)
+        let access = AccountSessionAccess(session: session)
+        let initiatingSnapshot = session.accountSessionSnapshot
+        mode.readerAccountSessionAccess = access
+        mode.readabilityContent = "<html><body><div id='reader-content'>Captured account context.</div></body></html>"
+        let processed = expectation(description: "real processing callback observes initiating context")
+        mode.processReadabilityContent = { html, _, _, _, _, _, _ in
+            let captured = try XCTUnwrap(ReaderModeProcessingAccountContext.account)
+            XCTAssertEqual(captured.access.boundaryID, access.boundaryID)
+            XCTAssertEqual(captured.snapshot, initiatingSnapshot)
+            XCTAssertTrue(captured.isCurrent)
+            await Task.yield()
+            await MainActor.run {
+                session.authenticated(authToken: "isolated-context-b", userID: 202)
+            }
+            XCTAssertEqual(ReaderModeProcessingAccountContext.account?.snapshot, initiatingSnapshot,
+                "Suspended work must retain A rather than sampling B")
+            XCTAssertFalse(captured.isCurrent)
+            processed.fulfill()
+            return try SwiftSoup.parse(html)
+        }
+        await render(mode, reader: reader)
+        await fulfillment(of: [processed], timeout: 1)
+        XCTAssertEqual(session.accountSessionSnapshot.identity, .authenticated(userID: 202))
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+        XCTAssertNil(ReaderModeProcessingAccountContext.account,
+            "The render's TaskLocal context must not escape into its host")
+    }
+
+    func testAccountReplacementBeforeProcessingRejectsOriginalRender() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let session = Session.ephemeralForTesting()
+        session.authenticated(authToken: "isolated-account-a", userID: 101)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: session)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Account owned article.</div></body></html>"
+        var processed = false
+        mode.readerPublicationDateLoader = { _ in
+            session.authenticated(authToken: "isolated-account-b", userID: 202)
+            return nil
+        }
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run { processed = true }
+            return bytes
+        }
+        await render(mode, reader: reader)
+
+        XCTAssertEqual(session.accountSessionSnapshot.identity, .authenticated(userID: 202),
+            "The test must reach the actual preparation collaborator")
+        XCTAssertFalse(processed, "A must not adopt B after its first preparation await")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+    }
+
+    func testAccountReplacementAfterProcessingRejectsOriginalDispatch() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let session = Session.ephemeralForTesting()
+        session.authenticated(authToken: "isolated-account-a", userID: 101)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: session)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Account owned article.</div></body></html>"
+        var processed = false
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run {
+                processed = true
+                session.authenticated(authToken: "isolated-account-b", userID: 202)
+            }
+            return bytes
+        }
+        await render(mode, reader: reader)
+
+        XCTAssertEqual(session.accountSessionSnapshot.identity, .authenticated(userID: 202))
+        XCTAssertTrue(processed, "The account transition must occur after the processor")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastHTMLBaseURL, "nil")
+    }
+
+    func testAccountOnlySuccessorEntrypointStartsWithoutWaitingForRetiredRender() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let session = Session.ephemeralForTesting()
+        session.authenticated(authToken: "isolated-account-a", userID: 101)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: session)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Same URL and row.</div></body></html>"
+        let selection = reader.currentSelectionID
+        let caller = WebViewScriptCaller()
+        var successorPreparations = 0
+        mode.readerPublicationDateLoader = { _ in
+            session.authenticated(authToken: "isolated-account-b", userID: 202)
+            mode.readerPublicationDateLoader = { _ in
+                successorPreparations += 1
+                return nil
+            }
+            // Replay the real public entrypoint. No successor generation,
+            // pending flag, content or selection is seeded by the test.
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            return nil
+        }
+        mode.showReaderView(readerContent: reader, scriptCaller: caller)
+        await mode.waitForReaderModeRender(for: fileURL)
+        await mode.waitForReaderModeRender(for: fileURL)
+
+        XCTAssertEqual(session.accountSessionSnapshot.identity, .authenticated(userID: 202),
+            "The initiating render must actually replace its account")
+        XCTAssertEqual(reader.currentSelectionID, selection)
+        XCTAssertEqual(successorPreparations, 1, "B must receive a new render despite retaining A's URL and row")
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
+        XCTAssertTrue(mode.isReaderModeLoading, "Late A completion must leave B waiting for its document")
+        XCTAssertEqual(mode.pendingReaderModeURL, fileURL)
+    }
+
+    func testAccountReplacementBeforeFontReadinessRejectsCompletedDocument() async throws {
+        let (realm, row, reader, mode, _) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let session = Session.ephemeralForTesting()
+        session.authenticated(authToken: "isolated-account-a", userID: 101)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: session)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Waiting for fonts.</div></body></html>"
+        await render(mode, reader: reader)
+        XCTAssertTrue(mode.isReaderModeLoadPending(for: fileURL))
+        let generation = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)),
+            "The test must use the actual dispatched document generation")
+        session.authenticated(authToken: "isolated-account-b", userID: 202)
+        XCTAssertEqual(session.accountSessionSnapshot.identity, .authenticated(userID: 202))
+
+        XCTAssertFalse(mode.handleRenderedReaderDocumentReady(pageURL: fileURL, hasReaderContent: true, renderGeneration: generation),
+            "A's delayed font-ready callback must not settle B's account")
+    }
+
+    func testSameAccountNewAuthorizationRejectsOldReadinessAndReplaysCurrentRender() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let session = Session.ephemeralForTesting()
+        session.authenticated(authToken: "isolated-account-a", userID: 101)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: session)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Account generation article.</div></body></html>"
+        await render(mode, reader: reader)
+        let originalGeneration = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)))
+        let originalAccount = session.accountSessionSnapshot
+        session.authenticated(authToken: "isolated-replacement-authorization", userID: 101)
+        XCTAssertEqual(session.accountSessionSnapshot.identity, originalAccount.identity)
+        XCTAssertNotEqual(session.accountSessionSnapshot.generation, originalAccount.generation)
+        XCTAssertFalse(mode.handleRenderedReaderDocumentReady(
+            pageURL: fileURL, hasReaderContent: true, renderGeneration: originalGeneration
+        ))
+
+        await render(mode, reader: reader)
+        let replacementGeneration = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)))
+        XCTAssertNotEqual(replacementGeneration, originalGeneration)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
+        XCTAssertTrue(mode.handleRenderedReaderDocumentReady(
+            pageURL: fileURL, hasReaderContent: true, renderGeneration: replacementGeneration
+        ))
+        XCTAssertFalse(mode.isReaderModeLoading)
+    }
+
+    func testReplacementAccountBoundaryWithMatchingSnapshotRejectsOldReadiness() async throws {
+        let (realm, row, reader, mode, _) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let originalSession = Session.ephemeralForTesting()
+        originalSession.authenticated(authToken: "isolated-account-a", userID: 101)
+        let replacementSession = Session.ephemeralForTesting()
+        replacementSession.authenticated(authToken: "isolated-account-a", userID: 101)
+        XCTAssertEqual(originalSession.accountSessionSnapshot, replacementSession.accountSessionSnapshot)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: originalSession)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Account boundary article.</div></body></html>"
+        await render(mode, reader: reader)
+        let originalGeneration = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)))
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: replacementSession)
+        XCTAssertFalse(mode.handleRenderedReaderDocumentReady(
+            pageURL: fileURL, hasReaderContent: true, renderGeneration: originalGeneration
+        ))
+        await render(mode, reader: reader)
+        let replacementGeneration = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)))
+        XCTAssertNotEqual(replacementGeneration, originalGeneration)
+        XCTAssertTrue(mode.handleRenderedReaderDocumentReady(
+            pageURL: fileURL, hasReaderContent: true, renderGeneration: replacementGeneration
+        ))
+    }
+
+    func testSameAccountMatchingGenerationAcceptsCompletedDocumentReadiness() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let session = Session.ephemeralForTesting()
+        session.authenticated(authToken: "isolated-account-a", userID: 101)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: session)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Waiting for fonts.</div></body></html>"
+        await render(mode, reader: reader)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
+        XCTAssertTrue(mode.isReaderModeLoadPending(for: fileURL))
+        let generation = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)))
+        XCTAssertTrue(mode.handleRenderedReaderDocumentReady(
+            pageURL: fileURL, hasReaderContent: true, renderGeneration: generation
+        ))
+        XCTAssertFalse(mode.isReaderModeLoading)
+    }
+
+#endif
 
     func testUnscopedCancellationStopsActiveHTMLPreparation() async throws {
         let (realm, row, reader, mode, navigator) = try renderFixture()
