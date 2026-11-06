@@ -326,10 +326,13 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         try container.encode(ordinal, forKey: .ordinal)
         try container.encode(markdownDescription, forKey: .markdownDescription)
         try container.encode(rssUrl, forKey: .rssUrl)
+        try container.encode(iconUrl, forKey: .iconUrl)
         try container.encode(isReaderModeByDefault, forKey: .isReaderModeByDefault)
+        try container.encode(rssContainsFullContent, forKey: .rssContainsFullContent)
         try container.encode(injectEntryImageIntoHeader, forKey: .injectEntryImageIntoHeader)
         try container.encode(displayPublicationDate, forKey: .displayPublicationDate)
         try container.encode(meaningfulContentMinLength, forKey: .meaningfulContentMinLength)
+        try container.encode(extractImageFromContent, forKey: .extractImageFromContent)
         try container.encode(deleteOrphans, forKey: .deleteOrphans)
         try container.encode(entryContentKindRawValue, forKey: .entryContentKindRawValue)
         try container.encode(isFollowed, forKey: .isFollowed)
@@ -349,10 +352,15 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         self.ordinal = try container.decodeIfPresent(Int.self, forKey: .ordinal)
         self.markdownDescription = try container.decodeIfPresent(String.self, forKey: .markdownDescription)
         self.rssUrl = try container.decode(URL.self, forKey: .rssUrl)
+        if let iconUrl = try container.decodeIfPresent(URL.self, forKey: .iconUrl) {
+            self.iconUrl = iconUrl
+        }
         self.isReaderModeByDefault = try container.decode(Bool.self, forKey: .isReaderModeByDefault)
+        self.rssContainsFullContent = try container.decodeIfPresent(Bool.self, forKey: .rssContainsFullContent) ?? false
         self.injectEntryImageIntoHeader = try container.decode(Bool.self, forKey: .injectEntryImageIntoHeader)
         self.displayPublicationDate = try container.decode(Bool.self, forKey: .displayPublicationDate)
         self.meaningfulContentMinLength = try container.decode(Int.self, forKey: .meaningfulContentMinLength)
+        self.extractImageFromContent = try container.decodeIfPresent(Bool.self, forKey: .extractImageFromContent) ?? true
         self.deleteOrphans = try container.decode(Bool.self, forKey: .deleteOrphans)
         self.entryContentKindRawValue = try container.decodeIfPresent(String.self, forKey: .entryContentKindRawValue) ?? ReaderContentKind.readerContent.rawValue
         self.isFollowed = try container.decodeIfPresent(Bool.self, forKey: .isFollowed) ?? false
