@@ -2110,6 +2110,7 @@ public extension Feed {
                 )
             }
             let parser = FeedKit.FeedParser(data: rssData)
+            let atomDocumentData = rssData
             return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
                 parser.parseAsync { parserResult in
@@ -2192,7 +2193,7 @@ public extension Feed {
                                           FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
-                                    try resolveAtomEntryLinks(items, from: rssData, documentURL: documentURL)
+                                    try resolveAtomEntryLinks(items, from: atomDocumentData, documentURL: documentURL)
                                     try await self.persist(
                                         atomItems: items,
                                         collections: atomCollections,
