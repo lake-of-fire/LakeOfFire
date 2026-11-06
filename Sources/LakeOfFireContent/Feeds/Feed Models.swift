@@ -1170,7 +1170,7 @@ fileprivate struct FeedFetchMetadata {
 
 fileprivate enum FeedFetchResult {
     case notModified(metadata: FeedFetchMetadata)
-    case fetched(Data, metadata: FeedFetchMetadata)
+    case fetched(Data, metadata: FeedFetchMetadata, documentURL: URL)
 }
 
 fileprivate struct ParsedFeedEntryCollection {
@@ -1452,7 +1452,7 @@ fileprivate func getRssData(
         }
         throw FeedError.downloadFailed
     case 200..<300:
-        return .fetched(data, metadata: getMetadata)
+        return .fetched(data, metadata: getMetadata, documentURL: getHTTPResponse.url ?? rssUrl)
     case 300..<400:
         if shouldLogNiponica {
             logNiponica("stage=feedFetch.http.error rssURL=\(rssUrl.absoluteString) phase=get status=\(getHTTPResponse.statusCode) reason=unhandledRedirect")
@@ -2020,7 +2020,7 @@ public extension Feed {
         switch fetchResult {
         case .notModified:
             throw FeedError.downloadFailed
-        case .fetched(var rssData, let metadata):
+        case .fetched(var rssData, let metadata, let documentURL):
             if shouldLogNiponica {
                 logNiponica(
                     "stage=feed.fetch.fetched feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) bytes=\(rssData.count) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
@@ -2081,6 +2081,7 @@ public extension Feed {
                         if shouldLogNiponica { logNiponica("stage=feed.fetch.parserError feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) feedType=atom reason=nilEntries collections=\(atomCollections.count)") }
                         throw FeedError.parserFailed
                     }
+                    try AtomEntryLinkResolver.resolve(items, in: rssData, documentURL: documentURL)
                     feedType = "atom"
                     itemCount = items.count
                     if shouldLogNiponica { logNiponica("stage=feed.fetch.parsed feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) feedType=atom entries=\(items.count) collections=\(atomCollections.count)") }
