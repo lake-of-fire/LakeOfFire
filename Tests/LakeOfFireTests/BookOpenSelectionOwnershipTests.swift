@@ -1,5 +1,7 @@
 import XCTest
 import Foundation
+import SwiftUIDownloads
+@testable import LakeOfFireContent
 @testable import LakeOfFireOPDS
 @testable import LakeOfFireReader
 
@@ -28,6 +30,119 @@ private actor BookOpenSelectionGate {
 }
 
 final class BookOpenSelectionOwnershipTests: XCTestCase {
+    @MainActor
+    func testCatalogRepairsUnreceiptedExistingBytesBeforeImmediateImport() async throws {
+        try await withCatalogDownload { download, controller, payload in
+            try Data("unadmitted retained bytes".utf8).write(to: download.localDestination)
+            let exists = await download.existsLocally()
+            let readyBeforeRepair = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(exists)
+            XCTAssertFalse(readyBeforeRepair)
+
+            await controller.ensureDownloaded(download: download)
+
+            let readyAfterRepair = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(download.isFinishedProcessing)
+            XCTAssertFalse(download.isFailed)
+            XCTAssertTrue(readyAfterRepair)
+            XCTAssertEqual(try Data(contentsOf: download.localDestination), payload)
+        }
+    }
+
+    @MainActor
+    func testCatalogRepairsReplacedInstalledBytesInsteadOfTrustingPathPresence() async throws {
+        try await withCatalogDownload { download, controller, payload in
+            await controller.ensureDownloaded(download: download)
+            let initiallyReady = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(initiallyReady, "The real controller must install and certify the fixture first")
+
+            try Data("replacement bytes".utf8).write(to: download.localDestination, options: .atomic)
+            let exists = await download.existsLocally()
+            let readyBeforeRepair = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(exists)
+            XCTAssertFalse(readyBeforeRepair)
+
+            await controller.ensureDownloaded(download: download)
+
+            let readyAfterRepair = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(readyAfterRepair)
+            XCTAssertEqual(try Data(contentsOf: download.localDestination), payload)
+        }
+    }
+
+    @MainActor
+    func testCatalogFailedTransferKeepsRetainedReceiptRetryable() async throws {
+        try await withCatalogDownload { download, controller, payload in
+            await controller.ensureDownloaded(download: download)
+            let initiallyReady = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(initiallyReady)
+            try FileManager.default.removeItem(at: download.url)
+
+            // A real failed replacement retains the preceding installed file.
+            await controller.download(download)
+            let verifiedAfterFailure = await download.hasVerifiedInstalledArtifact()
+            let readyAfterFailure = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(download.isFailed)
+            XCTAssertTrue(verifiedAfterFailure)
+            XCTAssertFalse(readyAfterFailure)
+
+            try payload.write(to: download.url)
+            await controller.ensureDownloaded(download: download)
+
+            let readyAfterRetry = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertFalse(download.isFailed)
+            XCTAssertTrue(readyAfterRetry)
+        }
+    }
+
+    @MainActor
+    func testCatalogCompressedCandidateIsNotAnImmediatelyImportableFile() async throws {
+        try await withCatalogDownload { download, _, _ in
+            let compressed = Downloadable(
+                url: download.url.appendingPathExtension("br"),
+                name: "Compressed catalog book",
+                localDestination: download.localDestination,
+                metadataStore: download.metadataStore
+            )
+            try Data("retained compressed candidate".utf8).write(to: compressed.compressedFileURL)
+            let exists = await compressed.existsLocally()
+            let ready = await ReaderFileManager.isDownloadReadyForImport(compressed)
+            XCTAssertTrue(exists)
+            XCTAssertFalse(ready)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: compressed.localDestination.path))
+        }
+    }
+
+    @MainActor
+    private func withCatalogDownload(
+        verify: @MainActor (Downloadable, DownloadController, Data) async throws -> Void
+    ) async throws {
+        let identifier = "catalog-download-" + UUID().uuidString
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(identifier, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: identifier))
+        let session = URLSession(configuration: .ephemeral)
+        defer {
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: identifier)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let payload = Data("original catalog download bytes".utf8)
+        let source = root.appendingPathComponent("source.epub")
+        try payload.write(to: source)
+        let download = Downloadable(
+            url: source,
+            name: "Catalog book",
+            localDestination: root.appendingPathComponent("installed.epub"),
+            metadataStore: UserDefaultsDownloadableMetadataStore(
+                userDefaults: defaults, metadataCacheNamespace: identifier
+            )
+        )
+        download.shouldCheckForUpdates = false
+        let controller = DownloadController(session: session)
+        try await verify(download, controller, payload)
+    }
+
     @MainActor
     func testOPDS2RelationlessImagesUseDocumentOrderAndFinalDocumentBase() throws {
         let document = try catalogDocument(#"""
@@ -387,6 +502,105 @@ final class BookOpenSelectionOwnershipTests: XCTestCase {
                 in: document, relativeTo: catalogRequestURL))
             XCTAssertEqual(books.map(\.title), ["Restricted"])
             XCTAssertNil(books.first?.downloadURL, relation)
+        }
+    }
+
+    @MainActor
+    func testGroupedJSONCatalogBooksReachTheLoaderWithoutFollowingNavigation() async throws {
+        let body = #"""
+        {"metadata":{"title":"Grouped catalog"},
+         "links":[{"rel":"self","href":"catalog.json"}],
+         "groups":[
+           {"metadata":{"title":"Navigation"},
+            "navigation":[{"title":"All Books","href":"unneeded.json"}]},
+           {"metadata":{"title":"First shelf"},"publications":[
+             {"metadata":{"title":"First","author":"Writer","description":"Summary"},
+              "links":[{"href":"../books/first.epub","rel":"download"}],
+              "images":[{"href":"covers/first.png","type":"image/png"}]},
+             {"metadata":{"title":"Second"},
+              "links":[{"href":"second.epub","rel":"acquisition"}]}]},
+           {"metadata":{"title":"Second shelf"},"publications":[
+             {"metadata":{"title":"Restricted"},
+              "links":[{"href":"purchase","rel":"buy"}]}]}]}
+        """#
+        let document = try catalogDocument(body)
+        let feed = try XCTUnwrap(document.feed)
+        XCTAssertTrue(feed.publications.isEmpty)
+        XCTAssertEqual(feed.groups.map { $0.publications.count }, [0, 2, 1])
+        let mapped = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+            in: document, relativeTo: catalogRequestURL))
+        XCTAssertEqual(mapped.map(\.title), ["First", "Second", "Restricted"])
+        XCTAssertEqual(mapped[0].author, "Writer")
+        XCTAssertEqual(mapped[0].summary, "Summary")
+        XCTAssertEqual(mapped[0].downloadURL?.absoluteString,
+            "https://cdn.example/releases/books/first.epub")
+        XCTAssertEqual(mapped[0].coverURL?.absoluteString,
+            "https://cdn.example/releases/v2/covers/first.png")
+        XCTAssertNil(mapped[2].downloadURL)
+
+        let fixture = catalogLoadingFixture()
+        let requestedURL = fixture.url("grouped.json")
+        fixture.set(.document(body,
+            finalURL: URL(string: "https://cdn.example/releases/v2/document.json")!),
+            at: requestedURL)
+        let result = await BookLibraryViewModel.fetchPublications(
+            from: requestedURL, session: fixture.session)
+        XCTAssertNil(result.1)
+        XCTAssertEqual(result.0.map(\.title), ["First", "Second", "Restricted"])
+        XCTAssertEqual(result.0.first?.downloadURL, mapped.first?.downloadURL)
+        XCTAssertEqual(fixture.requests, [requestedURL],
+            "Already parsed publications must not be discarded for a navigation request")
+    }
+
+    @MainActor
+    func testGroupedAtomBooksKeepTopLevelBooksAndScopedAcquisitionURLs() throws {
+        let document = try catalogDocument("""
+        <feed xmlns="http://www.w3.org/2005/Atom" xml:base="../books/">
+          <title>Grouped Atom catalog</title><id>urn:catalog:grouped</id>
+          <updated>2026-01-01T00:00:00Z</updated>
+          <author><name>Feed author</name></author>
+          <entry><title>Grouped first</title><id>urn:book:grouped-first</id>
+            <updated>2026-01-01T00:00:00Z</updated>
+            <link rel="collection" title="First shelf" href="shelves/first"/>
+            <link rel="http://opds-spec.org/acquisition/open-access" href="first.epub"/>
+          </entry>
+          <entry><title>Top level</title><id>urn:book:top-level</id>
+            <updated>2026-01-01T00:00:00Z</updated>
+            <link rel="http://opds-spec.org/acquisition" href="top.epub"/>
+          </entry>
+          <entry><title>Grouped second</title><id>urn:book:grouped-second</id>
+            <updated>2026-01-01T00:00:00Z</updated>
+            <link rel="http://opds-spec.org/group" title="Second shelf" href="shelves/second"/>
+            <link xml:base="editions/" rel="http://opds-spec.org/acquisition/open-access" href="second.epub"/>
+          </entry>
+        </feed>
+        """, atom: true)
+        let feed = try XCTUnwrap(document.feed)
+        XCTAssertEqual(feed.publications.map(\.metadata.title), ["Top level"])
+        XCTAssertEqual(feed.groups.map { $0.publications.count }, [1, 1])
+        let books = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+            in: document, relativeTo: catalogRequestURL))
+        XCTAssertEqual(books.map(\.title), ["Top level", "Grouped first", "Grouped second"])
+        XCTAssertEqual(books.map(\.author), ["Feed author", "Feed author", "Feed author"])
+        XCTAssertEqual(books.compactMap { $0.downloadURL?.absoluteString }, [
+            "https://cdn.example/releases/books/top.epub",
+            "https://cdn.example/releases/books/first.epub",
+            "https://cdn.example/releases/books/editions/second.epub"
+        ])
+    }
+
+    @MainActor
+    func testEmptyAndNavigationOnlyGroupsDoNotBecomePublicationLists() throws {
+        for groups in [
+            #"[]"#,
+            #"[{"metadata":{"title":"Empty shelf"},"publications":[]}]"#,
+            #"[{"metadata":{"title":"Navigation"},"navigation":[{"title":"All Books","href":"all.json"}]}]"#
+        ] {
+            let document = try catalogDocument("""
+            {"metadata":{"title":"No books"},"groups":\(groups)}
+            """)
+            XCTAssertNil(BookLibraryViewModel.mappedPublications(
+                in: document, relativeTo: catalogRequestURL))
         }
     }
 

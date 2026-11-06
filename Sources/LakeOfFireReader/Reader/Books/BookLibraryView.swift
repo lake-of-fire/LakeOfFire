@@ -508,7 +508,11 @@ public class BookLibraryViewModel: ObservableObject {
     /// feed entries; navigation/empty feeds remain the loader's responsibility.
     static func mappedPublications(in document: ParseData, relativeTo url: URL) -> [Publication]? {
         let publications: [LakeOfFireOPDS.Publication]
-        if let entries = document.feed?.publications, !entries.isEmpty {
+        // The catalog UI presents one list. Keep books from declared groups
+        // after top-level books, preserving each collection's publication order.
+        let entries = (document.feed?.publications ?? [])
+            + (document.feed?.groups.flatMap(\.publications) ?? [])
+        if !entries.isEmpty {
             publications = entries
         } else if let standalone = document.publication {
             publications = [standalone]
@@ -604,23 +608,14 @@ public class BookLibraryViewModel: ObservableObject {
                 return downloadable != nil
             },
             existsLocally: {
-                await downloadable?.existsLocally() == true
+                guard let downloadable else { return false }
+                return await ReaderFileManager.isDownloadReadyForImport(downloadable)
             },
             importContent: { existsLocally in
-                guard let downloadable else { return false }
-                if existsLocally {
-                    importedURL = try await readerFileManager.ensureImported(
-                        downloadable: downloadable
-                    )
-                } else {
-                    importedURL = try await readerFileManager.importFile(
-                        fileURL: downloadable.localDestination,
-                        fromDownloadURL: downloadable.url
-                    )
-                    if importedURL == nil {
-                        print("Couldn't import \(publication.title) file URL")
-                    }
-                }
+                guard existsLocally, let downloadable else { return false }
+                importedURL = try await readerFileManager.ensureImported(
+                    downloadable: downloadable
+                )
                 return importedURL != nil
             },
             loadContent: {
@@ -728,7 +723,8 @@ public class BookLibraryViewModel: ObservableObject {
                 return downloadable != nil
             },
             existsLocally: {
-                await downloadable?.existsLocally() == true
+                guard let downloadable else { return false }
+                return await ReaderFileManager.isDownloadReadyForImport(downloadable)
             },
             importContent: { existsLocally in
                 guard existsLocally, let downloadable else { return false }
