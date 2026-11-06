@@ -442,7 +442,10 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             XCTAssertEqual(webView.reloadCount, 1)
             XCTAssertFalse(record.isReaderModeByDefault)
             XCTAssertTrue(record.isReaderModeAvailable)
-            XCTAssertFalse(record.isReaderModeOfferHidden)
+            // Captured/stored full content stays recoverable after showing the
+            // original. This flag enables the Reader Mode menu in that state.
+            XCTAssertTrue(record.isReaderModeOfferHidden)
+            XCTAssertTrue(fixture.readerModeViewModel.isReaderModeVisibleInMenu(content: record))
             XCTAssertNil(fixture.readerModeViewModel.readabilityContent)
             XCTAssertNil(fixture.readerModeViewModel.readabilityContainerSelector)
         }
