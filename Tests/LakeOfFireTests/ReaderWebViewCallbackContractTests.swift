@@ -420,6 +420,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             let fixture = makeReaderWebViewHandlerFixture()
             let source = try XCTUnwrap(URL(string: "https://example.com/show-original-current"))
             let record = try self.showOriginalRecord(in: realm, url: source)
+            try realm.write { record.isReaderModeOfferHidden = false }
             try await fixture.readerContent.load(url: source, resolveContent: { _ in record })
             fixture.readerModeViewModel.readabilityContent = "Captured reader content"
             fixture.readerModeViewModel.readabilityContainerSelector = "#reader-content"
@@ -442,7 +443,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             XCTAssertEqual(webView.reloadCount, 1)
             XCTAssertFalse(record.isReaderModeByDefault)
             XCTAssertTrue(record.isReaderModeAvailable)
-            XCTAssertFalse(record.isReaderModeOfferHidden)
+            XCTAssertTrue(record.isReaderModeOfferHidden)
             XCTAssertNil(fixture.readerModeViewModel.readabilityContent)
             XCTAssertNil(fixture.readerModeViewModel.readabilityContainerSelector)
         }

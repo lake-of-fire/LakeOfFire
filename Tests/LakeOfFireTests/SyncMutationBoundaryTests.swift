@@ -944,7 +944,12 @@ final class SyncMutationBoundaryTests: XCTestCase {
         let configuration = makeNavigationConfiguration()
         let realm = try await Realm.open(configuration: configuration)
         let source = makeHistory(url: "https://example.com/queued-history-visit")
-        try await realm.asyncWrite { realm.add(source) }
+        // Seed observer-owned library state before testing history's writer;
+        // unrelated first-use consolidation must not create a journal mid-test.
+        try await realm.asyncWrite {
+            realm.add(source)
+            realm.add(LibraryConfiguration())
+        }
         let sourceKey = source.compoundKey
         let sourceCreatedAt = source.createdAt
         let sourceURL = source.url

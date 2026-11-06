@@ -682,7 +682,7 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     isMainFrame: message.frameInfo.isMainFrame
                 ), ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                     claimedURL: result.windowURL,
-                    frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                    frameMainDocumentURL: message.readerFrameMainDocumentURL,
                     currentPageURL: readerViewModel.state.pageURL,
                     requiresMainFrame: false,
                     isMainFrame: message.frameInfo.isMainFrame
@@ -785,7 +785,7 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     isMainFrame: message.frameInfo.isMainFrame
                 ), ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                     claimedURL: result.windowURL,
-                    frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                    frameMainDocumentURL: message.readerFrameMainDocumentURL,
                     currentPageURL: readerViewModel.state.pageURL,
                     requiresMainFrame: false,
                     isMainFrame: message.frameInfo.isMainFrame
@@ -953,7 +953,7 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     guard let windowURL = result.windowURL,
                           ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                             claimedURL: windowURL,
-                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            frameMainDocumentURL: message.readerFrameMainDocumentURL,
                             currentPageURL: readerViewModel.state.pageURL,
                             requiresMainFrame: true,
                             isMainFrame: message.frameInfo.isMainFrame
@@ -990,7 +990,7 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
                     guard ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                         claimedURL: result.url,
-                        frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                        frameMainDocumentURL: message.readerFrameMainDocumentURL,
                         currentPageURL: readerViewModel.state.pageURL,
                         requiresMainFrame: true,
                         isMainFrame: message.frameInfo.isMainFrame
@@ -1011,7 +1011,7 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     guard let url = result.mainDocumentURL,
                           ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                             claimedURL: url,
-                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            frameMainDocumentURL: message.readerFrameMainDocumentURL,
                             currentPageURL: readerViewModel.state.pageURL,
                             requiresMainFrame: false,
                             isMainFrame: message.frameInfo.isMainFrame
@@ -1152,7 +1152,7 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                           let pageURL = result.pageURL,
                           ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                             claimedURL: windowURL,
-                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            frameMainDocumentURL: message.readerFrameMainDocumentURL,
                             currentPageURL: readerViewModel.state.pageURL,
                             requiresMainFrame: false,
                             isMainFrame: message.frameInfo.isMainFrame
@@ -1573,5 +1573,14 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
         } catch {
             // Ignore boot timing races.
         }
+    }
+}
+
+private extension WebViewMessage {
+    var readerFrameMainDocumentURL: URL? {
+        ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: mainDocumentURL, requestURL: requestURL,
+            isMainFrame: isMainFrame
+        )
     }
 }
