@@ -252,7 +252,7 @@ final class OPDSDocumentBoundaryTests: XCTestCase {
             + "<author><name>Catalog Writer</name></author>"
             + "<author><name>Catalog Editor</name></author>"
         )
-        XCTAssertEqual(result.publications.first?.metadata.authors.map(\\.name),
+        XCTAssertEqual(result.publications.first?.metadata.authors.map(\.name),
                        ["Catalog Writer", "Catalog Editor"])
     }
 
@@ -264,8 +264,8 @@ final class OPDSDocumentBoundaryTests: XCTestCase {
             + entry(sourceAuthor + "<author><name>Edition Writer</name></author>")
         )
         XCTAssertEqual(result.publications.count, 2)
-        XCTAssertEqual(result.publications[0].metadata.authors.map(\\.name), ["Original Writer"])
-        XCTAssertEqual(result.publications[1].metadata.authors.map(\\.name), ["Edition Writer"])
+        XCTAssertEqual(result.publications[0].metadata.authors.map(\.name), ["Original Writer"])
+        XCTAssertEqual(result.publications[1].metadata.authors.map(\.name), ["Edition Writer"])
     }
 
     func testStandaloneEntryInheritsScopedSourceAuthorWithoutFeed() throws {
@@ -274,7 +274,7 @@ final class OPDSDocumentBoundaryTests: XCTestCase {
             + "<uri>writer</uri></author></source>"
             + "<link rel=\"\(acquisition)\" href=\"one.epub\"/></entry>"
         let publication = try XCTUnwrap(parse(xml).publication)
-        XCTAssertEqual(publication.metadata.authors.map(\\.name), ["Author"])
+        XCTAssertEqual(publication.metadata.authors.map(\.name), ["Author"])
         XCTAssertEqual(publication.metadata.authors.first?.identifier,
                        "https://catalog.example/original/writer")
     }
@@ -285,7 +285,7 @@ final class OPDSDocumentBoundaryTests: XCTestCase {
             + entry("<other:author xmlns:other=\"urn:untrusted\"><other:name>Not An Author</other:name></other:author>"
                     + "<x:extension xmlns:x=\"urn:extension\"><author><name>Nested</name></author></x:extension>")
         )
-        XCTAssertEqual(result.publications.first?.metadata.authors.map(\\.name), ["Catalog Writer"])
+        XCTAssertEqual(result.publications.first?.metadata.authors.map(\.name), ["Catalog Writer"])
     }
 
 }
