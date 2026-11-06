@@ -246,3 +246,97 @@ for (const [text, query] of [['Cat', 'cat'], ['é', 'e'], ['É', 'é'], ['cafe\u
         assert.deepEqual(matches([text], query, {locales:'fr', sensitivity:'variant'}), [])
     })
 }
+
+for (const [text, query, locale, start, end] of [
+    ['xœx', 'oe', 'fr', 1, 2],
+    ['xoex', 'œ', 'fr', 1, 3],
+    ['xæx', 'ae', 'en', 1, 2],
+    ['xaex', 'æ', 'en', 1, 3],
+    ['xœx', 'oex', 'fr', 1, 3],
+    ['xoex', 'œx', 'fr', 1, 4],
+    ['xæx', 'aex', 'en', 1, 3],
+    ['xaex', 'æx', 'en', 1, 4],
+    ['😀xœx', 'oe', 'fr', 3, 4],
+    ['😀xaex', 'æ', 'en', 3, 5],
+    ['xǽx', 'ae', 'en', 1, 2],
+]) {
+    for (const sensitivity of ['base', 'case']) {
+        test(sensitivity + ' search discovers partial ligature expansions: ' + text + ' / ' + query, () => {
+            assert.equal(new Intl.Collator(locale, { sensitivity }).compare(text.slice(start, end), query), 0)
+            const results = matches([text], query, { locales: locale, sensitivity })
+            assert.deepEqual(results.map(({ range }) => range),
+                [{ startIndex: 0, startOffset: start, endIndex: 0, endOffset: end }])
+            assert.equal(results[0].excerpt.match, text.slice(start, end))
+        })
+    }
+}
+
+for (const [parts, query, locale, expected] of [
+    [['😀x', 'œ', 'x'], 'oe', 'fr',
+        { startIndex: 1, startOffset: 0, endIndex: 1, endOffset: 1 }],
+    [['😀x', 'o', 'e', 'x'], 'œ', 'fr',
+        { startIndex: 1, startOffset: 0, endIndex: 2, endOffset: 1 }],
+    [['x', 'æ', 'x'], 'ae', 'en',
+        { startIndex: 1, startOffset: 0, endIndex: 1, endOffset: 1 }],
+    [['x', 'a', 'e', 'x'], 'æ', 'en',
+        { startIndex: 1, startOffset: 0, endIndex: 2, endOffset: 1 }],
+    [['x', 'œ', '\u0301', 'x'], 'oe', 'fr',
+        { startIndex: 1, startOffset: 0, endIndex: 2, endOffset: 1 }],
+]) {
+    test('ligature substring ranges preserve inline-node and grapheme spans: ' + parts.join('') + ' / ' + query, () => {
+        assert.deepEqual(matches(parts, query, { locales: locale, sensitivity: 'base' }).map(({ range }) => range),
+            [expected])
+    })
+}
+
+test('ligature candidates stay ordered and unique alongside complete-word candidates', () => {
+    const results = matches(['xœx œ oe'], 'oe', { locales: 'fr', sensitivity: 'base' })
+    assert.deepEqual(results.map(({ range }) => range), [
+        { startIndex: 0, startOffset: 1, endIndex: 0, endOffset: 2 },
+        { startIndex: 0, startOffset: 4, endIndex: 0, endOffset: 5 },
+        { startIndex: 0, startOffset: 6, endIndex: 0, endOffset: 8 },
+    ])
+    assert.deepEqual(results.map(({ excerpt }) => excerpt.match), ['œ', 'œ', 'oe'])
+})
+
+for (const [text, query, locale] of [
+    ['xœx', 'oe', 'fr'], ['xoex', 'œ', 'fr'],
+    ['xæx', 'ae', 'en'], ['xaex', 'æ', 'en'],
+]) {
+    test('whole-word boundaries reject partial ligature candidates: ' + text + ' / ' + query, () => {
+        assert.deepEqual(matches([text], query,
+            { locales: locale, sensitivity: 'base', granularity: 'word' }), [])
+    })
+    test('whole-word search retains a complete ligature match: ' + text + ' / ' + query, () => {
+        const word = text.slice(1, -1)
+        assert.deepEqual(matches([word], query,
+            { locales: locale, sensitivity: 'base', granularity: 'word' }).map(({ range }) => range),
+            [{ startIndex: 0, startOffset: 0, endIndex: 0, endOffset: word.length }])
+    })
+}
+
+for (const [text, query] of [
+    ['xœx', 'o'], ['xœx', 'e'], ['xœex', 'ee'],
+    ['xæx', 'a'], ['xæx', 'e'], ['xæax', 'ea'],
+]) {
+    test('a partial expanded ligature cannot supply a substring match: ' + text + ' / ' + query, () => {
+        assert.deepEqual(matches([text], query, { locales: 'en', sensitivity: 'base' }), [])
+    })
+}
+
+for (const [text, query, locales, sensitivity] of [
+    ['xæx', 'ae', 'da', 'base'],
+    ['xaex', 'æ', 'da', 'base'],
+    ['xœx', 'oe', 'fr', 'accent'],
+    ['xæx', 'ae', 'en', 'accent'],
+    ['xŒx', 'oe', 'fr', 'case'],
+    ['xÆx', 'ae', 'en', 'case'],
+    ['xœx', 'OE', 'fr', 'variant'],
+    ['xæx', 'ae', 'en', 'variant'],
+    ['xœx', 'óe', 'fr', 'accent'],
+]) {
+    test('ligature candidates retain locale, case and accent distinctions: ' + text + ' / ' + query + ' (' + locales + '/' + sensitivity + ')', () => {
+        assert.notEqual(new Intl.Collator(locales, { sensitivity }).compare(text.slice(1, -1), query), 0)
+        assert.deepEqual(matches([text], query, { locales, sensitivity }), [])
+    })
+}
