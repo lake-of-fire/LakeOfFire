@@ -1479,6 +1479,15 @@ ${doc.querySelector('parsererror').innerText}`)
         metadata?.creator?.map(mapContributor('author'))
             ?.concat(metadata?.contributor?.map?.(mapContributor('contributor')))
             ?.forEach(([keys, value]) => keys.forEach(key => {
+                // A DC publisher is a string until role metadata also names a
+                // publisher. Preserve both values in the contributor form.
+                if (key === 'publisher' && typeof this.metadata.publisher === 'string'
+                    && this.metadata.publisher) {
+                    this.metadata.publisher = [{
+                        name: this.metadata.publisher,
+                        sortAs: metadata.publisher?.fileAs,
+                    }]
+                }
                 if (this.metadata[key]) this.metadata[key].push(value)
                 else this.metadata[key] = [value]
             }))
