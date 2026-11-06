@@ -109,6 +109,12 @@ jobs:
           chromium_path="${CHROMIUM_PATH:-$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')}"
           test -x "$chromium_path"
           python3 Tests/Browser/BookRecoverySetup/run.py --browser "$chromium_path" --output book-actions-recovery-setup-results.json 2>&1 | tee book-actions-recovery-setup-results.txt
+      - name: EPUB SVG resource journeys
+        run: |
+          set -o pipefail
+          chromium_path="${CHROMIUM_PATH:-$(python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')}"
+          test -x "$chromium_path"
+          python3 Tests/Browser/EpubSVGResources/run.py --browser "$chromium_path" --output book-actions-svg-resources-results.json 2>&1 | tee book-actions-svg-resources-results.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -123,4 +129,6 @@ jobs:
             book-actions-recovery-notice-results.json
             book-actions-recovery-lifetime-results.json
             book-actions-recovery-setup-results.json
+            book-actions-svg-resources-results.json
           retention-days: 14
+
