@@ -1024,3 +1024,31 @@ test('an embedded document can use its own inert initial-player JSON without eva
   assert.equal(invalid.captionURL, null)
   assert.equal(invalid.stableProviderIdentity, null)
 })
+
+for (const [locale, language] of [['ja-JP', 'JA'], ['JA-jp', 'ja'], ['jA-JP', 'Ja-jp']]) {
+  test(`HTML caption language preference ignores case: ${locale} / ${language}`, async () => {
+    const f = fixture()
+    f.context.navigator.languages = [locale]
+    f.track.mode = 'hidden'
+    f.track.cues = [captionCue('English')]
+    const japanese = { kind: 'subtitles', language, mode: 'hidden', cues: [captionCue('日本語')] }
+    const englishElement = { track: f.track, src: 'https://example.com/en.vtt', srclang: 'en' }
+    const japaneseElement = { track: japanese, src: 'https://example.com/ja.vtt', srclang: language }
+    f.media.textTracks = [f.track, japanese]
+    f.media.querySelectorAll = () => [englishElement, japaneseElement]
+
+    const preferred = await f.capture()
+    assert.equal(preferred.languageCode, language, 'Keep authored language evidence in the snapshot')
+    assert.equal(preferred.captionURL, japaneseElement.src)
+    assert.equal(preferred.webVTT, captionText('日本語'))
+    assert.equal(await f.captions(preferred), captionText('日本語'))
+    assert.equal(f.fetches(), 0)
+
+    f.track.mode = 'showing'
+    assert.equal(await f.captions(preferred), null, 'A changed caption selection retires the old request')
+    const showing = await f.capture()
+    assert.equal(showing.languageCode, 'en', 'An explicitly showing track keeps priority')
+    assert.equal(showing.captionURL, englishElement.src)
+    assert.equal(showing.webVTT, captionText('English'))
+  })
+}
