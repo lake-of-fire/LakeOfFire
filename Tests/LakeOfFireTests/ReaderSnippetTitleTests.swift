@@ -1088,6 +1088,56 @@ final class ReaderSnippetTitleTests: XCTestCase {
         return snapshot
     }
 
+
+    @MainActor
+    func testSnippetSavePreservesCanonicallyEquivalentURLByteEdits() async throws {
+        for suppliesOriginalHTML in [false, true] {
+            try await withSnippetRealm { configuration in
+                let composed = ReaderContentLoader.snippetHTML(fromHTML:
+                    "<p><a href=\"https://example.com/caf\u{00e9}\">Link</a></p>")
+                let decomposed = ReaderContentLoader.snippetHTML(fromHTML:
+                    "<p><a href=\"https://example.com/cafe\u{0301}\">Link</a></p>")
+                let loaded = try await ReaderContentLoader.load(html: composed)
+                let snippet = try XCTUnwrap(loaded)
+                let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
+                let title = snippet.title
+                let editorHTML = try await ReaderContentLoader.snippetEditorHTML(for: snippet)
+                let changed = try await ReaderContentLoader.updateSnippetContent(
+                    contentURL: snippet.url, title: title, html: decomposed,
+                    originalEditorHTML: suppliesOriginalHTML ? editorHTML : nil,
+                    storage: storage, permitsCommit: { true }
+                )
+                XCTAssertTrue(changed)
+                let realm = try await Realm(configuration: configuration)
+                try await realm.asyncRefresh()
+                let updated = try XCTUnwrap(realm.object(
+                    ofType: HistoryRecord.self, forPrimaryKey: snippet.compoundKey
+                ))
+                XCTAssertEqual(Array(try XCTUnwrap(updated.html).utf8), Array(decomposed.utf8))
+                let document = try SwiftSoup.parse(try XCTUnwrap(updated.html))
+                let link = try XCTUnwrap(document.select("a").first())
+                XCTAssertEqual(Array(try link.attr("href").utf8),
+                    Array("https://example.com/cafe\u{0301}".utf8))
+
+                let repeated = try await ReaderContentLoader.updateSnippetContent(
+                    contentURL: snippet.url, title: title, html: decomposed,
+                    originalEditorHTML: suppliesOriginalHTML ? editorHTML : nil,
+                    storage: storage, permitsCommit: { true }
+                )
+                XCTAssertFalse(repeated)
+
+                let reverted = try await ReaderContentLoader.updateSnippetContent(
+                    contentURL: snippet.url, title: title, html: composed,
+                    originalEditorHTML: suppliesOriginalHTML ? decomposed : nil,
+                    storage: storage, permitsCommit: { true }
+                )
+                XCTAssertTrue(reverted)
+                try await realm.asyncRefresh()
+                XCTAssertEqual(Array(try XCTUnwrap(updated.html).utf8), Array(composed.utf8))
+            }
+        }
+    }
+
     @MainActor
     func testTitleOnlySnippetSavePreservesPersistedHTMLBytes() async throws {
         try await withSnippetRealm { configuration in
