@@ -22,7 +22,8 @@ public extension String {
                     }
                     let surface = try rubyTag.text(trimAndNormaliseWhitespace: false)
                     
-                    try rubyTag.before(surface)
+                    // The surface is decoded text, not another HTML fragment.
+                    try rubyTag.before(TextNode(surface, rubyTag.getBaseUri()))
                     try rubyTag.remove()
                 }
                 return try doc.text(trimAndNormaliseWhitespace: true)
