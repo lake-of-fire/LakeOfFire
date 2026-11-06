@@ -100,8 +100,11 @@ private func readerPretransformedEbookTransportMarkerIsValid(
         return false
     }
 
-    let sentenceElements = Array(document.getElementsByTag("m-s"))
-    guard sentenceElements.count == sentenceCount else { return false }
+    guard let sentenceElements = try? document.getElementsByTag("m-s"),
+          sentenceElements.size() == sentenceCount,
+          let segmentElements = try? document.getElementsByTag("m-m") else {
+        return false
+    }
     var sentenceIdentifiers = Set<String>()
     for sentence in sentenceElements {
         guard let sentenceIdentifier = try? sentence.attr("sid"),
@@ -113,7 +116,7 @@ private func readerPretransformedEbookTransportMarkerIsValid(
     }
 
     var segmentElementsByIdentifier = [String: Element]()
-    for segment in document.getElementsByTag("m-m") {
+    for segment in segmentElements {
         guard let identifier = try? segment.attr("id"),
               !identifier.isEmpty,
               segmentElementsByIdentifier.updateValue(segment, forKey: identifier) == nil else {
@@ -403,7 +406,7 @@ private func generatedReaderSegmentIdentifiers(in documentHTML: Data) -> [String
 }
 
 private func generatedReaderSegmentIdentifiers(in document: SwiftSoup.Document) -> [String]? {
-    let segmentElements = document.getElementsByTag("m-m")
+    guard let segmentElements = try? document.getElementsByTag("m-m") else { return nil }
     var identifiers = [String]()
     identifiers.reserveCapacity(segmentElements.size())
     for segmentElement in segmentElements {
@@ -948,7 +951,8 @@ private func externalReaderSegmentSidecarDescriptor(
           let document = try? SwiftSoup.parse(html) else {
         return nil
     }
-    let descriptors = document.getElementsByTag("meta").array().filter { element in
+    guard let metadataElements = try? document.getElementsByTag("meta") else { return nil }
+    let descriptors = metadataElements.array().filter { element in
         (try? element.attr("name").lowercased()) == "mnb-segment-sidecar"
     }
     guard descriptors.count == 1,
@@ -970,7 +974,8 @@ private func htmlDataContainsExternalReaderSegmentSidecarDescriptor(_ htmlData: 
           let document = try? SwiftSoup.parse(html) else {
         return false
     }
-    return document.getElementsByTag("meta").array().contains { element in
+    guard let metadataElements = try? document.getElementsByTag("meta") else { return false }
+    return metadataElements.array().contains { element in
         (try? element.attr("name").lowercased()) == "mnb-segment-sidecar"
     }
 }
@@ -1030,7 +1035,7 @@ private func canonicalReaderSegmentSidecarRangeList(
         )
         if let fragment = try? SwiftSoup.parseBodyFragment(openingTagHTML + "</script>"),
            let script = try? fragment.getElementsByTag("script").first(),
-           script?.id() == "mnb-segment-metadata" {
+           script.id() == "mnb-segment-metadata" {
             ranges.append((
                 tagStart..<closingTagEnd,
                 openingTagEnd..<closingTagStart
