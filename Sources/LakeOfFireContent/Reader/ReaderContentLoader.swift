@@ -1709,8 +1709,8 @@ This snippet loads when the pasteboard is empty in a debug build.
                 // The unchanged draft is the exact source supplied to the
                 // editor. Do not reserialize its body, even if current storage
                 // has since received a newer body from another writer.
-                let bodyIsUnchanged = html == object.html
-                    || originalEditorHTML.map { $0 == html } == true
+                let bodyIsUnchanged = object.html.map { html.utf8.elementsEqual($0.utf8) } == true
+                    || originalEditorHTML.map { $0.utf8.elementsEqual(html.utf8) } == true
                 let currentHTML = snippetHTML(fromHTML: object.html ?? "<html><body></body></html>")
                 let updatedHTML = bodyIsUnchanged ? currentHTML : normalizedHTML
                 let resolvedTitleUpdate = resolvedSnippetTitleAfterHTMLUpdate(
@@ -1722,11 +1722,11 @@ This snippet loads when the pasteboard is empty in a debug build.
                 )
                 let objectDidChange = object.title != resolvedTitleUpdate.title
                     || object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent
-                    || (!bodyIsUnchanged && currentHTML != normalizedHTML)
+                    || (!bodyIsUnchanged && !currentHTML.utf8.elementsEqual(normalizedHTML.utf8))
                 guard objectDidChange else { return false }
                 object.title = resolvedTitleUpdate.title
                 object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
-                if !bodyIsUnchanged && currentHTML != normalizedHTML {
+                if !bodyIsUnchanged && !currentHTML.utf8.elementsEqual(normalizedHTML.utf8) {
                     object.html = normalizedHTML
                 }
                 return true
