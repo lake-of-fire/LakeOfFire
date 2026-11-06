@@ -1131,7 +1131,8 @@ fileprivate extension FeedEntry {
                 imageUrlOptional = try doc.getElementsByTag("iframe").compactMap({ iframeTag -> String? in
                     if let src = try? iframeTag.attr("src"),
                        src.hasPrefix("https://www.youtube.com"),
-                       let youtubeId = src.split(separator: "/").last {
+                       let components = URLComponents(string: src),
+                       let youtubeId = components.percentEncodedPath.split(separator: "/").last {
                         return "https://img.youtube.com/vi/\(youtubeId)/0.jpg"
                     }
                     return nil
