@@ -5,6 +5,76 @@ import XCTest
 @testable import LakeOfFireContent
 
 final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
+    @RealmBackgroundActor
+    func testDuplicateAndOverwritePreserveFeedContentAndImageSettings() async throws {
+        let configuration = makeConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let sourceCategory = FeedCategory()
+        sourceCategory.title = "Source"
+        let destinationCategory = FeedCategory()
+        destinationCategory.title = "Destination"
+        let source = makeFeed(title: "Configured source")
+        source.categoryID = sourceCategory.id
+        source.iconUrl = URL(string: "https://example.com/source-icon.png")!
+        source.rssContainsFullContent = true
+        source.extractImageFromContent = false
+        source.isArchived = true
+        try realm.write {
+            realm.add(sourceCategory)
+            realm.add(destinationCategory)
+            realm.add(source)
+            source.refreshChangeMetadata(explicitlyModified: true)
+        }
+
+        let duplicatedID = try await LibraryDataManager.shared.duplicateFeed(
+            ThreadSafeReference(to: source),
+            inCategory: ThreadSafeReference(to: destinationCategory),
+            overwriteExisting: false,
+            realmConfiguration: configuration
+        )
+        let firstID = try XCTUnwrap(duplicatedID)
+        let copy = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: firstID))
+        XCTAssertNotEqual(copy.id, source.id)
+        XCTAssertEqual(copy.categoryID, destinationCategory.id)
+        XCTAssertFalse(copy.isArchived)
+        XCTAssertFalse(copy.isDeleted)
+        XCTAssertEqual(copy.iconUrl, source.iconUrl)
+        XCTAssertTrue(copy.rssContainsFullContent)
+        XCTAssertFalse(copy.extractImageFromContent)
+        let recordName = "Feed.\(copy.id)"
+        let firstGeneration = try XCTUnwrap(realm.object(
+            ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName
+        )?.generation)
+
+        try realm.write {
+            source.iconUrl = URL(string: "https://example.com/revised-icon.png")!
+            source.rssContainsFullContent = false
+            source.extractImageFromContent = true
+            source.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let overwriteID = try await LibraryDataManager.shared.duplicateFeed(
+            ThreadSafeReference(to: source),
+            inCategory: ThreadSafeReference(to: destinationCategory),
+            overwriteExisting: true,
+            realmConfiguration: configuration
+        )
+        XCTAssertEqual(overwriteID, firstID)
+        XCTAssertEqual(copy.iconUrl, source.iconUrl)
+        XCTAssertFalse(copy.rssContainsFullContent)
+        XCTAssertTrue(copy.extractImageFromContent)
+        XCTAssertEqual(copy.categoryID, destinationCategory.id)
+        XCTAssertFalse(copy.isArchived)
+        XCTAssertTrue(source.isArchived)
+        XCTAssertEqual(source.categoryID, sourceCategory.id)
+        XCTAssertEqual(realm.objects(Feed.self).count, 2)
+        XCTAssertNotEqual(realm.object(
+            ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName
+        )?.generation, firstGeneration)
+    }
+
     @MainActor
     func testConfiguredCatalogDownloadRespectsTheInjectedDataRoot() throws {
         let key = "JVIDS_MANABI_DATA_ROOT"
