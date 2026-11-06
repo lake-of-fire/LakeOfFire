@@ -1452,3 +1452,79 @@ extension ReaderContentHTMLLifetimeTests {
         XCTAssertNotEqual(mode.currentPreparationFailure()?.id, failure.id)
     }
 }
+
+extension ReaderContentHTMLLifetimeTests {
+    func testFullPagePreparationFailureSurvivesSameContentWebViewHandoff() async throws {
+        for initiallyMounted in [true, false] {
+            let (realm, row, reader, mode, _) = try renderFixture()
+            defer { withExtendedLifetime(realm) {} }
+            try prepareFinalTransformMetadata(row, in: realm)
+            mode.readabilityContent = "<html><body><div id='reader-content'>Binding article.</div></body></html>"
+            let caller = WebViewScriptCaller()
+            if initiallyMounted {
+                caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                    .init(true)
+                }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+            }
+            var replacedBinding = false
+            mode.processReadabilityContent = { _, _, _, _, _, _, _ in
+                await MainActor.run {
+                    caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                        .init(true)
+                    }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+                    reader.isRenderingReaderHTML = true
+                    replacedBinding = true
+                }
+                throw RequiredPreparationFailure()
+            }
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            await mode.waitForReaderModeRender(for: fileURL)
+            XCTAssertTrue(replacedBinding)
+            XCTAssertNotNil(mode.currentPreparationFailure(), "Same-content page work must retain its failure presentation")
+            XCTAssertFalse(mode.isReaderModeLoading)
+            XCTAssertFalse(reader.isRenderingReaderHTML)
+            XCTAssertNil(mode.pendingReaderModeURL)
+        }
+    }
+
+    func testRetiredFramePreparationCannotPublishOrSettleReplacement() async throws {
+        let (webView, frame) = try await childFrameFixture()
+        defer { withExtendedLifetime(webView) {} }
+        for failsPreparation in [false, true] {
+            let (realm, row, reader, mode, _) = try renderFixture()
+            defer { withExtendedLifetime(realm) {} }
+            try prepareFinalTransformMetadata(row, in: realm)
+            mode.readabilityContent = "<html><body><div id='reader-content'>Frame article.</div></body></html>"
+            mode.readabilityContainerFrameInfo = frame
+            let caller = WebViewScriptCaller()
+            var dispatches = 0
+            caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                dispatches += 1
+                return .init(true)
+            }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+            var replacedBinding = false
+            mode.processReadabilityContent = { html, _, _, _, _, _, _ in
+                await MainActor.run {
+                    caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+                        dispatches += 1
+                        return .init(true)
+                    }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+                    reader.isRenderingReaderHTML = true
+                    replacedBinding = true
+                }
+                if failsPreparation { throw RequiredPreparationFailure() }
+                return try SwiftSoup.parse(html)
+            }
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            await mode.waitForReaderModeRender(for: fileURL)
+            XCTAssertTrue(replacedBinding)
+            XCTAssertEqual(dispatches, 0, "An old frame payload cannot enter the replacement document")
+            XCTAssertNil(mode.currentPreparationFailure())
+            XCTAssertNil(mode.preparationFailure)
+            XCTAssertTrue(mode.isReaderModeLoading, "Retired frame work cannot settle replacement loading")
+            XCTAssertTrue(reader.isRenderingReaderHTML)
+            XCTAssertNotNil(mode.pendingReaderModeURL)
+            XCTAssertEqual(mode.currentRenderGenerationDescription(for: fileURL), "nil")
+        }
+    }
+}
