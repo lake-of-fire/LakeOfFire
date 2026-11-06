@@ -4104,20 +4104,34 @@ nonisolated public func processForReaderMode(
 /// the fixture article through the same rendering entrypoint.
 @MainActor
 public struct ReaderPreparationRetryUITestHost: View {
-    @StateObject private var fixture: ReaderPreparationRetryUITestModel
+    @StateObject private var fixture = ReaderPreparationRetryUITestModel()
+
+    public init() {}
+
+    public var body: some View {
+        WithPerceptionTracking {
+            ReaderPreparationRetryUITestReader(fixture: fixture)
+        }
+    }
+}
+
+@MainActor
+private struct ReaderPreparationRetryUITestReader: View {
+    @ObservedObject private var fixture: ReaderPreparationRetryUITestModel
     @ObservedObject private var mode: ReaderModeViewModel
     @ObservedObject private var caller: WebViewScriptCaller
     @ObservedObject private var readerViewModel: ReaderViewModel
 
-    public init() {
-        let fixture = ReaderPreparationRetryUITestModel()
-        _fixture = StateObject(wrappedValue: fixture)
+    init(fixture: ReaderPreparationRetryUITestModel) {
+        // Derive every observed dependency from SwiftUI's retained owner.
+        // A reinitialized host must not observe a discarded replacement model.
+        _fixture = ObservedObject(wrappedValue: fixture)
         _mode = ObservedObject(wrappedValue: fixture.mode)
         _caller = ObservedObject(wrappedValue: fixture.caller)
         _readerViewModel = ObservedObject(wrappedValue: fixture.viewModel)
     }
 
-    public var body: some View {
+    var body: some View {
         WithPerceptionTracking {
             let fixture = fixture
             let hasCaller = caller.hasAsyncCaller
