@@ -688,11 +688,14 @@ final class FeedStateIndicatorTests: XCTestCase {
     @MainActor
     func testConcurrentHistoryVisitsConvergeOnOneCanonicalRecord() async throws {
         let configuration = makeConfiguration()
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
         let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
         ReaderContentLoader.feedEntryRealmConfiguration = configuration
         ReaderContentLoader.historyRealmConfiguration = configuration
         defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
             ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
             ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
         }
