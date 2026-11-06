@@ -233,7 +233,8 @@
                 setImageMargins(img);
             } else {
                 img.onload = function() {
-                    setImageMargins(this);
+                    // Loading can outlive the direction, content width, or reader content.
+                    updateImageMargins();
                 };
             }
         }
