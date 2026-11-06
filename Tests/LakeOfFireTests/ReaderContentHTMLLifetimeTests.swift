@@ -927,3 +927,169 @@ extension ReaderContentHTMLLifetimeTests {
     }
 
 }
+
+extension ReaderContentHTMLLifetimeTests {
+    private struct RequiredPreparationFailure: Error {}
+
+    func testPreparationFailureSettlesLoadingAndRetryUsesRealRenderEntrypoint() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Retry article.</div></body></html>"
+        var attempts = 0
+        mode.processReadabilityContent = { html, _, _, _, _, _, _ in
+            let attempt = await MainActor.run { attempts += 1; return attempts }
+            if attempt == 1 { throw RequiredPreparationFailure() }
+            return try SwiftSoup.parse(html)
+        }
+        reader.isRenderingReaderHTML = true
+        await render(mode, reader: reader)
+        let failure = try XCTUnwrap(mode.currentPreparationFailure())
+        XCTAssertFalse(failure.message.isEmpty)
+        XCTAssertFalse(mode.isReaderModeLoading)
+        XCTAssertFalse(reader.isRenderingReaderHTML)
+        XCTAssertNil(mode.pendingReaderModeURL)
+        XCTAssertNil(mode.lastRenderedURL)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
+
+        mode.retryPreparation(failureID: failure.id)
+        await mode.waitForReaderModeRender(for: fileURL)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertNil(mode.currentPreparationFailure())
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
+        let generation = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: fileURL)))
+        XCTAssertTrue(mode.handleRenderedReaderDocumentReady(pageURL: fileURL, hasReaderContent: true, renderGeneration: generation))
+        XCTAssertFalse(mode.isReaderModeLoading)
+        mode.retryPreparation(failureID: failure.id)
+        XCTAssertEqual(attempts, 2, "A captured old button cannot rerun the successful successor")
+    }
+
+    func testRetiredSelectionPreparationFailureCannotPresentOrSettleSuccessor() async throws {
+        let (realm, row, reader, mode, navigator) = try renderFixture()
+        defer { mode.processReadabilityContent = nil; withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Retired article.</div></body></html>"
+        var attempts = 0
+        mode.processReadabilityContent = { html, _, _, _, _, _, _ in
+            let attempt = await MainActor.run { attempts += 1; return attempts }
+            if attempt > 1 { return try SwiftSoup.parse(html) }
+            await MainActor.run {
+                reader.content = nil
+                reader.preloadResolvedContent(row, for: self.fileURL)
+            }
+            try await reader.load(url: self.fileURL)
+            await MainActor.run {
+                mode.showReaderView(readerContent: reader, scriptCaller: WebViewScriptCaller())
+            }
+            throw RequiredPreparationFailure()
+        }
+        await render(mode, reader: reader)
+        await mode.waitForReaderModeRender(for: fileURL)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertNil(mode.currentPreparationFailure())
+        XCTAssertNil(mode.preparationFailure)
+        XCTAssertTrue(mode.isReaderModeLoading)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, fileURL.absoluteString)
+    }
+
+    func testPreparationFailureDoesNotRetainReaderModeOwner() async throws {
+        weak var failedOwner: ReaderModeViewModel?
+        @MainActor func failThenRelease() async throws {
+            let (realm, row, reader, mode, _) = try renderFixture()
+            defer { withExtendedLifetime(realm) {} }
+            failedOwner = mode
+            try prepareFinalTransformMetadata(row, in: realm)
+            mode.readabilityContent = "<html><body><div id='reader-content'>Failed article.</div></body></html>"
+            mode.processReadabilityContent = { _, _, _, _, _, _, _ in
+                throw RequiredPreparationFailure()
+            }
+            await render(mode, reader: reader)
+            XCTAssertNotNil(mode.currentPreparationFailure())
+        }
+        try await failThenRelease()
+        XCTAssertNil(failedOwner, "A failed page must release its model when the reader closes")
+    }
+
+    func testPreparationRetryRejectsReplacedSelectionAtSameURL() async throws {
+        let (realm, row, reader, mode, _) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Failed article.</div></body></html>"
+        var attempts = 0
+        mode.processReadabilityContent = { _, _, _, _, _, _, _ in
+            await MainActor.run { attempts += 1 }
+            throw RequiredPreparationFailure()
+        }
+        await render(mode, reader: reader)
+        let failure = try XCTUnwrap(mode.currentPreparationFailure())
+        reader.content = nil
+        reader.preloadResolvedContent(row, for: fileURL)
+        try await reader.load(url: fileURL)
+        XCTAssertNil(mode.currentPreparationFailure())
+        mode.retryPreparation(failureID: failure.id)
+        await mode.waitForReaderModeRender(for: fileURL)
+        XCTAssertEqual(attempts, 1)
+        mode.beginReaderModeLoad(for: fileURL)
+        XCTAssertNil(mode.preparationFailure, "New navigation clears retained failure state")
+    }
+
+#if DEBUG
+    func testPreparationRetryRejectsRetiredAccountAuthorization() async throws {
+        let (realm, row, reader, mode, _) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        let session = Session.ephemeralForTesting()
+        session.authenticated(authToken: "retry-a", userID: 101)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: session)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Account article.</div></body></html>"
+        var attempts = 0
+        mode.processReadabilityContent = { _, _, _, _, _, _, _ in
+            await MainActor.run { attempts += 1 }
+            throw RequiredPreparationFailure()
+        }
+        await render(mode, reader: reader)
+        let failure = try XCTUnwrap(mode.currentPreparationFailure())
+        session.authenticated(authToken: "retry-a-new-authorization", userID: 101)
+        XCTAssertNil(mode.currentPreparationFailure())
+        mode.retryPreparation(failureID: failure.id)
+        await mode.waitForReaderModeRender(for: fileURL)
+        XCTAssertEqual(attempts, 1)
+        mode.showReaderView(readerContent: reader, scriptCaller: WebViewScriptCaller())
+        await mode.waitForReaderModeRender(for: fileURL)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertNotEqual(mode.currentPreparationFailure()?.id, failure.id)
+        mode.retryPreparation(failureID: failure.id)
+        await mode.waitForReaderModeRender(for: fileURL)
+        XCTAssertEqual(attempts, 2, "An old button cannot retry a newer failure")
+    }
+#endif
+}
+
+extension ReaderContentHTMLLifetimeTests {
+    func testPreparationRetryRejectsReplacedDocumentBinding() async throws {
+        let (realm, row, reader, mode, _) = try renderFixture()
+        defer { withExtendedLifetime(realm) {} }
+        try prepareFinalTransformMetadata(row, in: realm)
+        mode.readabilityContent = "<html><body><div id='reader-content'>Binding article.</div></body></html>"
+        let caller = WebViewScriptCaller()
+        var attempts = 0
+        mode.processReadabilityContent = { _, _, _, _, _, _, _ in
+            await MainActor.run { attempts += 1 }
+            throw RequiredPreparationFailure()
+        }
+        mode.showReaderView(readerContent: reader, scriptCaller: caller)
+        await mode.waitForReaderModeRender(for: fileURL)
+        let failure = try XCTUnwrap(mode.currentPreparationFailure())
+        caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
+            return .init(true)
+        }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })
+        XCTAssertNil(mode.currentPreparationFailure())
+        mode.retryPreparation(failureID: failure.id)
+        await mode.waitForReaderModeRender(for: fileURL)
+        XCTAssertEqual(attempts, 1)
+        mode.showReaderView(readerContent: reader, scriptCaller: caller)
+        await mode.waitForReaderModeRender(for: fileURL)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertNotEqual(mode.currentPreparationFailure()?.id, failure.id)
+    }
+}
