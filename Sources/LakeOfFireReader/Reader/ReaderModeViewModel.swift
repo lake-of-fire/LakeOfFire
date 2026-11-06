@@ -4122,9 +4122,7 @@ public struct ReaderPreparationRetryUITestHost: View {
             let renderReady = readerViewModel.state.hasReaderRenderReady
             let isLoading = mode.isReaderModeLoading
             VStack(spacing: 0) {
-                Reader(onNavigationFinished: { [weak fixture] _ in
-                    Task { @MainActor [weak fixture] in await fixture?.start() }
-                })
+                Reader()
                 .environmentObject(fixture.reader)
                 .environmentObject(readerViewModel)
                 .environmentObject(mode)
@@ -4137,7 +4135,7 @@ public struct ReaderPreparationRetryUITestHost: View {
                     .accessibilityIdentifier("ReaderPreparationRetry.Report")
             }
             .task(id: hasCaller) {
-                if hasCaller { fixture.bootstrap() }
+                if hasCaller { await fixture.start() }
             }
             .onChange(of: renderReady) { _ in fixture.recordRecoveryIfReady() }
             .onChange(of: isLoading) { _ in fixture.recordRecoveryIfReady() }
@@ -4158,7 +4156,6 @@ private final class ReaderPreparationRetryUITestModel: ObservableObject {
     private let url = URL(string: "reader-file://file/load/ui-test/preparation-retry.txt")!
     private var realm: Realm?
     private var attempts = 0
-    private var requestedBootstrap = false
     @Published private(set) var report = "Preparing reader"
 
     init() {
@@ -4181,15 +4178,11 @@ private final class ReaderPreparationRetryUITestModel: ObservableObject {
         }
     }
 
-    func bootstrap() {
-        guard !requestedBootstrap else { return }
-        requestedBootstrap = true
-        navigator.loadHTML("<html><body><p>Preparing Reader.</p></body></html>",
-            baseURL: URL(string: "https://example.invalid/reader-preparation-bootstrap")!)
-    }
-
     func start() async {
-        guard requestedBootstrap, realm == nil else { return }
+        // The live script binding is the startup prerequisite. A synthetic
+        // bootstrap navigation would introduce unrelated content resolution
+        // before this isolated fixture has installed its own Reader row.
+        guard realm == nil else { return }
         do {
             // Finish isolated MainActor fixture setup before rendering can suspend.
             let realm = try Realm(configuration: .init(
