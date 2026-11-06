@@ -44,6 +44,27 @@ final class ReaderDocumentMutationAdmissionTests: XCTestCase {
         ))
     }
 
+    func testMissingMainDocumentURLAcceptsOnlyActualMainFrameRequest() {
+        XCTAssertEqual(ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: nil, requestURL: current, isMainFrame: true
+        ), current)
+        XCTAssertNil(ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: nil, requestURL: current, isMainFrame: false
+        ))
+        XCTAssertNil(ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: nil, requestURL: nil, isMainFrame: true
+        ))
+        let stale = URL(string: "https://example.com/previous")!
+        let provenance = ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: stale, requestURL: current, isMainFrame: true
+        )
+        XCTAssertEqual(provenance, stale)
+        XCTAssertFalse(ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+            claimedURL: current, frameMainDocumentURL: provenance,
+            currentPageURL: current, requiresMainFrame: true, isMainFrame: true
+        ))
+    }
+
     func testFrameTargetCannotNameAnUnrelatedRecord() {
         XCTAssertTrue(ReaderDocumentMutationAdmission.acceptsFrameTarget(
             claimedFrameURL: URL(string: "https://www.youtube.com/watch?v=abcdefghijk#captions"),
@@ -109,7 +130,10 @@ extension ReaderDocumentMutationAdmissionTests {
         await fulfillment(of: [received], timeout: 5)
         let frame = try XCTUnwrap(captured)
         XCTAssertTrue(frame.isMainFrame)
-        XCTAssertEqual(frame.request.mainDocumentURL?.removingFragmentIfNeeded(), url)
+        XCTAssertEqual(ReaderDocumentMutationAdmission.frameMainDocumentURL(
+            mainDocumentURL: frame.request.mainDocumentURL,
+            requestURL: frame.request.url, isMainFrame: frame.isMainFrame
+        )?.removingFragmentIfNeeded(), url)
         return (webView, frame)
     }
 

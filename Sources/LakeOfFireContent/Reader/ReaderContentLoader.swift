@@ -1906,7 +1906,9 @@ This snippet loads when the pasteboard is empty in a debug build.
         }
 
         guard !isAlreadyWrapped else {
-            return (try? doc.outerHtml()) ?? html
+            // Already-normalized editor HTML is byte-authoritative, including
+            // decomposed URL text and authored formatting. Do not pretty-print it.
+            return html
         }
 
         try? body.html(#"<div class="\#(snippetWrapperClass)">\#(bodyHTML)</div>"#)

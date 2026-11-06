@@ -7,6 +7,15 @@ import LakeOfFireCore
 /// document agrees with WebKit's frame provenance and with the document currently
 /// owned by the reader.
 enum ReaderDocumentMutationAdmission {
+    /// Current WebKit may omit mainDocumentURL even for a real main-frame
+    /// navigation. Its immutable native request URL is authoritative only for
+    /// that main frame; child frames cannot supply a top-level fallback.
+    static func frameMainDocumentURL(
+        mainDocumentURL: URL?, requestURL: URL?, isMainFrame: Bool
+    ) -> URL? {
+        mainDocumentURL ?? (isMainFrame ? requestURL : nil)
+    }
+
     static func acceptsEBookReadiness<Binding: Equatable>(
         claimedURL: URL,
         frameMainDocumentURL: URL?,

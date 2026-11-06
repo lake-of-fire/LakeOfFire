@@ -1089,6 +1089,13 @@ final class ReaderSnippetTitleTests: XCTestCase {
     }
 
 
+    func testAlreadyWrappedSnippetNormalizationPreservesExactBytes() {
+        let html = "<html><head></head><body>\n<div class=\"mnb-snippet\"><a href=\"https://example.com/cafe\u{0301}\">猫</a></div>\n</body></html>"
+        let normalized = ReaderContentLoader.snippetHTML(fromHTML: html)
+        XCTAssertEqual(Array(normalized.utf8), Array(html.utf8))
+        XCTAssertEqual(Array(ReaderContentLoader.snippetHTML(fromHTML: normalized).utf8), Array(html.utf8))
+    }
+
     @MainActor
     func testSnippetSavePreservesCanonicallyEquivalentURLByteEdits() async throws {
         for suppliesOriginalHTML in [false, true] {
