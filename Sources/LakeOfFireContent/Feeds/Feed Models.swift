@@ -1739,6 +1739,7 @@ public extension Feed {
             var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
                 var url: URL?
+                var htmlURL: URL?
                 var imageUrl: URL?
                 item.links?.forEach { (link: AtomFeedEntryLink) in
                     guard let linkHref = link.attributes?.href,
@@ -1748,11 +1749,19 @@ public extension Feed {
                     
                     if (link.attributes?.rel ?? "alternate") == "alternate" {
                         url = linkURL
+                        let mediaType = link.attributes?.type?
+                            .split(separator: ";", maxSplits: 1).first?
+                            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        if htmlURL == nil, mediaType == "text/html" || mediaType == "application/xhtml+xml" {
+                            htmlURL = linkURL
+                        }
                     } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
                         imageUrl = linkURL
                     }
                 }
-                guard let url = url else { return nil }
+                // An entry may advertise PDF or feed representations after its
+                // web article. Their order must not replace the readable identity.
+                guard let url = htmlURL ?? url else { return nil }
                 
                 var voiceFrameUrl: URL? = nil
                 if let rawVoiceFrameUrl = item.links?
