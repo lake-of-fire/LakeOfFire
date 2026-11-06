@@ -1455,6 +1455,9 @@ public class ReaderModeViewModel: ObservableObject {
     internal var readerLocalHTMLLoader: (@MainActor (any ReaderContentProtocol) async throws -> String?)?
     internal var readerPublicationDateLoader: (@MainActor (URL) async -> String?)?
     internal var swiftReadabilityProcessor: (@MainActor (String, URL, String?, Int) async -> String?)?
+#if DEBUG
+    internal var readerDocumentDispatchedForTesting: (@MainActor () async -> Void)?
+#endif
 
     internal func waitForReaderModeRender(for url: URL) async {
         let task = activeRendersByURL[canonicalRenderKey(url)]?.task
@@ -1611,11 +1614,12 @@ public class ReaderModeViewModel: ObservableObject {
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     private var lastFallbackLoaderURL: URL?
-    private struct CompletedRenderOwner: Equatable {
+    private struct CompletedRenderOwner {
         let key: String
         let generation: UUID
         let accountSession: AccountSessionSnapshot?
         let accountBoundaryID: AccountSessionBoundaryID?
+        var contentIsCurrent: (@MainActor () -> Bool)? = nil
     }
 
     private struct ActiveRender {
@@ -1734,7 +1738,8 @@ public class ReaderModeViewModel: ObservableObject {
         publishSyntheticReaderLoaderExpectation(for: nil)
         readerModeLoading(false)
         let renderKey = canonicalRenderKey(canonicalURL)
-        if let activeRender = activeRendersByURL[renderKey] {
+        if let activeRender = activeRendersByURL[renderKey],
+           completedRenderOwner?.generation != activeRender.generation {
             completedRenderOwner = CompletedRenderOwner(
                 key: renderKey,
                 generation: activeRender.generation,
@@ -2366,11 +2371,20 @@ public class ReaderModeViewModel: ObservableObject {
     ) -> Bool {
         let key = canonicalRenderKey(url)
         guard renderAccountIsCurrent(for: url) else { return false }
+        let active = activeRendersByURL[key]
+        let activeGeneration = active.flatMap {
+            !$0.task.isCancelled && $0.originatingContentIsCurrent() ? $0.generation : nil
+        }
+        let hasCompletedOwner = completedRenderOwner?.key == key
+        let completedGeneration = hasCompletedOwner && completedRenderOwner?.contentIsCurrent?() != false
+            ? completedRenderOwner?.generation : nil
+        // Rejected render authority cannot adopt legacy nil-generation readiness.
+        if (active != nil || hasCompletedOwner), activeGeneration == nil, completedGeneration == nil {
+            return false
+        }
         return readerModeReadyGenerationIsCurrent(
-            activeGeneration: activeRendersByURL[key]?.generation,
-            completedGeneration: completedRenderOwner?.key == key
-                ? completedRenderOwner?.generation
-                : nil,
+            activeGeneration: activeGeneration,
+            completedGeneration: completedGeneration,
             reportedGeneration: reportedGeneration
         )
     }
@@ -2423,9 +2437,19 @@ public class ReaderModeViewModel: ObservableObject {
         retired?.task.cancel()
     }
 
-    private func recordOwnedHTMLDispatch(for url: URL, generation: UUID) {
+    private func recordOwnedHTMLDispatch(
+        for url: URL, generation: UUID,
+        contentIsCurrent: @escaping @MainActor () -> Bool
+    ) {
         guard isCurrentRender(for: url, generation: generation) else { return }
-        activeRendersByURL[canonicalRenderKey(url)]?.hasDispatchedHTML = true
+        let key = canonicalRenderKey(url)
+        guard let render = activeRendersByURL[key] else { return }
+        activeRendersByURL[key]?.hasDispatchedHTML = true
+        completedRenderOwner = CompletedRenderOwner(
+            key: key, generation: generation,
+            accountSession: render.accountSession, accountBoundaryID: render.accountBoundaryID,
+            contentIsCurrent: contentIsCurrent
+        )
     }
 
     private func isCurrentRender(for url: URL, generation: UUID) -> Bool {
@@ -2481,20 +2505,9 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func finishRenderTask(for url: URL, generation: UUID) {
         let key = canonicalRenderKey(url)
-        guard let render = activeRendersByURL[key], render.generation == generation else {
-            return
-        }
-        let completedExplicitly = completedRenderOwner?.key == key
-            && completedRenderOwner?.generation == generation
-        if completedExplicitly || render.hasDispatchedHTML {
-            completedRenderOwner = CompletedRenderOwner(
-                key: key, generation: generation,
-                accountSession: render.accountSession,
-                accountBoundaryID: render.accountBoundaryID
-            )
-        } else if completedRenderOwner?.generation == generation {
-            completedRenderOwner = nil
-        }
+        guard activeRendersByURL[key]?.generation == generation else { return }
+        // Dispatch or explicit frame completion already published the completed
+        // owner. Merely returning from preparation cannot manufacture readiness.
         activeRendersByURL.removeValue(forKey: key)
     }
 
@@ -2995,7 +3008,12 @@ public class ReaderModeViewModel: ObservableObject {
             let directHTML = prepareHTMLForDirectLoad(html)
             guard ownsContent() else { return }
             let displayURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
-            recordOwnedHTMLDispatch(for: contentURL, generation: renderGeneration)
+            recordOwnedHTMLDispatch(for: contentURL, generation: renderGeneration) { [weak self, weak readerContent] in
+                guard let self, let readerContent else { return false }
+                return !content.isInvalidated
+                    && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
+                    && self.readerModeContentIsCurrent(content, readerContent: readerContent)
+            }
             if let htmlData = directHTML.data(using: .utf8) {
                 navigator.load(
                     htmlData,
@@ -3554,7 +3572,12 @@ public class ReaderModeViewModel: ObservableObject {
                         retireRender(forKey: canonicalRenderKey(requestedURL), ifOwnedBy: renderGeneration)
                         return
                     }
-                    recordOwnedHTMLDispatch(for: requestedURL, generation: renderGeneration)
+                    recordOwnedHTMLDispatch(for: requestedURL, generation: renderGeneration) { [weak self, weak readerContent] in
+                        guard let self, let readerContent else { return false }
+                        return !content.isInvalidated
+                            && urlsMatchWithoutHashForHotfix(requestedURL, readerContent.pageURL)
+                            && self.readerModeContentIsCurrent(content, readerContent: readerContent)
+                    }
                     ReaderSnippetFinalDocumentDiagnostics.record("html-dispatch", contentURL: requestedURL, generation: renderGeneration)
                     navigator.load(
                         transformedHTMLData,
@@ -3562,6 +3585,11 @@ public class ReaderModeViewModel: ObservableObject {
                         characterEncodingName: "UTF-8",
                         baseURL: displayURL
                     )
+#if DEBUG
+                    if let readerDocumentDispatchedForTesting {
+                        await readerDocumentDispatchedForTesting()
+                    }
+#endif
                 }
 //                try await { @MainActor in
 //                    readerModeLoading(false)
