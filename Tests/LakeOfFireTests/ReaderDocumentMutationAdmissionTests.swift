@@ -100,7 +100,12 @@ extension ReaderDocumentMutationAdmissionTests {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(probe, name: "receiptFrame")
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.loadHTMLString("<html><body><script>window.webkit.messageHandlers.receiptFrame.postMessage('ready')</script></body></html>", baseURL: url)
+        // A simulated navigation supplies real request provenance; loadHTMLString's
+        // base URL alone does not establish a mainDocumentURL on current WebKit.
+        var request = URLRequest(url: url)
+        request.mainDocumentURL = url
+        webView.loadSimulatedRequest(request, responseHTML:
+            "<html><body><script>window.webkit.messageHandlers.receiptFrame.postMessage('ready')</script></body></html>")
         await fulfillment(of: [received], timeout: 5)
         let frame = try XCTUnwrap(captured)
         XCTAssertTrue(frame.isMainFrame)

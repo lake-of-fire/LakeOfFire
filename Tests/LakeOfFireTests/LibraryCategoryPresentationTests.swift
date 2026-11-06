@@ -650,8 +650,18 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         try await model.refreshData().value
         XCTAssertEqual(
             model.userScripts?.map(\.id),
-            [secondID, lockedID, createdScriptID]
+            [secondID, lockedID, firstID, createdScriptID]
         )
+        // Archive remains visible for the existing second-delete action. Library
+        // consolidation retains live archived records rather than losing them.
+        XCTAssertTrue(try XCTUnwrap(model.userScripts?.first { $0.id == firstID }).isArchived)
+        try await model.deleteScript(at: IndexSet(integer: 2)).value
+        await capturedRealm.asyncRefresh()
+        XCTAssertTrue(capturedFirst.isDeleted)
+        XCTAssertNotNil(journal(for: capturedFirst, in: capturedRealm))
+        try await model.refreshData().value
+        XCTAssertEqual(model.userScripts?.map(\.id), [secondID, lockedID, createdScriptID])
+        XCTAssertFalse(replacementFirst.isDeleted)
         XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
     }
 

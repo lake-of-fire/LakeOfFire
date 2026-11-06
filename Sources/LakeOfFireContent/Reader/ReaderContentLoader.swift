@@ -371,9 +371,6 @@ public struct ReaderContentLoader {
 
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
             try Task.checkCancellation()
-#if DEBUG
-            await loadAllDiscoveryGateForTesting?()
-#endif
 
             return try await discoverCapturedContent(
                 url: url, skipContentFiles: skipContentFiles,
@@ -396,6 +393,11 @@ public struct ReaderContentLoader {
         storage: DiscoveryStorage,
         capture: (any ReaderContentProtocol) -> Value?
     ) async throws -> [Value] {
+        // The discovery seam covers both ordinary reads and storage/selection-
+        // admitted writes; scoped writes do not use the coalesced read registry.
+#if DEBUG
+        await loadAllDiscoveryGateForTesting?()
+#endif
         let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
             for: storage.historyConfiguration, storageAdmission: storage.historyAdmission
         )
