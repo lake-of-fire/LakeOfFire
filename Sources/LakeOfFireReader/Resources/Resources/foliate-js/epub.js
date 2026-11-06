@@ -4,6 +4,7 @@ import * as CFI from './epubcfi.js'
 const NS = {
     CONTAINER: 'urn:oasis:names:tc:opendocument:xmlns:container',
     XHTML: 'http://www.w3.org/1999/xhtml',
+    SVG: 'http://www.w3.org/2000/svg',
     OPF: 'http://www.idpf.org/2007/opf',
     EPUB: 'http://www.idpf.org/2007/ops',
     DC: 'http://purl.org/dc/elements/1.1/',
@@ -1033,6 +1034,11 @@ export class Loader {
             })
             for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
             for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
+            // SVG 2 uses plain href for resources; keep SVG anchor navigation
+            // in the same authored form as HTML links.
+            for (const el of Array.from(doc.getElementsByTagName('*'))
+                .filter(el => el.namespaceURI === NS.SVG && el.localName !== 'a'
+                    && el.hasAttribute('href'))) await replace(el, 'href')
             for (const el of Array.from(doc.getElementsByTagName('*'))
                 .filter(el => !el.hasAttribute('href') && el.hasAttributeNS(NS.XLINK, 'href'))) {
                 el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(el.getAttributeNS(NS.XLINK, 'href'), href, parents))

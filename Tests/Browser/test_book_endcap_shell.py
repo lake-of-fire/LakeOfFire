@@ -174,6 +174,70 @@ class BookEndcapShellTests(unittest.TestCase):
         # Reverse registration closes the browser before its Playwright runtime.
         cls.addClassCleanup(cls.browser.close)
 
+    def test_svg2_resource_hrefs_load_archive_bytes_and_preserve_navigation(self):
+        page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+        self.addCleanup(page.close)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        result = page.evaluate('''async () => {
+            const {Loader} = await import('./epub.js')
+            const svgNS = 'http://www.w3.org/2000/svg'
+            const xlinkNS = 'http://www.w3.org/1999/xlink'
+            const pixel = `<svg xmlns="${svgNS}" width="3" height="2"><rect width="3" height="2" fill="red"/></svg>`
+            const symbols = `<svg xmlns="${svgNS}"><rect id="shape" width="3" height="2"/></svg>`
+            const chapter = `<svg xmlns="${svgNS}" xmlns:xlink="${xlinkNS}" viewBox="0 0 100 100">
+                <defs><rect id="local-shape" width="1" height="1"/></defs>
+                <image id="modern" href="../images/pixel.svg"/>
+                <image id="precedence" href="../images/pixel.svg" xlink:href="../images/missing.svg"/>
+                <image id="legacy" xlink:href="../images/pixel.svg"/>
+                <use id="remote-symbol" href="../images/symbols.svg#shape"/>
+                <filter><feImage id="filter-image" href="../images/pixel.svg"/></filter>
+                <use id="local-symbol" href="#local-shape"/>
+                <image id="external" href="https://example.invalid/image.svg"/>
+                <a id="navigation" href="../two.xhtml#there"><text>Next</text></a>
+            </svg>`
+            const texts = {'OPS/chapters/one.svg':chapter, 'OPS/images/pixel.svg':pixel,
+                'OPS/images/symbols.svg':symbols}
+            const manifest = Object.keys(texts).map(href => ({href,mediaType:'image/svg+xml'}))
+            const loader = new Loader({resources:{manifest},loadText:async href=>texts[href],
+                loadBlob:async href=>new Blob([texts[href]],{type:'image/svg+xml'})})
+            try {
+                const url = await loader.loadItem(manifest[0])
+                const doc = new DOMParser().parseFromString(await (await fetch(url)).text(), 'image/svg+xml')
+                const href = id => doc.getElementById(id).getAttribute('href')
+                const modern = href('modern')
+                const resourceIsBlob = modern.startsWith('blob:')
+                let loadedBytes = null, decodedSize = null
+                if (resourceIsBlob) {
+                    loadedBytes = await (await fetch(modern)).text()
+                    const image = new Image()
+                    image.src = modern
+                    await image.decode()
+                    decodedSize = [image.naturalWidth,image.naturalHeight]
+                }
+                const remoteSymbol = href('remote-symbol')
+                return {resourceIsBlob,loadedBytes,pixel,decodedSize,
+                    sameResource:href('precedence')===modern && href('filter-image')===modern,
+                    legacy:doc.getElementById('legacy').getAttributeNS(xlinkNS,'href')===modern,
+                    symbolIsBlob:remoteSymbol.startsWith('blob:'),symbolFragment:remoteSymbol.split('#')[1],
+                    symbolBytes:remoteSymbol.startsWith('blob:')
+                        ? await (await fetch(remoteSymbol)).text() : null,
+                    local:href('local-symbol'),external:href('external'),navigation:href('navigation'),
+                    ignoredFallback:doc.getElementById('precedence').getAttributeNS(xlinkNS,'href')}
+            } finally { loader.destroy() }
+        }''')
+        self.assertTrue(result['resourceIsBlob'])
+        self.assertEqual(result['loadedBytes'], result['pixel'])
+        self.assertEqual(result['decodedSize'], [3, 2])
+        self.assertTrue(result['sameResource'])
+        self.assertTrue(result['legacy'])
+        self.assertTrue(result['symbolIsBlob'])
+        self.assertEqual(result['symbolFragment'], 'shape')
+        self.assertIn('id="shape"', result['symbolBytes'])
+        self.assertEqual(result['local'], '#local-shape')
+        self.assertEqual(result['external'], 'https://example.invalid/image.svg')
+        self.assertEqual(result['navigation'], '../two.xhtml#there')
+        self.assertEqual(result['ignoredFallback'], '../images/missing.svg')
+
     def test_css_layout_adaptation_preserves_selectors_and_scientific_dimensions(self):
         page = self.browser.new_page(viewport={'width': 390, 'height': 844})
         self.addCleanup(page.close)
