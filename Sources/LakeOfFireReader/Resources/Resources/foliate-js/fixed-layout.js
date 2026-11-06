@@ -22,10 +22,17 @@ const parsedViewport = value => {
 
 const getViewport = (doc, viewport) => {
     // use `viewBox` for SVG
-    if (doc.documentElement?.nodeName === 'svg') {
-        const [, , width, height] = doc.documentElement
-            .getAttribute('viewBox')?.trim()?.split(/\s+/) ?? []
-        const svgViewport = normalizedViewport({ width, height })
+    if (doc.documentElement?.namespaceURI === 'http://www.w3.org/2000/svg'
+        && doc.documentElement.localName === 'svg') {
+        const values = doc.documentElement.getAttribute('viewBox')
+            ?.replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '')
+            .split(/[\t\n\r ]*,[\t\n\r ]*|[\t\n\r ]+/) ?? []
+        const valid = values.length === 4 && values.every(value =>
+            /^[+-]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][+-]?\d+)?$/.test(value)
+            && Number.isFinite(Number(value)))
+        const svgViewport = valid
+            ? normalizedViewport({ width: values[2], height: values[3] })
+            : null
         if (svgViewport) return svgViewport
     }
 
