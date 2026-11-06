@@ -604,23 +604,14 @@ public class BookLibraryViewModel: ObservableObject {
                 return downloadable != nil
             },
             existsLocally: {
-                await downloadable?.existsLocally() == true
+                guard let downloadable else { return false }
+                return await ReaderFileManager.isDownloadReadyForImport(downloadable)
             },
             importContent: { existsLocally in
-                guard let downloadable else { return false }
-                if existsLocally {
-                    importedURL = try await readerFileManager.ensureImported(
-                        downloadable: downloadable
-                    )
-                } else {
-                    importedURL = try await readerFileManager.importFile(
-                        fileURL: downloadable.localDestination,
-                        fromDownloadURL: downloadable.url
-                    )
-                    if importedURL == nil {
-                        print("Couldn't import \(publication.title) file URL")
-                    }
-                }
+                guard existsLocally, let downloadable else { return false }
+                importedURL = try await readerFileManager.ensureImported(
+                    downloadable: downloadable
+                )
                 return importedURL != nil
             },
             loadContent: {
@@ -728,7 +719,8 @@ public class BookLibraryViewModel: ObservableObject {
                 return downloadable != nil
             },
             existsLocally: {
-                await downloadable?.existsLocally() == true
+                guard let downloadable else { return false }
+                return await ReaderFileManager.isDownloadReadyForImport(downloadable)
             },
             importContent: { existsLocally in
                 guard existsLocally, let downloadable else { return false }

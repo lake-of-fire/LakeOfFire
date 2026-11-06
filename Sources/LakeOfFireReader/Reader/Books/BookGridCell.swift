@@ -102,7 +102,7 @@ fileprivate struct DownloadableBookGridCell: View {
     
     private func buttonPress() {
         Task { @MainActor in
-            let wasAlreadyDownloaded = await downloadable.existsLocally()
+            let wasAlreadyDownloaded = await ReaderFileManager.isDownloadReadyForImport(downloadable)
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
             }
@@ -113,7 +113,7 @@ fileprivate struct DownloadableBookGridCell: View {
     
     @MainActor
     private func refreshDownloadable() async {
-        if await downloadable.existsLocally() && !wasDownloaded {
+        if await ReaderFileManager.isDownloadReadyForImport(downloadable) && !wasDownloaded {
             _ = try? await ReaderFileManager.shared.ensureImported(downloadable: downloadable)
             wasDownloaded = true
         }
