@@ -635,6 +635,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         for processingSucceeds in [false, true] {
             for deliversCommitBeforeResuming in [false, true] {
                 let fixture = makeReaderWebViewHandlerFixture()
+                let renderingRealm = try makeReaderHTMLRenderingRealm()
+                defer { withExtendedLifetime(renderingRealm) {} }
                 fixture.handler.readerViewModel = ReaderCallbackViewModel(
                     realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []
                 )
@@ -719,6 +721,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
 
     func testSameBindingRowReplacementDoesNotManufactureCompletedRender() async throws {
         let fixture = makeReaderWebViewHandlerFixture()
+        let renderingRealm = try makeReaderHTMLRenderingRealm()
+        defer { withExtendedLifetime(renderingRealm) {} }
         defer { fixture.readerModeViewModel.swiftReadabilityProcessor = nil }
         let source = try XCTUnwrap(URL(string: "reader-file://file/load/local/row-retirement.html"))
         let record = HistoryRecord()
@@ -764,6 +768,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
 
     func testThrowingCapturedReadabilityCannotCleanUpReplacementBinding() async throws {
         let fixture = makeReaderWebViewHandlerFixture()
+        let renderingRealm = try makeReaderHTMLRenderingRealm()
+        defer { withExtendedLifetime(renderingRealm) {} }
         let source = try XCTUnwrap(URL(string: "reader-file://file/load/local/throwing-capture.html"))
         let record = HistoryRecord()
         record.url = source
@@ -823,6 +829,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     func testSyntheticExpectationPublicationCannotDispatchAfterSynchronousReplacement() async throws {
         for successorPublication in ["none", "same-url", "different-url", "during-clear"] {
             let fixture = makeReaderWebViewHandlerFixture()
+            let renderingRealm = try makeReaderHTMLRenderingRealm()
+            defer { withExtendedLifetime(renderingRealm) {} }
             let source = try XCTUnwrap(URL(string: "reader-file://file/load/local/reentrant-dispatch.html"))
             let successorURL = successorPublication == "same-url" ? source
                 : try XCTUnwrap(URL(string: "reader-file://file/load/local/successor-dispatch.html"))
@@ -903,6 +911,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
 
     func testSelfIssuedReaderDocumentRetainsExactReadyGenerationAcrossCommit() async throws {
         let fixture = makeReaderWebViewHandlerFixture()
+        let renderingRealm = try makeReaderHTMLRenderingRealm()
+        defer { withExtendedLifetime(renderingRealm) {} }
         fixture.handler.readerViewModel = ReaderCallbackViewModel(
             realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []
         )
@@ -961,6 +971,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     func testRenderDeduplicationUsesDocumentBindingAndDispatchesCurrentLocation() async throws {
         for replacesBinding in [false, true] {
             let fixture = makeReaderWebViewHandlerFixture()
+            let renderingRealm = try makeReaderHTMLRenderingRealm()
+            defer { withExtendedLifetime(renderingRealm) {} }
             let source = try XCTUnwrap(URL(string: "reader-file://file/load/local/hash-render.html"))
             let record = HistoryRecord()
             record.url = source
@@ -1055,7 +1067,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             let mode = fixture.readerModeViewModel
             let reader = fixture.readerContent
             let url = URL(string: "https://example.com/prepared-reader-race")!
-            let (realm, row) = try cachedHistoryRecord(url: url)
+            let (realm, row) = try cachedHistoryRecord(url: url, in: makeReaderHTMLRenderingRealm())
             defer { mode.readerDocumentDispatchedForTesting = nil; withExtendedLifetime(realm) {} }
             reader.content = row
             reader.pageURL = url
