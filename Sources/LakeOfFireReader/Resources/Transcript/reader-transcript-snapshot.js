@@ -82,7 +82,8 @@ if (!doc.__manabiTranscriptCapture) {
     const source = node.currentSrc || node.src || node.querySelector('source[src]')?.src || '';
     const tracks = Array.from(node.textTracks || []).filter(track => ['captions', 'subtitles'].includes(track.kind));
     const languages = view.navigator.languages || [view.navigator.language || ''];
-    const rank = track => track.mode === 'showing' ? -1 : languages.findIndex(language => language.split('-')[0] === (track.language || '').split('-')[0]);
+    const primaryLanguage = language => (language || '').split('-')[0].toLowerCase()
+    const rank = track => track.mode === 'showing' ? -1 : languages.findIndex(language => primaryLanguage(language) === primaryLanguage(track.language))
     tracks.sort((a, b) => (rank(a) < 0 && a.mode !== 'showing' ? 100 : rank(a)) - (rank(b) < 0 && b.mode !== 'showing' ? 100 : rank(b)));
     const track = tracks[0];
     const cues = Array.from(track?.cues || []).filter(cue => Number.isFinite(cue.startTime) && cue.startTime >= 0 && Number.isFinite(cue.endTime) && cue.endTime > cue.startTime && typeof cue.getCueAsHTML === 'function');
