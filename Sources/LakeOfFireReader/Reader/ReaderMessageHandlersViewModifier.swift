@@ -162,7 +162,7 @@ public func prewarmReaderPaginationSizeTrackingCache() {
 }
 
 @MainActor
-fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
+internal class ReaderMessageHandlers: ObservableObject, Identifiable {
     var forceReaderModeWhenAvailable: Bool
     
     var scriptCaller: WebViewScriptCaller
