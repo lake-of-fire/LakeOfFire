@@ -391,6 +391,105 @@ final class BookOpenSelectionOwnershipTests: XCTestCase {
     }
 
     @MainActor
+    func testGroupedJSONCatalogBooksReachTheLoaderWithoutFollowingNavigation() async throws {
+        let body = #"""
+        {"metadata":{"title":"Grouped catalog"},
+         "links":[{"rel":"self","href":"catalog.json"}],
+         "groups":[
+           {"metadata":{"title":"Navigation"},
+            "navigation":[{"title":"All Books","href":"unneeded.json"}]},
+           {"metadata":{"title":"First shelf"},"publications":[
+             {"metadata":{"title":"First","author":"Writer","description":"Summary"},
+              "links":[{"href":"../books/first.epub","rel":"download"}],
+              "images":[{"href":"covers/first.png","type":"image/png"}]},
+             {"metadata":{"title":"Second"},
+              "links":[{"href":"second.epub","rel":"acquisition"}]}]},
+           {"metadata":{"title":"Second shelf"},"publications":[
+             {"metadata":{"title":"Restricted"},
+              "links":[{"href":"purchase","rel":"buy"}]}]}]}
+        """#
+        let document = try catalogDocument(body)
+        let feed = try XCTUnwrap(document.feed)
+        XCTAssertTrue(feed.publications.isEmpty)
+        XCTAssertEqual(feed.groups.map { $0.publications.count }, [0, 2, 1])
+        let mapped = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+            in: document, relativeTo: catalogRequestURL))
+        XCTAssertEqual(mapped.map(\.title), ["First", "Second", "Restricted"])
+        XCTAssertEqual(mapped[0].author, "Writer")
+        XCTAssertEqual(mapped[0].summary, "Summary")
+        XCTAssertEqual(mapped[0].downloadURL?.absoluteString,
+            "https://cdn.example/releases/books/first.epub")
+        XCTAssertEqual(mapped[0].coverURL?.absoluteString,
+            "https://cdn.example/releases/v2/covers/first.png")
+        XCTAssertNil(mapped[2].downloadURL)
+
+        let fixture = catalogLoadingFixture()
+        let requestedURL = fixture.url("grouped.json")
+        fixture.set(.document(body,
+            finalURL: URL(string: "https://cdn.example/releases/v2/document.json")!),
+            at: requestedURL)
+        let result = await BookLibraryViewModel.fetchPublications(
+            from: requestedURL, session: fixture.session)
+        XCTAssertNil(result.1)
+        XCTAssertEqual(result.0.map(\.title), ["First", "Second", "Restricted"])
+        XCTAssertEqual(result.0.first?.downloadURL, mapped.first?.downloadURL)
+        XCTAssertEqual(fixture.requests, [requestedURL],
+            "Already parsed publications must not be discarded for a navigation request")
+    }
+
+    @MainActor
+    func testGroupedAtomBooksKeepTopLevelBooksAndScopedAcquisitionURLs() throws {
+        let document = try catalogDocument("""
+        <feed xmlns="http://www.w3.org/2005/Atom" xml:base="../books/">
+          <title>Grouped Atom catalog</title><id>urn:catalog:grouped</id>
+          <updated>2026-01-01T00:00:00Z</updated>
+          <author><name>Feed author</name></author>
+          <entry><title>Grouped first</title><id>urn:book:grouped-first</id>
+            <updated>2026-01-01T00:00:00Z</updated>
+            <link rel="collection" title="First shelf" href="shelves/first"/>
+            <link rel="http://opds-spec.org/acquisition/open-access" href="first.epub"/>
+          </entry>
+          <entry><title>Top level</title><id>urn:book:top-level</id>
+            <updated>2026-01-01T00:00:00Z</updated>
+            <link rel="http://opds-spec.org/acquisition" href="top.epub"/>
+          </entry>
+          <entry><title>Grouped second</title><id>urn:book:grouped-second</id>
+            <updated>2026-01-01T00:00:00Z</updated>
+            <link rel="http://opds-spec.org/group" title="Second shelf" href="shelves/second"/>
+            <link xml:base="editions/" rel="http://opds-spec.org/acquisition/open-access" href="second.epub"/>
+          </entry>
+        </feed>
+        """, atom: true)
+        let feed = try XCTUnwrap(document.feed)
+        XCTAssertEqual(feed.publications.map(\.metadata.title), ["Top level"])
+        XCTAssertEqual(feed.groups.map { $0.publications.count }, [1, 1])
+        let books = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+            in: document, relativeTo: catalogRequestURL))
+        XCTAssertEqual(books.map(\.title), ["Top level", "Grouped first", "Grouped second"])
+        XCTAssertEqual(books.map(\.author), ["Feed author", "Feed author", "Feed author"])
+        XCTAssertEqual(books.compactMap { $0.downloadURL?.absoluteString }, [
+            "https://cdn.example/releases/books/top.epub",
+            "https://cdn.example/releases/books/first.epub",
+            "https://cdn.example/releases/books/editions/second.epub"
+        ])
+    }
+
+    @MainActor
+    func testEmptyAndNavigationOnlyGroupsDoNotBecomePublicationLists() throws {
+        for groups in [
+            #"[]"#,
+            #"[{"metadata":{"title":"Empty shelf"},"publications":[]}]"#,
+            #"[{"metadata":{"title":"Navigation"},"navigation":[{"title":"All Books","href":"all.json"}]}]"#
+        ] {
+            let document = try catalogDocument("""
+            {"metadata":{"title":"No books"},"groups":\(groups)}
+            """)
+            XCTAssertNil(BookLibraryViewModel.mappedPublications(
+                in: document, relativeTo: catalogRequestURL))
+        }
+    }
+
+    @MainActor
     func testNavigationAndEmptyCatalogsRemainWithExistingLoader() throws {
         for body in [
             #"{"metadata":{"title":"Navigation"},"navigation":[{"href":"all.json","title":"All Books"}]}"#,
