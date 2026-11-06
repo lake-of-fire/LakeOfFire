@@ -12,6 +12,7 @@ const NS = {
     NCX: 'http://www.daisy.org/z3986/2005/ncx/',
     XLINK: 'http://www.w3.org/1999/xlink',
     SMIL: 'http://www.w3.org/ns/SMIL',
+    SVG: 'http://www.w3.org/2000/svg',
 }
 
 const MIME = {
@@ -1077,6 +1078,11 @@ export class Loader {
             })
             for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
             for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
+            // SVG 2 resource links use href; xlink:href is only the legacy form.
+            // Navigation anchors and same-document fragment references stay authored.
+            for (const el of doc.querySelectorAll('image[href], use[href], feImage[href]')) {
+                if (el.namespaceURI === NS.SVG) await replace(el, 'href')
+            }
             for (const el of Array.from(doc.getElementsByTagName('*'))
                 .filter(el => !el.hasAttribute('href') && el.hasAttributeNS(NS.XLINK, 'href'))) {
                 el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(el.getAttributeNS(NS.XLINK, 'href'), href, parents))
@@ -1577,3 +1583,4 @@ ${doc.querySelector('parsererror').innerText}`)
         return true
     }
 }
+
