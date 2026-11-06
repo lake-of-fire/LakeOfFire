@@ -8,16 +8,50 @@ import WebKit
 @_spi(ReaderProcessing) @testable import LakeOfFireReader
 @testable import SwiftUIWebView
 
+// Non-snippet rendering performs real secondary metadata discovery before the
+// final HTML transform. Supply all three discovery stores, just as the app's
+// installRealmConfigurationBoundaries does, rather than inheriting process defaults.
+// Keep this shared by the HTML lifetime and callback preparation fixtures.
+extension XCTestCase {
+    @MainActor
+    func makeReaderHTMLRenderingRealm() throws -> Realm {
+        var configuration = Realm.Configuration(
+            inMemoryIdentifier: UUID().uuidString,
+            objectTypes: [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self, Feed.self]
+        )
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let realm = try Realm(configuration: configuration)
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        addTeardownBlock { @MainActor in
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+            withExtendedLifetime(realm) {}
+        }
+        return realm
+    }
+}
+
 @MainActor
 final class ReaderContentHTMLLifetimeTests: XCTestCase {
     private let fileURL = URL(string: "reader-file://file/load/local/example.txt")!
 
-    private func fixture() throws -> (Realm, HistoryRecord) {
-        var configuration = Realm.Configuration(
-            inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]
-        )
-        configureLakeOfFireMutationTrackingForTesting(&configuration)
-        let realm = try Realm(configuration: configuration)
+    private func fixture(rendering: Bool = false) throws -> (Realm, HistoryRecord) {
+        let realm: Realm
+        if rendering {
+            realm = try makeReaderHTMLRenderingRealm()
+        } else {
+            var configuration = Realm.Configuration(
+                inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]
+            )
+            configureLakeOfFireMutationTrackingForTesting(&configuration)
+            realm = try Realm(configuration: configuration)
+        }
         let record = HistoryRecord()
         record.url = fileURL
         record.rssContainsFullContent = false
@@ -145,7 +179,7 @@ final class ReaderContentHTMLLifetimeTests: XCTestCase {
 // deletion retains a synchronized tombstone and does not establish this race.
 extension ReaderContentHTMLLifetimeTests {
     private func renderFixture() throws -> (Realm, HistoryRecord, ReaderContent, ReaderModeViewModel, WebViewNavigator) {
-        let (realm, row) = try fixture()
+        let (realm, row) = try fixture(rendering: true)
         let reader = ReaderContent()
         reader.pageURL = row.url
         reader.content = row
