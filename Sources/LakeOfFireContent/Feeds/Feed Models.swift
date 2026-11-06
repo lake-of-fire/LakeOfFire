@@ -1177,7 +1177,7 @@ fileprivate struct FeedFetchMetadata {
 
 fileprivate enum FeedFetchResult {
     case notModified(metadata: FeedFetchMetadata)
-    case fetched(Data, metadata: FeedFetchMetadata)
+    case fetched(Data, metadata: FeedFetchMetadata, documentURL: URL)
 }
 
 fileprivate struct ParsedFeedEntryCollection {
@@ -1455,7 +1455,7 @@ fileprivate func getRssData(
         }
         throw FeedError.downloadFailed
     case 200..<300:
-        return .fetched(data, metadata: getMetadata)
+        return .fetched(data, metadata: getMetadata, documentURL: getHTTPResponse.url ?? rssUrl)
     case 300..<400:
         if shouldLogNiponica {
             logNiponica("stage=feedFetch.http.error rssURL=\(rssUrl.absoluteString) phase=get status=\(getHTTPResponse.statusCode) reason=unhandledRedirect")
@@ -1982,7 +1982,7 @@ public extension Feed {
         switch fetchResult {
         case .notModified:
             throw FeedError.downloadFailed
-        case .fetched(var rssData, let metadata):
+        case .fetched(var rssData, let metadata, let documentURL):
             if shouldLogNiponica {
                 logNiponica(
                     "stage=feed.fetch.fetched feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) bytes=\(rssData.count) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
@@ -1996,6 +1996,7 @@ public extension Feed {
                 )
             }
             let parser = FeedKit.FeedParser(data: rssData)
+            let atomDocumentData = rssData
             return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
                 parser.parseAsync { parserResult in
@@ -2078,6 +2079,7 @@ public extension Feed {
                                           FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
+                                    try AtomEntryLinkResolver.resolve(items, in: atomDocumentData, documentURL: documentURL)
                                     try await self.persist(
                                         atomItems: items,
                                         collections: atomCollections,
