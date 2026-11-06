@@ -364,7 +364,6 @@ public struct ReaderContentLoader {
 
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
             try Task.checkCancellation()
-            await loadAllDiscoveryGateForTesting?()
 
             return try await discoverCapturedContent(
                 url: url, skipContentFiles: skipContentFiles,
@@ -387,6 +386,9 @@ public struct ReaderContentLoader {
         storage: DiscoveryStorage,
         capture: (any ReaderContentProtocol) -> Value?
     ) async throws -> [Value] {
+        // The discovery seam covers both ordinary reads and storage/selection-
+        // admitted writes; scoped writes do not use the coalesced read registry.
+        await loadAllDiscoveryGateForTesting?()
         let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
             for: storage.historyConfiguration, storageAdmission: storage.historyAdmission
         )
@@ -1867,7 +1869,9 @@ This snippet loads when the pasteboard is empty in a debug build.
         }
 
         guard !isAlreadyWrapped else {
-            return (try? doc.outerHtml()) ?? html
+            // Already-normalized editor HTML is byte-authoritative, including
+            // decomposed URL text and authored formatting. Do not pretty-print it.
+            return html
         }
 
         try? body.html(#"<div class="\#(snippetWrapperClass)">\#(bodyHTML)</div>"#)

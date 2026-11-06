@@ -84,22 +84,6 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
         "On December 15, 2017, Mozilla installed an add-on in all Firefox Quantum browsers, titled \"Looking Glass,\"",
     ]
 
-    private static let appRepositoryRootURL = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-
-    private static let readabilityScriptURL = appRepositoryRootURL
-        .appendingPathComponent("Vendor/swift-readability/Sources/SwiftReadability/Resources/Readability.js")
-
-    private static let domPurifyScriptURL = appRepositoryRootURL
-        .appendingPathComponent("Vendor/LakeOfFire/Sources/LakeOfFireContent/Resources/User Scripts/dompurify.min.js")
-
-    private static let readabilityInitializationTemplateURL = appRepositoryRootURL
-        .appendingPathComponent("Vendor/LakeOfFire/Sources/LakeOfFireContent/Resources/User Scripts/readability_initialization.template.js")
-
     private static let sourcePageURL = URL(string: "https://en.wikipedia.org/wiki/Mozilla?useskin=minerva")!
 
     private func loadFixtureHTML() throws -> String {
@@ -125,19 +109,9 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
     }
 
     private func loadReadabilityUserScriptSource() throws -> String {
-        let readabilitySource = try String(contentsOf: Self.readabilityScriptURL, encoding: .utf8)
-        let domPurifySource = try String(contentsOf: Self.domPurifyScriptURL, encoding: .utf8)
-        let initializationTemplate = try String(
-            contentsOf: Self.readabilityInitializationTemplateURL,
-            encoding: .utf8
-        )
-
-        let initializedSource = initializationTemplate
-            .replacingOccurrences(of: "##CHAR_THRESHOLD##", with: "1")
-            .replacingOccurrences(of: "##CSS##", with: "")
-            .replacingOccurrences(of: "##SCRIPT##", with: "")
-
-        return readabilitySource + domPurifySource + initializedSource
+        // Exercise the shipping bundle-backed composition in both app and SwiftPM
+        // layouts, including its actual sanitizer and initialization scripts.
+        Readability(meaningfulContentMinChars: 1).userScriptSource
     }
 
     private func collapseWhitespace(in text: String) -> String {

@@ -1,5 +1,5 @@
 {
-  "originHash" : "1d69a2825aee20b7dc7f1f75d2e8582e82e46cc7b883fa95caff28274725d334",
+  "originHash" : "b6fe3010e9eae89add28084bcea59323010a050d17033caa416cba9f8c4583ea",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -221,8 +221,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/sqlite-data.git",
       "state" : {
-        "revision" : "93e0540441a6bfdba51df27ca6d01eb6508c82a5",
-        "version" : "1.7.0"
+        "revision" : "26471412f457f2c640bf5759a63870353a19f9e1",
+        "version" : "1.8.2"
       }
     },
     {
@@ -410,8 +410,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lake-of-fire/SwiftCloudDrive.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "0a84ea27d394fe0ed92e9b7809d84cfaa1942442"
+        "revision" : "5f0d30e0e39fe9fd09e71b6ff1c01b444d8bdb9a"
       }
     },
     {
