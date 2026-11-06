@@ -8,6 +8,135 @@ import XCTest
 
 @MainActor
 final class BookCatalogPublicationMappingTests: XCTestCase {
+    func testOPDS2RelationlessImagesUseDocumentOrderAndFinalDocumentBase() async throws {
+        let document = try await aliasDocument(#"""
+        {"metadata":{"title":"Ordinary OPDS2 book"},"images":[
+          {"href":"covers/first.jpg","type":"image/jpeg","width":800,"height":1200},
+          {"href":"covers/larger.png","type":"image/png","width":1600,"height":2400}]}
+        """#)
+        let images = try XCTUnwrap(document.publication?.images)
+        XCTAssertEqual(images.count, 2)
+        XCTAssertTrue(images.allSatisfy { $0.rels.isEmpty })
+        let books = try XCTUnwrap(BookCatalogPublicationMapper.publications(in: document))
+        XCTAssertEqual(books.first?.coverURL?.absoluteString,
+            "https://cdn.example/catalog/covers/first.jpg")
+    }
+
+    func testOPDS2RelationlessImagesNeverReplaceExistingCoverPriorities() async throws {
+        let image = #"{"href":"image.png","rel":"http://opds-spec.org/image"}"#
+        let thumbnail = #"{"href":"thumbnail.png","rel":"http://opds-spec.org/image/thumbnail"}"#
+        let cover = #"{"href":"cover.png","rel":"cover"}"#
+        for (tagged, expected) in [
+            ([thumbnail], "thumbnail.png"),
+            ([thumbnail, image], "image.png"),
+            ([thumbnail, image, cover], "cover.png"),
+        ] {
+            let document = try await aliasDocument("""
+            {"metadata":{"title":"Priority"},"images":[{"href":"unrelated-first.png"},
+             \(tagged.joined(separator: ","))]}
+            """)
+            let books = try XCTUnwrap(BookCatalogPublicationMapper.publications(in: document))
+            XCTAssertEqual(books.first?.coverURL?.lastPathComponent, expected)
+        }
+    }
+
+    func testOPDS2ImageFallbackLeavesAbsentAndEmptyImagesWithoutACover() async throws {
+        for images in ["", ",\"images\":[]"] {
+            let document = try await aliasDocument("{\"metadata\":{\"title\":\"No cover\"}\(images)}")
+            let books = try XCTUnwrap(BookCatalogPublicationMapper.publications(in: document))
+            XCTAssertEqual(books.map(\.title), ["No cover"])
+            XCTAssertNil(books.first?.coverURL)
+        }
+    }
+
+    func testOPDS2AcquisitionAliasesReachCanonicalRelationsAndReaderDownloads() async throws {
+        for (alias, canonical) in [("acquisition", LinkRelation.opdsAcquisition),
+                                   ("download", LinkRelation.opdsAcquisitionOpenAccess)] {
+            for relationJSON in ["\"\(alias)\"", "[\"alternate\",\"\(alias)\"]"] {
+                let document = try await aliasDocument("""
+                {"metadata":{"title":"Alias book"},"links":[{"href":"../books/alias.epub",
+                 "rel":\(relationJSON)}]}
+                """)
+                let publication = try XCTUnwrap(document.publication)
+                let acquisition = try XCTUnwrap(publication.links.first(withRel: canonical))
+                XCTAssertTrue(acquisition.rels.contains(canonical))
+                XCTAssertTrue(acquisition.rels.contains(where: \.isOPDSAcquisition))
+                let books = try XCTUnwrap(BookCatalogPublicationMapper.publications(in: document))
+                XCTAssertEqual(books.map(\.title), ["Alias book"])
+                XCTAssertEqual(books.first?.downloadURL?.absoluteString,
+                    "https://cdn.example/books/alias.epub")
+            }
+        }
+    }
+
+    func testOPDS2AliasSpellingsKeepGenericAcquisitionPriority() async throws {
+        for generic in ["acquisition", LinkRelation.opdsAcquisition.string] {
+            for openAccess in ["download", LinkRelation.opdsAcquisitionOpenAccess.string] {
+                let document = try await aliasDocument("""
+                {"metadata":{"title":"Feed"},"publications":[{"metadata":{"title":"Priority"},
+                  "links":[{"href":"open.epub","rel":"\(openAccess)"},
+                           {"href":"generic.epub","rel":"\(generic)"}]}]}
+                """)
+                let books = try XCTUnwrap(BookCatalogPublicationMapper.publications(in: document))
+                XCTAssertEqual(books.first?.downloadURL?.lastPathComponent, "generic.epub")
+            }
+        }
+    }
+
+    func testOPDS2AliasNormalizationPreservesRestrictedCustomAndLookalikeRelations() async throws {
+        let relations = ["buy", "borrow", "preview", "subscribe", "download-preview", "download/preview",
+                         "downloaded", "acquisition-extra", "acquisition/open-access", " download ",
+                         "https://custom.example/download"]
+        for relation in relations {
+            let document = try await aliasDocument("""
+            {"metadata":{"title":"Not a direct download"},"links":[{"href":"not-full.epub",
+             "rel":["alternate","\(relation)"]}]}
+            """)
+            let parsedRelations = try XCTUnwrap(document.publication?.links.first?.rels)
+            XCTAssertEqual(parsedRelations, [.alternate, LinkRelation(relation)], relation)
+            let books = try XCTUnwrap(BookCatalogPublicationMapper.publications(in: document))
+            XCTAssertNil(books.first?.downloadURL, relation)
+        }
+    }
+
+    func testShortAcquisitionAliasesDoNotChangeAtomOrDirectRelationConstruction() async throws {
+        for alias in ["acquisition", "download"] {
+            let document = try await aliasDocument("""
+            <entry xmlns="http://www.w3.org/2005/Atom"><title>Custom Atom role</title>
+              <link href="custom.epub" rel="\(alias)"/>
+            </entry>
+            """)
+            let link = try XCTUnwrap(document.publication?.links.first)
+            XCTAssertEqual(link.rels, [LinkRelation(alias)])
+            XCTAssertFalse(LinkRelation(alias).isOPDSAcquisition)
+            let books = try XCTUnwrap(BookCatalogPublicationMapper.publications(in: document))
+            XCTAssertNil(books.first?.downloadURL)
+        }
+    }
+
+
+    func testOPDS2ImageFallbackSkipsUnresolvablePreferredAndOrdinaryImages() async throws {
+        let document = try await aliasDocument(#"""
+        {"metadata":{"title":"Resolvable cover"},"images":[
+          {"href":"http://[invalid","rel":"cover"},
+          {"href":"http://[also-invalid"},
+          {"href":"covers/usable.png"},
+          {"href":"covers/later.png"}]}
+        """#)
+        let images = try XCTUnwrap(document.publication?.images)
+        XCTAssertEqual(images.count, 4)
+        XCTAssertNil(images[0].url(relativeTo: document.documentURL))
+        XCTAssertNil(images[1].url(relativeTo: document.documentURL))
+        let books = try XCTUnwrap(BookCatalogPublicationMapper.publications(in: document))
+        XCTAssertEqual(books.first?.coverURL?.absoluteString, "https://cdn.example/catalog/covers/usable.png")
+    }
+
+    private func aliasDocument(_ body: String) async throws -> ParseData {
+        let fixture = CatalogMappingSession(replies: [.document(body)])
+        defer { fixture.close() }
+        return try await fixture.document()
+    }
+
     func testFeedRetainsMetadataCoverAndFinalResponseURL() async throws {
         let fixture = CatalogMappingSession(replies: [.document(#"""
         {"metadata":{"title":"Catalog"},"publications":[{
