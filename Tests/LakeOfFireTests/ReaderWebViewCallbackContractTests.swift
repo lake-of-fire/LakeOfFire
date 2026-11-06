@@ -8,6 +8,7 @@ import SwiftUI
 import Combine
 import RealmSwift
 import BigSyncKit
+import LakeKit
 import WebKit
 @testable import SwiftUIWebView
 @testable import LakeOfFireContent
@@ -364,7 +365,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         ReaderContentLoader.bookmarkRealmConfiguration = configuration
         ReaderContentLoader.historyRealmConfiguration = configuration
         ReaderContentLoader.feedEntryRealmConfiguration = configuration
-        let realm = try Realm(configuration: configuration)
+        let realm = try Realm(configuration: configuration, queue: nil)
         do {
             try await operation(realm)
         } catch {
