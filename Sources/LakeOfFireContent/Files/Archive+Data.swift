@@ -325,14 +325,15 @@ public struct ReaderPackageEntrySource: Sendable {
     }
 
     public static func sanitizeSubpath(_ rawSubpath: String) throws -> String {
-        let trimmed = rawSubpath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              !trimmed.hasPrefix("/"),
-              !trimmed.contains("\\") else {
+        // This is an already-decoded archive path, not an authored URI.
+        // Whitespace is part of the filename and must retain its identity.
+        guard !rawSubpath.isEmpty,
+              !rawSubpath.hasPrefix("/"),
+              !rawSubpath.contains("\\") else {
             throw ReaderPackageEntrySourceError.invalidSubpath
         }
 
-        let components = trimmed.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        let components = rawSubpath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         guard !components.isEmpty,
               !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
             throw ReaderPackageEntrySourceError.invalidSubpath
