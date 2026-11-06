@@ -1091,33 +1091,63 @@ final class ReaderSnippetTitleTests: XCTestCase {
 
     @MainActor
     func testSnippetSavePreservesCanonicallyEquivalentURLByteEdits() async throws {
+        // The editor-save producer parses and serializes HTML again. Its
+        // formatting is not the editor's wire contract; DOM content and URL
+        // bytes are. Independently inspect the persisted document and compressed
+        // payload, then verify the loader returns that exact committed payload.
+        func assertStoredSnippet(_ record: HistoryRecord, href: String) throws -> Data {
+            let html = try XCTUnwrap(record.html)
+            let wire = try XCTUnwrap(record.content)
+            let decoded = try (wire as NSData).decompressed(using: .lzfse) as Data
+            XCTAssertEqual(decoded, Data(html.utf8))
+            let document = try SwiftSoup.parse(html)
+            XCTAssertEqual(try document.select("body > div.mnb-snippet").count, 1)
+            XCTAssertEqual(try document.select("body > div.mnb-snippet > p").count, 1)
+            XCTAssertEqual(try document.select("body p").text(), "Before Link after.")
+            XCTAssertEqual(try document.select("body").text(), "Before Link after.")
+            XCTAssertEqual(try document.select("a").count, 1)
+            let link = try XCTUnwrap(document.select("body > div.mnb-snippet > p > a").first())
+            XCTAssertEqual(try link.text(), "Link")
+            XCTAssertEqual(Array(try link.attr("href").utf8), Array(href.utf8))
+            return wire
+        }
+
         for suppliesOriginalHTML in [false, true] {
             try await withSnippetRealm { configuration in
+                let composedURL = "https://example.com/caf\u{00e9}"
+                let decomposedURL = "https://example.com/cafe\u{0301}"
                 let composed = ReaderContentLoader.snippetHTML(fromHTML:
-                    "<p><a href=\"https://example.com/caf\u{00e9}\">Link</a></p>")
+                    "<p>Before <a href=\"\(composedURL)\">Link</a> after.</p>")
                 let decomposed = ReaderContentLoader.snippetHTML(fromHTML:
-                    "<p><a href=\"https://example.com/cafe\u{0301}\">Link</a></p>")
+                    "<p>Before <a href=\"\(decomposedURL)\">Link</a> after.</p>")
                 let loaded = try await ReaderContentLoader.load(html: composed)
                 let snippet = try XCTUnwrap(loaded)
                 let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
                 let title = snippet.title
                 let editorHTML = try await ReaderContentLoader.snippetEditorHTML(for: snippet)
+                let realm = try await Realm(configuration: configuration)
+                let updated = try XCTUnwrap(realm.object(
+                    ofType: HistoryRecord.self, forPrimaryKey: snippet.compoundKey
+                ))
+                _ = try assertStoredSnippet(updated, href: composedURL)
+                let mutationKey = updated.objectSchema.className + "." + updated.compoundKey
+                let originalGeneration = try XCTUnwrap(realm.object(
+                    ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey)?.generation)
+
                 let changed = try await ReaderContentLoader.updateSnippetContent(
                     contentURL: snippet.url, title: title, html: decomposed,
                     originalEditorHTML: suppliesOriginalHTML ? editorHTML : nil,
                     storage: storage, permitsCommit: { true }
                 )
                 XCTAssertTrue(changed)
-                let realm = try await Realm(configuration: configuration)
                 try await realm.asyncRefresh()
-                let updated = try XCTUnwrap(realm.object(
-                    ofType: HistoryRecord.self, forPrimaryKey: snippet.compoundKey
-                ))
-                XCTAssertEqual(Array(try XCTUnwrap(updated.html).utf8), Array(decomposed.utf8))
-                let document = try SwiftSoup.parse(try XCTUnwrap(updated.html))
-                let link = try XCTUnwrap(document.select("a").first())
-                XCTAssertEqual(Array(try link.attr("href").utf8),
-                    Array("https://example.com/cafe\u{0301}".utf8))
+                let editedWire = try assertStoredSnippet(updated, href: decomposedURL)
+                let editedGeneration = try XCTUnwrap(realm.object(
+                    ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey)?.generation)
+                XCTAssertNotEqual(editedGeneration, originalGeneration)
+                await ReaderContentLoader.resetTransientCachesForTesting()
+                let reloaded = try await ReaderContentLoader.getContent(forURL: snippet.url)
+                XCTAssertEqual(try XCTUnwrap(reloaded).content, editedWire)
 
                 let repeated = try await ReaderContentLoader.updateSnippetContent(
                     contentURL: snippet.url, title: title, html: decomposed,
@@ -1125,6 +1155,10 @@ final class ReaderSnippetTitleTests: XCTestCase {
                     storage: storage, permitsCommit: { true }
                 )
                 XCTAssertFalse(repeated)
+                try await realm.asyncRefresh()
+                XCTAssertEqual(updated.content, editedWire)
+                XCTAssertEqual(realm.object(ofType: BigSyncPendingMutation.self,
+                    forPrimaryKey: mutationKey)?.generation, editedGeneration)
 
                 let reverted = try await ReaderContentLoader.updateSnippetContent(
                     contentURL: snippet.url, title: title, html: composed,
@@ -1133,7 +1167,13 @@ final class ReaderSnippetTitleTests: XCTestCase {
                 )
                 XCTAssertTrue(reverted)
                 try await realm.asyncRefresh()
-                XCTAssertEqual(Array(try XCTUnwrap(updated.html).utf8), Array(composed.utf8))
+                let revertedWire = try assertStoredSnippet(updated, href: composedURL)
+                XCTAssertNotEqual(revertedWire, editedWire)
+                XCTAssertNotEqual(realm.object(ofType: BigSyncPendingMutation.self,
+                    forPrimaryKey: mutationKey)?.generation, editedGeneration)
+                await ReaderContentLoader.resetTransientCachesForTesting()
+                let reloadedRevert = try await ReaderContentLoader.getContent(forURL: snippet.url)
+                XCTAssertEqual(try XCTUnwrap(reloadedRevert).content, revertedWire)
             }
         }
     }
