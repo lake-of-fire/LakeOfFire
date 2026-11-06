@@ -916,8 +916,9 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func importOPML(fileURL: URL, fromDownload download: Downloadable? = nil, realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration) async throws {
-        let text = try String(contentsOf: fileURL)
-        let opml = try OPML(Data(text.utf8))
+        // XML owns decoding: transcoding here leaves declarations such as UTF-16
+        // attached to UTF-8 bytes, rejecting valid subscription files.
+        let opml = try OPML(Data(contentsOf: fileURL))
         var allImportedCategories = OrderedSet<FeedCategory>()
         var allImportedDirectories = OrderedSet<FeedDirectory>()
         var allImportedFeeds = OrderedSet<Feed>()
