@@ -760,6 +760,31 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertNil(manager.onURLChangedTask)
     }
 
+    func testNavigationFinishRetainsTransientHandlerUntilObserverRuns() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let gate = ReaderCallbackGate()
+        var observedFinishes = 0
+        var transientHandler: ReaderWebViewHandler? = ReaderWebViewHandler(
+            navigationTaskManager: fixture.taskManager,
+            onNavigationFinished: { _ in observedFinishes += 1 },
+            readerContent: fixture.readerContent,
+            readerViewModel: fixture.handler.readerViewModel,
+            readerModeViewModel: fixture.readerModeViewModel,
+            readerMediaPlayerViewModel: fixture.handler.readerMediaPlayerViewModel,
+            scriptCaller: fixture.handler.scriptCaller,
+            navigator: fixture.handler.navigator
+        )
+        fixture.taskManager.startOnNavigationCommitted { await gate.wait() }
+        transientHandler?.onNavigationFinished(state: .empty)
+        let finish = try XCTUnwrap(fixture.taskManager.onNavigationFinishedTask)
+        // SwiftUI can replace its callback relay's handler while semantic
+        // commit work is suspended. The queued finish still owns its observer.
+        transientHandler = nil
+        await gate.release()
+        try await finish.value
+        XCTAssertEqual(observedFinishes, 1)
+    }
+
     func testFinishWaitsForCommitAndRunsExactlyOnce() async throws {
         let manager = NavigationTaskManager()
         let commitGate = ReaderCallbackGate()
