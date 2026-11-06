@@ -49,6 +49,19 @@ final class ReadabilityImagesUserScriptTests: XCTestCase {
         assertUnrelatedStyles(styles)
     }
 
+    func test_verticalImageWrapperWithText_preservesParagraphFlow() async throws {
+        let styles = try await runLoad(after: """
+            document.getElementById('wrapper').prepend('Caption text ');
+            document.body.dataset.mnbWritingDirection = 'vertical';
+            window.manabiUpdateReadabilityImageMargins();
+            """)
+        XCTAssertEqual(styles["verticalWrapper"], "false")
+        XCTAssertEqual(styles["borderRadius"], "6px")
+        XCTAssertEqual(styles["width"], "")
+        XCTAssertEqual(styles["maxWidth"], "")
+        assertUnrelatedStyles(styles)
+    }
+
     func test_lateLoadAfterContentResize_usesCurrentContentWidth() async throws {
         let styles = try await runLoad(after: "window.fixtureContentWidth = 400;")
         XCTAssertFalse(try XCTUnwrap(styles["width"]).isEmpty)
@@ -123,11 +136,9 @@ final class ReadabilityImagesUserScriptTests: XCTestCase {
         return try await evaluate("""
             (() => {
                 const image = window.fixtureImage;
-                const pendingLoad = image.onload;
-                if (typeof pendingLoad !== 'function') throw new Error('No pending image load callback');
                 \(transition)
                 window.fixtureLoaded = true;
-                pendingLoad.call(image);
+                image.dispatchEvent(new Event('load'));
                 return {
                     width: image.style.width,
                     maxWidth: image.style.maxWidth,
