@@ -9,6 +9,254 @@ import XCTest
 @testable import LakeOfFireReader
 
 final class AsahiFeedReadabilityPipelineTests: XCTestCase {
+    @MainActor
+    func testRSSMediaImageSelectionUsesURLPathAndPreservesQueryAndFragment() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        let originalHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = originalHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock { await ReaderContentLoader.resetTransientCachesForTesting() }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://example.com/media.rss")!
+        try realm.write { realm.add(feed) }
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+
+        func escapedAttribute(_ value: String) -> String {
+            value.replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "'", with: "&apos;")
+        }
+        let cases: [(media: [String], enclosure: String?, expected: String?)] = [
+            (["https://cdn.example.com/photo.jpg?width=300&token=a%2Fb"], nil,
+             "https://cdn.example.com/photo.jpg?width=300&token=a%2Fb"),
+            (["https://cdn.example.com/photo.PNG#preview"], nil,
+             "https://cdn.example.com/photo.PNG#preview"),
+            (["https://cdn.example.com/clip.mp4?poster=wrong.jpg",
+              "https://cdn.example.com/photo.webp?width=300"], nil,
+             "https://cdn.example.com/photo.webp?width=300"),
+            (["https://cdn.example.com/clip.mp4?poster=wrong.jpg"], nil, nil),
+            (["https://cdn.example.com/clip.mp4#poster.jpg"], nil, nil),
+            (["https://cdn.example.com/photo.jpg?download=clip.mp4"], nil,
+             "https://cdn.example.com/photo.jpg?download=clip.mp4"),
+            (["https://cdn.example.com/media.jpg"], "https://cdn.example.com/enclosure.png?size=2",
+             "https://cdn.example.com/enclosure.png?size=2"),
+            (["https://cdn.example.com/first.gif", "https://cdn.example.com/second.jpeg"], nil,
+             "https://cdn.example.com/first.gif"),
+            (["https://cdn.example.com:invalid/bad.jpg",
+              "https://cdn.example.com/photo.jpeg?quality=90"], nil,
+             "https://cdn.example.com/photo.jpeg?quality=90"),
+        ]
+        for (revision, fixture) in cases.enumerated() {
+            let media = fixture.media.map { "<media:content url='\(escapedAttribute($0))'/>" }
+                .joined()
+            let enclosure = fixture.enclosure.map {
+                "<enclosure url='\(escapedAttribute($0))' type='image/png' length='1'/>"
+            } ?? ""
+            let body = Data("""
+            <rss version='2.0' xmlns:media='http://search.yahoo.com/mrss/'>
+              <channel><title>Feed</title><link>https://example.com/</link><description>Feed</description>
+                <item><guid>https://example.com/article</guid><link>https://example.com/article</link>
+                  <title>Article</title><description>Body</description>\(enclosure)\(media)
+                </item>
+              </channel>
+            </rss>
+            """.utf8)
+            FeedURLProtocol.requestHandler = { _ in
+                (200, ["Content-Type": "application/rss+xml", "ETag": "\"image-\(revision)\""], body)
+            }
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let entries = Array(realm.objects(FeedEntry.self).filter { $0.feedID == feed.id && !$0.isDeleted })
+            XCTAssertEqual(entries.count, 1)
+            let entry = try XCTUnwrap(entries.first)
+            XCTAssertEqual(entry.imageUrl?.absoluteString, fixture.expected, "Media selection case \(revision)")
+            XCTAssertEqual(feed.lastFetchedETag, "\"image-\(revision)\"")
+        }
+    }
+
+    @MainActor
+    func testAtomBaseRecoveryAndParserCompatibilityKeepLinkAssociation() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        let originalHandler = FeedURLProtocol.requestHandler
+        let originalResponseURL = FeedURLProtocol.responseURLOverride
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = originalHandler
+            FeedURLProtocol.responseURLOverride = originalResponseURL
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock { await ReaderContentLoader.resetTransientCachesForTesting() }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://original.example/subscribed.atom")!
+        feed.deleteOrphans = true
+        try realm.write { realm.add(feed) }
+        // This is the final response URL boundary, not a redirect-server test.
+        FeedURLProtocol.responseURLOverride = URL(string: "https://cdn.example/feeds/current.atom")!
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        let cases: [(feedBase: String, entryBase: String, links: String, expectedURL: String)] = [
+            (" xml:base='https://example.com:invalid/'", "",
+             "<link href='relative-without-valid-base'/><link href='https://absolute.example/article%20one?x=a%2Bb#body'/>",
+             "https://absolute.example/article%20one?x=a%2Bb#body"),
+            (" xml:base='https://example.com:invalid/'", " xml:base='https://recovered.example/base/'",
+             "<link href='article'/>", "https://recovered.example/base/article"),
+            (" xml:base='https://base.example/library/'", " xml:base='../ja/'",
+             "<source xml:base='https://unrelated.example/'><link href='wrong'/></source><extension xml:base='https://also-unrelated.example/'><link href='wrong'/></extension><link/><link href='article'/>",
+             "https://base.example/ja/article"),
+            ("", "", "<link href='article'/>", "https://cdn.example/feeds/article"),
+        ]
+        for (revision, fixture) in cases.enumerated() {
+            let body = Data("""
+            <feed xmlns='http://www.w3.org/2005/Atom'\(fixture.feedBase)>
+              <title>Feed</title><id>urn:feed</id><updated>2026-11-06T00:00:00Z</updated>
+              <link rel='alternate' href='https://homepage.example/'/>
+              <entry\(fixture.entryBase)>
+                <id>urn:article:1</id><title>Article</title><updated>2026-11-06T00:00:00Z</updated>
+                \(fixture.links)<summary>Article summary</summary>
+              </entry>
+            </feed>
+            """.utf8) + (revision == 3 ? Data("trailing".utf8) : Data())
+            FeedURLProtocol.requestHandler = { _ in
+                (200, ["Content-Type": "application/atom+xml", "ETag": "\"base-\(revision)\""], body)
+            }
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let entries = Array(realm.objects(FeedEntry.self).filter { $0.feedID == feed.id && !$0.isDeleted })
+            XCTAssertEqual(entries.count, 1)
+            let entry = try XCTUnwrap(entries.first)
+            XCTAssertEqual(entry.url.absoluteString, fixture.expectedURL, "Case \(revision)")
+            XCTAssertEqual(feed.lastFetchedRSSURL, feed.rssUrl,
+                           "Response URL resolution must not change request validator provenance")
+            XCTAssertEqual(feed.lastFetchedETag, "\"base-\(revision)\"")
+        }
+    }
+
+    @MainActor
+    func testAtomRelativeMediaLinksAndEntryOrderSurviveIdenticalBodyRetry() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        let originalHandler = FeedURLProtocol.requestHandler
+        let originalResponseURL = FeedURLProtocol.responseURLOverride
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = originalHandler
+            FeedURLProtocol.responseURLOverride = originalResponseURL
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        addTeardownBlock { await ReaderContentLoader.resetTransientCachesForTesting() }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = URL(string: "https://original.example/feed.atom")!
+        try realm.write { realm.add(feed) }
+        FeedURLProtocol.responseURLOverride = URL(string: "https://cdn.example/feed/current.atom")!
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        let body = Data("""
+        <feed xmlns='http://www.w3.org/2005/Atom' xml:base='../content/'>
+          <title>Feed</title><id>urn:feed</id><updated>2026-11-06T00:00:00Z</updated>
+          <entry xml:base='first/'>
+            <id>urn:first</id><title>First</title><updated>2026-11-06T00:00:00Z</updated>
+            <link/><link href='article'/>
+            <link rel='enclosure' type='image/png' href='cover.png'/>
+            <link rel='voice-frame' href='player'/>
+            <link rel='voice-audio' href='audio.m4a'/>
+            <link rel='voice-audio' xml:base='../shared/' href='extra.m4a'/>
+            <link rel='voice-audio-subtitles' type='text/vtt' href='audio.vtt'/>
+            <link rel='reddit-translations' title='Translation' href='translation'/>
+          </entry>
+          <entry xml:base='second/'><id>urn:second</id><title>Second</title>
+            <updated>2026-11-06T00:00:00Z</updated><link href='article'/>
+          </entry>
+        </feed>
+        """.utf8)
+        FeedURLProtocol.requestHandler = { _ in
+            (200, ["Content-Type": "application/atom+xml"], body)
+        }
+        var identities: [String: (key: String, createdAt: Date)] = [:]
+        for attempt in 0..<2 {
+            try await feed.freeze().fetch(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let entries = Array(realm.objects(FeedEntry.self).filter { $0.feedID == feed.id && !$0.isDeleted })
+            XCTAssertEqual(entries.count, 2)
+            let first = try XCTUnwrap(entries.first { $0.title == "First" })
+            let second = try XCTUnwrap(entries.first { $0.title == "Second" })
+            XCTAssertEqual(first.url.absoluteString, "https://cdn.example/content/first/article")
+            XCTAssertEqual(second.url.absoluteString, "https://cdn.example/content/second/article")
+            XCTAssertEqual(first.imageUrl?.absoluteString, "https://cdn.example/content/first/cover.png")
+            XCTAssertEqual(first.voiceFrameUrl?.absoluteString, "https://cdn.example/content/first/player")
+            XCTAssertEqual(Array(first.voiceAudioURLs).map(\.absoluteString), [
+                "https://cdn.example/content/first/audio.m4a",
+                "https://cdn.example/content/shared/extra.m4a",
+            ])
+            XCTAssertEqual(first.audioSubtitlesURL?.absoluteString, "https://cdn.example/content/first/audio.vtt")
+            XCTAssertEqual(first.redditTranslationsUrl?.absoluteString, "https://cdn.example/content/first/translation")
+            for entry in entries {
+                if attempt == 0 {
+                    identities[entry.title] = (entry.compoundKey, entry.createdAt)
+                } else {
+                    XCTAssertEqual(entry.compoundKey, identities[entry.title]?.key)
+                    XCTAssertEqual(entry.createdAt, identities[entry.title]?.createdAt)
+                }
+            }
+            XCTAssertEqual(realm.objects(FeedEntry.self).count, 2)
+        }
+    }
+
+
 
     @MainActor
     func testAtomRefreshResolvesDocumentAndScopedXMLBasesForEveryLinkConsumer() async throws {
