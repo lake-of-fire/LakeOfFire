@@ -12,6 +12,8 @@ private final class TestURLSchemeTask: NSObject, WKURLSchemeTask {
     private(set) var data = [Data]()
     private(set) var finishCount = 0
     private(set) var failures = [any Swift.Error]()
+    var onResponse: (() -> Void)?
+    var onData: (() -> Void)?
     var onTerminal: (() -> Void)?
 
     init(request: URLRequest) {
@@ -20,10 +22,12 @@ private final class TestURLSchemeTask: NSObject, WKURLSchemeTask {
 
     func didReceive(_ response: URLResponse) {
         responses.append(response)
+        onResponse?()
     }
 
     func didReceive(_ data: Data) {
         self.data.append(data)
+        onData?()
     }
 
     func didFinish() {
@@ -61,6 +65,117 @@ private func requestWithoutURL() -> URLRequest {
 }
 
 final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
+    private func makeDeliveryFontAsset() -> SharedReaderFontAsset {
+        SharedReaderFontAsset(
+            systemFontNames: ["ReaderTest": "ReaderTest"],
+            horizontalFamilyName: "ReaderTest",
+            verticalFamilyName: "ReaderTest"
+        )
+    }
+
+    @MainActor
+    private func assertFontDeliveryStops(
+        handler: any WKURLSchemeHandler,
+        url: URL,
+        afterResponse: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let webView = WKWebView()
+        let task = TestURLSchemeTask(request: URLRequest(url: url))
+        let stopped = expectation(description: "Stopped during font delivery")
+        let stop = {
+            handler.webView(webView, stop: task)
+            stopped.fulfill()
+        }
+        if afterResponse {
+            task.onResponse = stop
+        } else {
+            task.onData = stop
+        }
+
+        handler.webView(webView, start: task)
+        await fulfillment(of: [stopped], timeout: 5)
+        // Delivery runs synchronously on the main actor with no suspension
+        // between its callbacks. Resuming here observes that delivery's end.
+        XCTAssertEqual(task.responses.count, 1, file: file, line: line)
+        XCTAssertEqual((task.responses.first as? HTTPURLResponse)?.statusCode, 200, file: file, line: line)
+        XCTAssertEqual(task.data.count, afterResponse ? 0 : 1, file: file, line: line)
+        if !afterResponse {
+            XCTAssertFalse(task.data.first?.isEmpty ?? true, file: file, line: line)
+        }
+        XCTAssertEqual(task.finishCount, 0, file: file, line: line)
+        XCTAssertTrue(task.failures.isEmpty, file: file, line: line)
+        task.onResponse = nil
+        task.onData = nil
+    }
+
+    @MainActor
+    func testReaderFileHandlerStopsAfterResponseCallback() async throws {
+        let handler = ReaderFileURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "reader-file://file/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: true
+        )
+    }
+
+    @MainActor
+    func testReaderFileHandlerStopsAfterDataCallback() async throws {
+        let handler = ReaderFileURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "reader-file://file/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: false
+        )
+    }
+
+    @MainActor
+    func testEbookHandlerStopsAfterResponseCallback() async throws {
+        let handler = EbookURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "ebook://ebook/load/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: true
+        )
+    }
+
+    @MainActor
+    func testEbookHandlerStopsAfterDataCallback() async throws {
+        let handler = EbookURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "ebook://ebook/load/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: false
+        )
+    }
+
+    @MainActor
+    func testInternalHandlerStopsAfterResponseCallback() async throws {
+        let handler = InternalURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "internal://local/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: true
+        )
+    }
+
+    @MainActor
+    func testInternalHandlerStopsAfterDataCallback() async throws {
+        let handler = InternalURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "internal://local/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: false
+        )
+    }
+
     @MainActor
     func testInternalReaderLoaderRejectsMalformedOrAmbiguousSource() throws {
         let handler = InternalURLSchemeHandler()
@@ -145,8 +260,10 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
         let task = NSObject()
 
         ownership.begin(task)
+        XCTAssertTrue(ownership.isActive(task))
 
         XCTAssertTrue(ownership.cancel(task))
+        XCTAssertFalse(ownership.isActive(task))
         XCTAssertFalse(ownership.claimCompletion(task))
     }
 
@@ -157,6 +274,7 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
         ownership.begin(task)
 
         XCTAssertTrue(ownership.claimCompletion(task))
+        XCTAssertFalse(ownership.isActive(task))
         XCTAssertFalse(ownership.claimCompletion(task))
         XCTAssertFalse(ownership.cancel(task))
     }

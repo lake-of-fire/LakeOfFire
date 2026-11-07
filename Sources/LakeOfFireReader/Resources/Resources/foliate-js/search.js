@@ -96,16 +96,22 @@ const segmentedCandidates = function* (text, query, segments, queryLength, colla
 const foldedCandidates = function* (text, query, graphemes, collator, boundaries) {
     const locale = collator.resolvedOptions().locale
     const ignoresMarks = ['base', 'case'].includes(collator.resolvedOptions().sensitivity)
+    // Locale digraphs must be expanded before marks are removed. Admit only
+    // equivalences supported by this search's actual collation settings.
+    const expansions = [['A\u030A', 'AA'], ['A\u0308', 'AE'], ['O\u0308', 'OE'], ['U\u0308', 'UE']]
+        .filter(([source, target]) => collator.compare(source, target) === 0
+            || collator.compare(source.toLocaleLowerCase(locale), target.toLocaleLowerCase(locale)) === 0)
     // A chapter repeats most graphemes. Keep locale casing/decomposition
     // bounded by distinct graphemes, with no cache surviving this search.
     const foldedSegments = new Map()
     const fold = segment => {
         if (foldedSegments.has(segment)) return foldedSegments.get(segment)
-        const value = segment.normalize('NFKD').toLocaleLowerCase(locale)
+        let value = segment.normalize('NFKD').toLocaleLowerCase(locale)
             .toLocaleUpperCase(locale).normalize('NFKD')
-            // These collation expansions have no Unicode decomposition.
-            // Original spans and the final collator still decide each match.
-            .replace(/Æ/g, 'AE').replace(/Œ/g, 'OE')
+        for (const [source, target] of expansions) value = value.replaceAll(source, target)
+        // These collation expansions have no Unicode decomposition.
+        // Original spans and the final collator still decide each match.
+        value = value.replace(/Æ/g, 'AE').replace(/Œ/g, 'OE')
         const folded = ignoresMarks ? value.replace(/\p{Mark}/gu, '') : value
         foldedSegments.set(segment, folded)
         return folded

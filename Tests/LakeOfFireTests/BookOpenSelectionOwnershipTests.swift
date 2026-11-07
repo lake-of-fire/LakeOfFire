@@ -1,5 +1,7 @@
 import XCTest
 import Foundation
+import SwiftUIDownloads
+@testable import LakeOfFireContent
 @testable import LakeOfFireOPDS
 @testable import LakeOfFireReader
 
@@ -28,6 +30,119 @@ private actor BookOpenSelectionGate {
 }
 
 final class BookOpenSelectionOwnershipTests: XCTestCase {
+    @MainActor
+    func testCatalogRepairsUnreceiptedExistingBytesBeforeImmediateImport() async throws {
+        try await withCatalogDownload { download, controller, payload in
+            try Data("unadmitted retained bytes".utf8).write(to: download.localDestination)
+            let exists = await download.existsLocally()
+            let readyBeforeRepair = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(exists)
+            XCTAssertFalse(readyBeforeRepair)
+
+            await controller.ensureDownloaded(download: download)
+
+            let readyAfterRepair = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(download.isFinishedProcessing)
+            XCTAssertFalse(download.isFailed)
+            XCTAssertTrue(readyAfterRepair)
+            XCTAssertEqual(try Data(contentsOf: download.localDestination), payload)
+        }
+    }
+
+    @MainActor
+    func testCatalogRepairsReplacedInstalledBytesInsteadOfTrustingPathPresence() async throws {
+        try await withCatalogDownload { download, controller, payload in
+            await controller.ensureDownloaded(download: download)
+            let initiallyReady = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(initiallyReady, "The real controller must install and certify the fixture first")
+
+            try Data("replacement bytes".utf8).write(to: download.localDestination, options: .atomic)
+            let exists = await download.existsLocally()
+            let readyBeforeRepair = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(exists)
+            XCTAssertFalse(readyBeforeRepair)
+
+            await controller.ensureDownloaded(download: download)
+
+            let readyAfterRepair = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(readyAfterRepair)
+            XCTAssertEqual(try Data(contentsOf: download.localDestination), payload)
+        }
+    }
+
+    @MainActor
+    func testCatalogFailedTransferKeepsRetainedReceiptRetryable() async throws {
+        try await withCatalogDownload { download, controller, payload in
+            await controller.ensureDownloaded(download: download)
+            let initiallyReady = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(initiallyReady)
+            try FileManager.default.removeItem(at: download.url)
+
+            // A real failed replacement retains the preceding installed file.
+            await controller.download(download)
+            let verifiedAfterFailure = await download.hasVerifiedInstalledArtifact()
+            let readyAfterFailure = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertTrue(download.isFailed)
+            XCTAssertTrue(verifiedAfterFailure)
+            XCTAssertFalse(readyAfterFailure)
+
+            try payload.write(to: download.url)
+            await controller.ensureDownloaded(download: download)
+
+            let readyAfterRetry = await ReaderFileManager.isDownloadReadyForImport(download)
+            XCTAssertFalse(download.isFailed)
+            XCTAssertTrue(readyAfterRetry)
+        }
+    }
+
+    @MainActor
+    func testCatalogCompressedCandidateIsNotAnImmediatelyImportableFile() async throws {
+        try await withCatalogDownload { download, _, _ in
+            let compressed = Downloadable(
+                url: download.url.appendingPathExtension("br"),
+                name: "Compressed catalog book",
+                localDestination: download.localDestination,
+                metadataStore: download.metadataStore
+            )
+            try Data("retained compressed candidate".utf8).write(to: compressed.compressedFileURL)
+            let exists = await compressed.existsLocally()
+            let ready = await ReaderFileManager.isDownloadReadyForImport(compressed)
+            XCTAssertTrue(exists)
+            XCTAssertFalse(ready)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: compressed.localDestination.path))
+        }
+    }
+
+    @MainActor
+    private func withCatalogDownload(
+        verify: @MainActor (Downloadable, DownloadController, Data) async throws -> Void
+    ) async throws {
+        let identifier = "catalog-download-" + UUID().uuidString
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(identifier, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: identifier))
+        let session = URLSession(configuration: .ephemeral)
+        defer {
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: identifier)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let payload = Data("original catalog download bytes".utf8)
+        let source = root.appendingPathComponent("source.epub")
+        try payload.write(to: source)
+        let download = Downloadable(
+            url: source,
+            name: "Catalog book",
+            localDestination: root.appendingPathComponent("installed.epub"),
+            metadataStore: UserDefaultsDownloadableMetadataStore(
+                userDefaults: defaults, metadataCacheNamespace: identifier
+            )
+        )
+        download.shouldCheckForUpdates = false
+        let controller = DownloadController(session: session)
+        try await verify(download, controller, payload)
+    }
+
     @MainActor
     func testOPDS2RelationlessImagesUseDocumentOrderAndFinalDocumentBase() throws {
         let document = try catalogDocument(#"""

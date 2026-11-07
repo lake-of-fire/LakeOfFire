@@ -4,6 +4,95 @@ import { search } from '../../Sources/LakeOfFireReader/Resources/Resources/folia
 
 const matches = (parts, query, options = {}) => Array.from(search(parts, query, options))
 
+for (const [locales, text, query, start, end] of [
+    ['da', 'blåbær', 'aa', 2, 3],
+    ['da', 'blaabaer', 'å', 2, 4],
+    ['da', '😀blåbær', 'aa', 4, 5],
+    ['nb', 'blåbær', 'aa', 2, 3],
+    ['nb', 'blaabaer', 'å', 2, 4],
+    ['de-u-co-phonebk', 'schön', 'oe', 3, 4],
+    ['de-u-co-phonebk', 'schoen', 'ö', 3, 5],
+    ['de-u-co-phonebk', 'über', 'ue', 0, 1],
+    ['de-u-co-phonebk', 'ueber', 'ü', 0, 2],
+    ['de-u-co-phonebk', 'hätte', 'ae', 1, 2],
+    ['de-u-co-phonebk', 'haette', 'ä', 1, 3],
+    ['de-u-co-phonebk', '😀schön', 'oe', 5, 6],
+    ['de-u-co-phonebk', 'Äbc', 'Ae', 0, 1],
+    ['de-u-co-phonebk', 'Aebc', 'Ä', 0, 2],
+    ['de-u-co-phonebk', 'Öl', 'Oe', 0, 1],
+    ['de-u-co-phonebk', 'Oel', 'Ö', 0, 2],
+    ['de-u-co-phonebk', 'Über', 'Ue', 0, 1],
+    ['de-u-co-phonebk', 'Ueber', 'Ü', 0, 2],
+]) {
+    for (const sensitivity of ['base', 'case']) {
+        test('locale expansion substring preserves its span: ' + locales + '/' + sensitivity + ' ' + text + '/' + query, () => {
+            assert.equal(new Intl.Collator(locales, { sensitivity }).compare(text.slice(start, end), query), 0)
+            const results = matches([text], query, { locales, sensitivity })
+            assert.deepEqual(results.map(({ range }) => range), [
+                { startIndex: 0, startOffset: start, endIndex: 0, endOffset: end },
+            ])
+            assert.equal(results[0].excerpt.match, text.slice(start, end))
+        })
+    }
+}
+
+for (const [parts, query, locales, expected] of [
+    [['😀bl', 'a', '\u030A', 'bær'], 'aa', 'da',
+        { startIndex: 1, startOffset: 0, endIndex: 2, endOffset: 1 }],
+    [['😀bl', 'a', 'a', 'bær'], 'a\u030A', 'da',
+        { startIndex: 1, startOffset: 0, endIndex: 2, endOffset: 1 }],
+    [['😀sch', 'o', '\u0308', 'n'], 'oe', 'de-u-co-phonebk',
+        { startIndex: 1, startOffset: 0, endIndex: 2, endOffset: 1 }],
+    [['😀sch', 'o', 'e', 'n'], 'o\u0308', 'de-u-co-phonebk',
+        { startIndex: 1, startOffset: 0, endIndex: 2, endOffset: 1 }],
+]) {
+    test('locale expansion keeps split graphemes and UTF-16 offsets: ' + parts.join('') + '/' + query, () => {
+        assert.deepEqual(matches(parts, query, { locales, sensitivity: 'base' }).map(({ range }) => range), [expected])
+    })
+}
+
+test('locale expansion candidates remain ordered and unique with whole-word candidates', () => {
+    const options = { locales: 'da', sensitivity: 'base' }
+    assert.deepEqual(matches(['xåx å aa'], 'aa', options).map(({ range }) => range), [
+        { startIndex: 0, startOffset: 1, endIndex: 0, endOffset: 2 },
+        { startIndex: 0, startOffset: 4, endIndex: 0, endOffset: 5 },
+        { startIndex: 0, startOffset: 6, endIndex: 0, endOffset: 8 },
+    ])
+    assert.deepEqual(matches(['xåx å aa'], 'aa', { ...options, granularity: 'word' }).map(({ range }) => range), [
+        { startIndex: 0, startOffset: 4, endIndex: 0, endOffset: 5 },
+        { startIndex: 0, startOffset: 6, endIndex: 0, endOffset: 8 },
+    ])
+})
+
+test('Danish accent collation still admits its ring expansion', () => {
+    const options = { locales: 'da', sensitivity: 'accent' }
+    assert.equal(new Intl.Collator(options.locales, options).compare('å', 'aa'), 0)
+    assert.deepEqual(matches(['blåbær'], 'aa', options).map(({ range }) => range), [
+        { startIndex: 0, startOffset: 2, endIndex: 0, endOffset: 3 },
+    ])
+})
+
+for (const [text, query, locales, sensitivity] of [
+    ['xåx', 'a', 'da', 'base'],
+    ['xäx', 'a', 'de-u-co-phonebk', 'base'],
+    ['xäx', 'e', 'de-u-co-phonebk', 'base'],
+    ['xöx', 'o', 'de-u-co-phonebk', 'base'],
+    ['xüx', 'u', 'de-u-co-phonebk', 'base'],
+    ['xåx', 'aa', 'en', 'base'],
+    ['xäx', 'ae', 'de', 'base'],
+    ['xåx', 'aa', 'nb', 'accent'],
+    ['xäx', 'ae', 'de-u-co-phonebk', 'accent'],
+    ['xÅx', 'aa', 'da', 'case'],
+    ['xÄx', 'ae', 'de-u-co-phonebk', 'case'],
+    ['xÄx', 'AE', 'de-u-co-phonebk', 'case'],
+    ['xåx', 'aa', 'da', 'variant'],
+]) {
+    test('locale expansion retains partial, locale, case and accent rejection: ' + locales + '/' + sensitivity + ' ' + text + '/' + query, () => {
+        assert.notEqual(new Intl.Collator(locales, { sensitivity }).compare(text.slice(1, -1), query), 0)
+        assert.deepEqual(matches([text], query, { locales, sensitivity }), [])
+    })
+}
+
 test('search keeps the full excerpt when a match spans several text nodes', () => {
     assert.deepEqual(matches(['前文猫', 'と', '犬後文'], '猫と犬'), [{
         range: { startIndex: 0, startOffset: 2, endIndex: 2, endOffset: 1 },
