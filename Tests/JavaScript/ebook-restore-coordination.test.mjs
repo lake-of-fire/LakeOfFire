@@ -348,6 +348,88 @@ test('missing or rejected locators use one fraction fallback', async () => {
     }
 })
 
+test('renderer and resolved view locator success receipts preserve the saved locator', async () => {
+    for (const receipt of [true, { index: 0, anchor: () => 0 }]) {
+        let fractionCalls = 0
+        assert.equal(await runLocatorWithFractionFallback({
+            navigateLocator: async () => receipt,
+            navigateFraction: async () => { fractionCalls += 1; return true },
+            isCurrent: () => true,
+        }), true)
+        assert.equal(fractionCalls, 0)
+    }
+})
+
+test('a busy locator attempt uses at most one fraction fallback and keeps its failure', async () => {
+    for (const fallbackReceipt of [true, false, { ignored: true, reason: 'rendererNavigationInFlight' }]) {
+        let fractionCalls = 0
+        assert.equal(await runLocatorWithFractionFallback({
+            navigateLocator: async () => ({ ignored: true, reason: 'rendererNavigationInFlight' }),
+            navigateFraction: async () => { fractionCalls += 1; return fallbackReceipt },
+            isCurrent: () => true,
+        }), fallbackReceipt === true)
+        assert.equal(fractionCalls, 1)
+    }
+})
+
+test('a busy locator attempt without a fraction fallback fails restoration', async () => {
+    await assert.rejects(runLocatorWithFractionFallback({
+        navigateLocator: async () => ({ ignored: true, reason: 'rendererNavigationInFlight' }),
+        navigateFraction: null,
+        isCurrent: () => true,
+    }), /Saved locator was not accepted/)
+})
+
+test('a successful locator completion cannot satisfy a superseded restore', async () => {
+    for (const receipt of [true, { index: 0, anchor: () => 0 }]) {
+        let current = true
+        let fractionCalls = 0
+        await assert.rejects(runLocatorWithFractionFallback({
+            navigateLocator: async () => { current = false; return receipt },
+            navigateFraction: async () => { fractionCalls += 1; return true },
+            isCurrent: () => current,
+        }), isRestoreTransactionSupersededError)
+        assert.equal(fractionCalls, 0)
+    }
+})
+
+test('renderer ownership loss cannot start a fraction fallback even while the restore is current', async () => {
+    for (const receipt of [
+        { ignored: true, reason: 'rendererNavigationSuperseded' },
+        { ignored: true, superseded: true, reason: 'fixedLayoutNavigationSuperseded' },
+        { ignored: true, reason: 'rendererDestroyed' },
+    ]) {
+        let fractionCalls = 0
+        await assert.rejects(runLocatorWithFractionFallback({
+            navigateLocator: async () => receipt,
+            navigateFraction: async () => { fractionCalls += 1; return true },
+            isCurrent: () => true,
+        }), isRestoreTransactionSupersededError)
+        assert.equal(fractionCalls, 0)
+    }
+})
+
+test('fallback callbacks cannot launch navigation after retiring their restore', async () => {
+    let current = true
+    let fractionCalls = 0
+    await assert.rejects(runLocatorWithFractionFallback({
+        navigateLocator: async () => ({ ignored: true, reason: 'rendererNavigationInFlight' }),
+        navigateFraction: async () => { fractionCalls += 1; return true },
+        onFallback: () => { current = false },
+        isCurrent: () => current,
+    }), isRestoreTransactionSupersededError)
+    assert.equal(fractionCalls, 0)
+})
+
+test('a successful fraction fallback cannot satisfy a superseded restore', async () => {
+    let current = true
+    await assert.rejects(runLocatorWithFractionFallback({
+        navigateLocator: async () => false,
+        navigateFraction: async () => { current = false; return true },
+        isCurrent: () => current,
+    }), isRestoreTransactionSupersededError)
+})
+
 test('superseded locator completion cannot start a fallback navigation', async () => {
     let fractionCalls = 0
     await assert.rejects(runLocatorWithFractionFallback({

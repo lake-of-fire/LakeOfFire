@@ -160,6 +160,7 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
         var languages: [String] = []
         var subjects: [Subject] = []
         var authors: [Contributor] = []
+        var sourceAuthors: [Contributor] = []
         var publishers: [Contributor] = []
         var description: String?
         var links: [LinkRecord] = []
@@ -169,7 +170,7 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
     private var parserError: Error?
 
     var rootKind: RootKind = .unknown
-    private enum Role { case feed, entry, author, other }
+    private enum Role { case feed, entry, source, author, other }
     private struct Element {
         let name: String
         let namespace: String
@@ -195,6 +196,7 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
     private var feedTotalResults: Int?
     private var feedItemsPerPage: Int?
     private var feedLinks: [LinkRecord] = []
+    private var feedAuthors: [Contributor] = []
     private var entryRecords: [EntryRecord] = []
     private var currentEntry: EntryRecord?
     private var currentAuthorName: String?
@@ -280,6 +282,11 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
             return nil
         }
 
+        // Atom 4.2.1: an entry author wins over its source's authors,
+        // which win over the containing feed's authors. Feed-level authors
+        // may appear after entries, so resolve only after parsing the feed.
+        let effectiveAuthors = !entry.authors.isEmpty ? entry.authors
+            : !entry.sourceAuthors.isEmpty ? entry.sourceAuthors : feedAuthors
         let metadata = Metadata(
             identifier: entry.identifier,
             title: title,
@@ -287,7 +294,7 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
             published: entry.published,
             languages: Array(Set(entry.languages)).sorted(),
             subjects: entry.subjects,
-            authors: entry.authors,
+            authors: effectiveAuthors,
             publishers: entry.publishers,
             description: entry.description
         )
@@ -440,7 +447,10 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
                   stack.isEmpty || parent?.role == .feed {
             role = .entry
             currentEntry = EntryRecord()
-        } else if isAtom(namespace), elementName == "author", parent?.role == .entry {
+        } else if isAtom(namespace), elementName == "source", parent?.role == .entry {
+            role = .source
+        } else if isAtom(namespace), elementName == "author",
+                  parent?.role == .entry || parent?.role == .source || parent?.role == .feed {
             role = .author
             currentAuthorName = nil
             currentAuthorURI = nil
@@ -532,7 +542,13 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
 
         if element.role == .author {
             if let name = currentAuthorName {
-                currentEntry?.authors.append(Contributor(name: name, identifier: currentAuthorURI))
+                let author = Contributor(name: name, identifier: currentAuthorURI)
+                switch parent?.role {
+                case .entry: currentEntry?.authors.append(author)
+                case .source: currentEntry?.sourceAuthors.append(author)
+                case .feed: feedAuthors.append(author)
+                default: break
+                }
             }
             currentAuthorName = nil
             currentAuthorURI = nil

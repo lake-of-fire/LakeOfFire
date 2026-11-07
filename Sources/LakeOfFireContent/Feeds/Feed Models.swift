@@ -276,6 +276,8 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var lastViewedAt: Date?
     @Persisted public var lastSeenFeedEntriesAt: Date?
     @Persisted public var lastRefreshedEntriesAt: Date?
+    /// URL of this device's settled refresh; legacy metadata has no provenance.
+    @Persisted public var lastFetchedRSSURL: URL?
     @Persisted public var lastFetchedETag: String?
     @Persisted public var lastFetchedModifiedAt: Date?
     @Persisted public var showsUnseenBadge = true
@@ -324,6 +326,9 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         try container.encode(ordinal, forKey: .ordinal)
         try container.encode(markdownDescription, forKey: .markdownDescription)
         try container.encode(rssUrl, forKey: .rssUrl)
+        try container.encode(iconUrl, forKey: .iconUrl)
+        try container.encode(rssContainsFullContent, forKey: .rssContainsFullContent)
+        try container.encode(extractImageFromContent, forKey: .extractImageFromContent)
         try container.encode(isReaderModeByDefault, forKey: .isReaderModeByDefault)
         try container.encode(injectEntryImageIntoHeader, forKey: .injectEntryImageIntoHeader)
         try container.encode(displayPublicationDate, forKey: .displayPublicationDate)
@@ -347,6 +352,11 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         self.ordinal = try container.decodeIfPresent(Int.self, forKey: .ordinal)
         self.markdownDescription = try container.decodeIfPresent(String.self, forKey: .markdownDescription)
         self.rssUrl = try container.decode(URL.self, forKey: .rssUrl)
+        if let iconURL = try container.decodeIfPresent(URL.self, forKey: .iconUrl) {
+            self.iconUrl = iconURL
+        }
+        self.rssContainsFullContent = try container.decodeIfPresent(Bool.self, forKey: .rssContainsFullContent) ?? false
+        self.extractImageFromContent = try container.decodeIfPresent(Bool.self, forKey: .extractImageFromContent) ?? true
         self.isReaderModeByDefault = try container.decode(Bool.self, forKey: .isReaderModeByDefault)
         self.injectEntryImageIntoHeader = try container.decode(Bool.self, forKey: .injectEntryImageIntoHeader)
         self.displayPublicationDate = try container.decode(Bool.self, forKey: .displayPublicationDate)
@@ -407,6 +417,7 @@ extension Feed: SyncSkippablePropertiesModel {
             "lastViewedAt",
             "lastSeenFeedEntriesAt",
             "lastRefreshedEntriesAt",
+            "lastFetchedRSSURL",
             "lastFetchedETag",
             "lastFetchedModifiedAt",
         ]
@@ -1120,7 +1131,8 @@ fileprivate extension FeedEntry {
                 imageUrlOptional = try doc.getElementsByTag("iframe").compactMap({ iframeTag -> String? in
                     if let src = try? iframeTag.attr("src"),
                        src.hasPrefix("https://www.youtube.com"),
-                       let youtubeId = src.split(separator: "/").last {
+                       let components = URLComponents(string: src),
+                       let youtubeId = components.percentEncodedPath.split(separator: "/").last {
                         return "https://img.youtube.com/vi/\(youtubeId)/0.jpg"
                     }
                     return nil
@@ -1166,7 +1178,121 @@ fileprivate struct FeedFetchMetadata {
 
 fileprivate enum FeedFetchResult {
     case notModified(metadata: FeedFetchMetadata)
-    case fetched(Data, metadata: FeedFetchMetadata)
+    case fetched(Data, documentURL: URL, metadata: FeedFetchMetadata)
+}
+
+
+fileprivate struct ParsedAtomLink {
+    let href: String?
+    let resolvedHref: String?
+}
+
+/// FeedKit 9 retains href attributes but discards xml:base. Keep resolution in
+/// the document's XML scope, before any link relation is consumed by persistence.
+fileprivate final class AtomLinkBaseParser: NSObject, XMLParserDelegate {
+    private struct Element {
+        let name: String
+        let baseURL: URL?
+    }
+
+    private let documentURL: URL
+    private var elements: [Element] = []
+    private(set) var entryLinks: [[ParsedAtomLink]] = []
+    private(set) var completedFeed = false
+
+    init(documentURL: URL) {
+        self.documentURL = documentURL
+    }
+
+    private func matchesFeedKit(_ element: Element, named name: String) -> Bool {
+        // FeedKit 9 maps raw /feed/entry/link paths with namespace processing off.
+        // Match that association exactly, including namespace-less legacy feeds.
+        element.name == name
+    }
+
+    private static func resolve(_ reference: String, relativeTo baseURL: URL?) -> URL? {
+        let url = URL(string: reference, relativeTo: baseURL)
+            ?? reference.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
+                .flatMap { URL(string: $0, relativeTo: baseURL) }
+        guard let url, url.scheme != nil else { return nil }
+        return url.absoluteURL
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributes: [String: String] = [:]
+    ) {
+        let inheritedBase = elements.isEmpty ? documentURL : elements.last?.baseURL
+        let baseURL: URL?
+        if let reference = attributes["xml:base"] {
+            baseURL = Self.resolve(reference, relativeTo: inheritedBase)
+        } else {
+            baseURL = inheritedBase
+        }
+        let element = Element(name: elementName, baseURL: baseURL)
+        elements.append(element)
+        guard let root = elements.first, matchesFeedKit(root, named: "feed") else { return }
+
+        if elements.count == 2, matchesFeedKit(element, named: "entry") {
+            entryLinks.append([])
+        } else if elements.count == 3,
+                  matchesFeedKit(elements[1], named: "entry"),
+                  matchesFeedKit(element, named: "link"),
+                  !entryLinks.isEmpty {
+            let href = attributes["href"]
+            entryLinks[entryLinks.count - 1].append(
+                ParsedAtomLink(
+                    href: href,
+                    resolvedHref: href.flatMap { Self.resolve($0, relativeTo: baseURL)?.absoluteString }
+                )
+            )
+        }
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
+        if elements.count == 1, let root = elements.first, matchesFeedKit(root, named: "feed") {
+            completedFeed = true
+            // Match FeedKit's supported trailing-junk behavior after a complete feed.
+            parser.abortParsing()
+        }
+        elements.removeLast()
+    }
+}
+
+fileprivate func resolveAtomEntryLinks(
+    _ entries: [AtomFeedEntry], from data: Data, documentURL: URL
+) throws {
+    let delegate = AtomLinkBaseParser(documentURL: documentURL)
+    let parser = XMLParser(data: data)
+    parser.shouldProcessNamespaces = false
+    // External entity resolution remains disabled (XMLParser's default).
+    parser.delegate = delegate
+    _ = parser.parse()
+    guard delegate.completedFeed, delegate.entryLinks.count == entries.count else {
+        throw FeedError.parserFailed
+    }
+    // Validate the entire association before changing any FeedKit model. A parser
+    // disagreement must never attach one entry's base to a different entry/link.
+    for (entry, links) in zip(entries, delegate.entryLinks) {
+        let parsedLinks = entry.links ?? []
+        guard parsedLinks.count == links.count,
+              zip(parsedLinks, links).allSatisfy({ $0.0.attributes?.href == $0.1.href }) else {
+            throw FeedError.parserFailed
+        }
+    }
+    for (entry, links) in zip(entries, delegate.entryLinks) {
+        for (link, resolved) in zip(entry.links ?? [], links) {
+            link.attributes?.href = resolved.resolvedHref
+        }
+    }
 }
 
 fileprivate struct ParsedFeedEntryCollection {
@@ -1444,7 +1570,7 @@ fileprivate func getRssData(
         }
         throw FeedError.downloadFailed
     case 200..<300:
-        return .fetched(data, metadata: getMetadata)
+        return .fetched(data, documentURL: getHTTPResponse.url ?? rssUrl, metadata: getMetadata)
     case 300..<400:
         if shouldLogNiponica {
             logNiponica("stage=feedFetch.http.error rssURL=\(rssUrl.absoluteString) phase=get status=\(getHTTPResponse.statusCode) reason=unhandledRedirect")
@@ -1512,24 +1638,46 @@ final class FeedRefreshRegistry: @unchecked Sendable {
 }
 
 public extension Feed {
+    /// Call in the transaction that changes the URL or partially commits feed content.
+    func retireFetchMetadata() {
+        lastFetchedRSSURL = nil
+        lastFetchedETag = nil
+        lastFetchedModifiedAt = nil
+        lastRefreshedEntriesAt = nil
+    }
+
     @MainActor
+    @discardableResult
     private func persistFetchMetadata(
         _ metadata: FeedFetchMetadata,
+        replacesValidators: Bool = false,
+        expectedValidators: FeedFetchMetadata? = nil,
         expectedRSSURL: URL,
         refreshLease: FeedRefreshLease,
         realmConfiguration: Realm.Configuration
-    ) async throws {
+    ) async throws -> Bool {
         let feedID = id
-        try await { @RealmBackgroundActor in
+        return try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             await realm.asyncRefresh()
-            try await realm.asyncWritePreservingOwnership {
+            return try await realm.asyncWritePreservingOwnership {
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
                       feed.rssUrl == expectedRSSURL,
-                      FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return }
+                      FeedRefreshRegistry.shared.isCurrent(refreshLease) else { throw CancellationError() }
+                if let expectedValidators {
+                    guard feed.lastFetchedRSSURL == expectedRSSURL,
+                          expectedValidators.etag?.isEmpty == false || expectedValidators.lastModifiedAt != nil,
+                          feed.lastFetchedETag == expectedValidators.etag,
+                          feed.lastFetchedModifiedAt == expectedValidators.lastModifiedAt,
+                          !realm.objects(FeedEntry.self).where({ $0.feedID == feedID && !$0.isDeleted }).isEmpty else {
+                        return false
+                    }
+                }
+                feed.lastFetchedRSSURL = expectedRSSURL
                 feed.lastRefreshedEntriesAt = Date()
-                feed.lastFetchedETag = metadata.etag ?? feed.lastFetchedETag
-                feed.lastFetchedModifiedAt = metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
+                feed.lastFetchedETag = replacesValidators ? metadata.etag : metadata.etag ?? feed.lastFetchedETag
+                feed.lastFetchedModifiedAt = replacesValidators ? metadata.lastModifiedAt : metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
+                return true
             }
         }()
     }
@@ -1573,11 +1721,12 @@ public extension Feed {
 //                } else if let rawImageURL = item.media?.contents?
 //                    .lazy.compactMap({ $0.attributes?.url })
 //                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
-                } else if let rawImageURL = item.media?.mediaContents?
+                } else if let mediaImageURL = item.media?.mediaContents?
                     .lazy.compactMap({ $0.attributes?.url })
-                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
+                    .compactMap({ URL(string: $0) })
+                    .first(where: { entryImageExtensions.contains($0.pathExtension.lowercased()) })
                 {
-                    imageUrl = URL(string: rawImageURL)
+                    imageUrl = mediaImageURL
                 }
                 let content = item.content?.contentEncoded ?? item.description
                 let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
@@ -1624,15 +1773,19 @@ public extension Feed {
                 return feedEntry
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
-            let payloads = entriesToPersist.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
-            var didCommit = false
-            if deleteOrphans || !entriesToPersist.isEmpty {
+            // A prior attempt may have committed these entries but failed to mirror them.
+            // Replay the fetched body through the idempotent mirror writer, independently
+            // of the entry diff; only changed entries are written to the feed Realm.
+            let payloads = feedEntries.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
+            let didCommit: Bool
+            do {
                 await realm.asyncRefresh()
                 didCommit = try await realm.asyncWritePreservingOwnership {
                     guard realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl == expectedRSSURL else {
                         return false
                     }
                     guard FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return false }
+                    realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.retireFetchMetadata()
                     let orphans = realm.objects(FeedEntry.self)
                         .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                     if deleteOrphans {
@@ -1651,7 +1804,10 @@ public extension Feed {
                 }
             }
             for payload in didCommit ? payloads : [] {
-                try await syncRelatedReaderContent(with: payload)
+                try await syncRelatedReaderContent(
+                    with: payload, sourceRealm: realm, expectedRSSURL: expectedRSSURL,
+                    refreshLease: refreshLease
+                )
             }
         }()
     }
@@ -1707,6 +1863,7 @@ public extension Feed {
             var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
                 var url: URL?
+                var htmlURL: URL?
                 var imageUrl: URL?
                 item.links?.forEach { (link: AtomFeedEntryLink) in
                     guard let linkHref = link.attributes?.href,
@@ -1716,11 +1873,19 @@ public extension Feed {
                     
                     if (link.attributes?.rel ?? "alternate") == "alternate" {
                         url = linkURL
+                        let mediaType = link.attributes?.type?
+                            .split(separator: ";", maxSplits: 1).first?
+                            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        if htmlURL == nil, mediaType == "text/html" || mediaType == "application/xhtml+xml" {
+                            htmlURL = linkURL
+                        }
                     } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
                         imageUrl = linkURL
                     }
                 }
-                guard let url = url else { return nil }
+                // An entry may advertise PDF or feed representations after its
+                // web article. Their order must not replace the readable identity.
+                guard let url = htmlURL ?? url else { return nil }
                 
                 var voiceFrameUrl: URL? = nil
                 if let rawVoiceFrameUrl = item.links?
@@ -1819,15 +1984,19 @@ public extension Feed {
                 return feedEntry
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
-            let payloads = entriesToPersist.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
-            var didCommit = false
-            if !entriesToPersist.isEmpty || !collectionObjects.isEmpty || deleteOrphans {
+            // A prior attempt may have committed these entries but failed to mirror them.
+            // Replay the fetched body through the idempotent mirror writer, independently
+            // of the entry diff; only changed entries are written to the feed Realm.
+            let payloads = feedEntries.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
+            let didCommit: Bool
+            do {
                 await realm.asyncRefresh()
                 didCommit = try await realm.asyncWritePreservingOwnership {
                     guard realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl == expectedRSSURL else {
                         return false
                     }
                     guard FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return false }
+                    realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.retireFetchMetadata()
                     for collection in collectionObjects {
                         if let existing = realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collection.compoundKey) {
                             collection.createdAt = existing.createdAt
@@ -1858,7 +2027,10 @@ public extension Feed {
                 }
             }
             for payload in didCommit ? payloads : [] {
-                try await syncRelatedReaderContent(with: payload)
+                try await syncRelatedReaderContent(
+                    with: payload, sourceRealm: realm, expectedRSSURL: expectedRSSURL,
+                    refreshLease: refreshLease
+                )
             }
         }()
     }
@@ -1883,12 +2055,18 @@ public extension Feed {
                 "stage=feed.fetch.begin feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) lastViewedAt=\(lastViewedAt?.description ?? "nil") lastRefreshedEntriesAt=\(lastRefreshedEntriesAt?.description ?? "nil") lastFetchedModifiedAt=\(lastFetchedModifiedAt?.description ?? "nil") lastFetchedETag=\(lastFetchedETag ?? "nil")"
             )
         }
+        let hasMatchingFetchURL = lastFetchedRSSURL == requestedRSSURL
+        let requestedValidators = FeedFetchMetadata(
+            etag: hasMatchingFetchURL ? lastFetchedETag : nil,
+            lastModifiedAt: hasMatchingFetchURL ? lastFetchedModifiedAt : nil
+        )
         var fetchResult: FeedFetchResult
         do {
             fetchResult = try await getRssData(
                 rssUrl: requestedRSSURL,
-                lastFetchedETag: lastFetchedETag,
-                lastFetchedModifiedAt: lastFetchedModifiedAt
+                lastFetchedETag: requestedValidators.etag,
+                lastFetchedModifiedAt: requestedValidators.lastModifiedAt,
+                allowNotModified: hasMatchingFetchURL
             )
         } catch {
             if shouldLogNiponica {
@@ -1899,8 +2077,12 @@ public extension Feed {
             throw error
         }
         try checkRequestIsCurrent()
-        if case .notModified = fetchResult,
-           getEntries()?.isEmpty != false {
+        if case .notModified(let metadata) = fetchResult {
+            if try await persistFetchMetadata(
+                metadata, expectedValidators: requestedValidators,
+                expectedRSSURL: requestedRSSURL, refreshLease: refreshLease,
+                realmConfiguration: realmConfiguration
+            ) { return }
             // A validator can outlive a purged/failed local feed cache. Retry
             // once without conditions and require a response body rather than
             // accepting a second 304 that would leave the feed permanently
@@ -1914,21 +2096,9 @@ public extension Feed {
             try checkRequestIsCurrent()
         }
         switch fetchResult {
-        case .notModified(let metadata):
-            if shouldLogNiponica {
-                logNiponica(
-                    "stage=feed.fetch.notModified feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
-                )
-            }
-            try checkRequestIsCurrent()
-            try await persistFetchMetadata(
-                metadata,
-                expectedRSSURL: requestedRSSURL,
-                refreshLease: refreshLease,
-                realmConfiguration: realmConfiguration
-            )
-            return
-        case .fetched(var rssData, let metadata):
+        case .notModified:
+            throw FeedError.downloadFailed
+        case .fetched(var rssData, let documentURL, let metadata):
             if shouldLogNiponica {
                 logNiponica(
                     "stage=feed.fetch.fetched feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) bytes=\(rssData.count) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
@@ -1942,7 +2112,9 @@ public extension Feed {
                 )
             }
             let parser = FeedKit.FeedParser(data: rssData)
-            return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
+            let atomDocumentData = rssData
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
                 parser.parseAsync { parserResult in
                     switch parserResult {
                     case .success(let feed):
@@ -1964,7 +2136,8 @@ public extension Feed {
                             }
                             Task { @MainActor in
                                 do {
-                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                    guard !Task.isCancelled, !self.isInvalidated, self.rssUrl == requestedRSSURL,
+                                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
                                     try await self.persist(
@@ -1974,11 +2147,13 @@ public extension Feed {
                                         realmConfiguration: realmConfiguration,
                                         deleteOrphans: self.deleteOrphans
                                     )
-                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                    guard !Task.isCancelled, !self.isInvalidated, self.rssUrl == requestedRSSURL,
+                                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
                                     try await self.persistFetchMetadata(
                                         metadata,
+                                        replacesValidators: true,
                                         expectedRSSURL: requestedRSSURL,
                                         refreshLease: refreshLease,
                                         realmConfiguration: realmConfiguration
@@ -2016,9 +2191,11 @@ public extension Feed {
                             }
                             Task { @MainActor in
                                 do {
-                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                    guard !Task.isCancelled, !self.isInvalidated, self.rssUrl == requestedRSSURL,
+                                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
+                                    try resolveAtomEntryLinks(items, from: atomDocumentData, documentURL: documentURL)
                                     try await self.persist(
                                         atomItems: items,
                                         collections: atomCollections,
@@ -2027,11 +2204,13 @@ public extension Feed {
                                         realmConfiguration: realmConfiguration,
                                         deleteOrphans: self.deleteOrphans
                                     )
-                                    guard !self.isInvalidated, self.rssUrl == requestedRSSURL else {
+                                    guard !Task.isCancelled, !self.isInvalidated, self.rssUrl == requestedRSSURL,
+                                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
                                     try await self.persistFetchMetadata(
                                         metadata,
+                                        replacesValidators: true,
                                         expectedRSSURL: requestedRSSURL,
                                         refreshLease: refreshLease,
                                         realmConfiguration: realmConfiguration
@@ -2071,7 +2250,11 @@ public extension Feed {
                         return
                     }
                 }
-            })
+                })
+            } onCancel: {
+                // FeedKit's callback creates an unstructured task; revoke its write authority too.
+                FeedRefreshRegistry.shared.end(refreshLease)
+            }
         }
     }
 }
@@ -2281,12 +2464,27 @@ func applyPayload(_ payload: FeedEntryPayload, to content: any ReaderContentProt
 }
 
 @RealmBackgroundActor
-fileprivate func syncRelatedReaderContent(with payload: FeedEntryPayload) async throws {
+fileprivate func syncRelatedReaderContent(
+    with payload: FeedEntryPayload,
+    sourceRealm: Realm,
+    expectedRSSURL: URL,
+    refreshLease: FeedRefreshLease
+) async throws {
+    func checkOwnership() throws {
+        try Task.checkCancellation()
+        guard FeedRefreshRegistry.shared.isCurrent(refreshLease),
+              sourceRealm.object(ofType: Feed.self, forPrimaryKey: refreshLease.feedID)?.rssUrl == expectedRSSURL
+        else { throw CancellationError() }
+    }
+    await sourceRealm.asyncRefresh()
+    try checkOwnership()
     let mirrors = try await ReaderContentLoader.loadAll(url: payload.url, skipFeedEntries: true)
     let timestamp = Date()
     for case let object as (Object & ReaderContentProtocol) in mirrors {
         guard let realm = object.realm else { continue }
+        await sourceRealm.asyncRefresh()
         try await realm.asyncWritePreservingOwnership {
+            try checkOwnership()
             if applyPayload(payload, to: object) {
                 object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
             }

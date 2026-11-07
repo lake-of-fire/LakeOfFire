@@ -120,6 +120,31 @@ final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
         ))
     }
 
+    func testCopiedJapaneseSnippetRequiresProcessingDespiteCanonicalReadabilityMarkup() throws {
+        let text = "学校で日本語を勉強します。"
+        let url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "copied-japanese"))
+        // Copying from Reader strips generated ruby before the pasteboard
+        // payload is saved. Canonicalizing that snippet must not mark it as
+        // already processed merely because reader-content exists.
+        let copiedSources = [
+            ReaderContentLoader.snippetHTMLFromPasteText(text),
+            ReaderContentLoader.snippetHTML(fromHTML: "<html><body><p>\(text)</p></body></html>"),
+        ]
+        for source in copiedSources {
+            let canonical = try XCTUnwrap(buildSnippetCanonicalReadabilityHTML(
+                html: source,
+                contentURL: url,
+                fallbackTitle: "Copied Japanese"
+            ))
+            XCTAssertTrue(hasCanonicalReadabilityMarkup(in: canonical))
+            XCTAssertFalse(hasPersistedReaderSegmentMarkup(in: canonical),
+                "A newly imported snippet must reach native ruby/segment injection")
+            let document = try SwiftSoup.parse(canonical)
+            XCTAssertEqual(try document.getElementById("reader-content")?.text(), text)
+            XCTAssertTrue(try document.select("m-m, m-s, m-c, m-t").isEmpty)
+        }
+    }
+
     func testAdmittedPersistedSnippetRetainsDocumentWithoutReprocessing() async throws {
         let document = try SwiftSoup.parse("<html><body>犬。</body></html>")
         let recorder = ReaderSnippetRecoveryTestRecorder()

@@ -49,4 +49,17 @@ final class ReaderLoaderFragmentSelectionTests: XCTestCase {
             "https://example.com/article#current"
         )
     }
+
+    func testLookalikeSnippetRouteCannotInheritStoredSnippetIdentity() throws {
+        let snippet = try XCTUnwrap(URL(string: "internal://local/snippet?key=article%252Fone"))
+        let wrapper = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: snippet))
+        let lookalike = try XCTUnwrap(URL(string:
+            "internal://local/snippet-other?key=article%252Fone"))
+        let fragmentOnly = try XCTUnwrap(URL(string:
+            "internal://local/snippet#key=article%252Fone"))
+
+        XCTAssertTrue(snippet.matchesReaderURL(wrapper))
+        XCTAssertFalse(snippet.matchesReaderURL(lookalike))
+        XCTAssertFalse(snippet.matchesReaderURL(fragmentOnly))
+    }
 }

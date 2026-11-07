@@ -507,6 +507,7 @@ final class FeedStateIndicatorTests: XCTestCase {
 
         let realm = try XCTUnwrap(feed.realm)
         try realm.write {
+            feed.lastFetchedRSSURL = feed.rssUrl
             feed.lastRefreshedEntriesAt = Date().addingTimeInterval(-60)
         }
 
@@ -519,6 +520,7 @@ final class FeedStateIndicatorTests: XCTestCase {
 
         let realm = try XCTUnwrap(feed.realm)
         try realm.write {
+            feed.lastFetchedRSSURL = feed.rssUrl
             feed.lastRefreshedEntriesAt = Date().addingTimeInterval(-60)
         }
 

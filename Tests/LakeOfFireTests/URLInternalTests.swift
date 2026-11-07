@@ -233,4 +233,55 @@ final class URLInternalTests: XCTestCase {
 
         XCTAssertEqual(loaderURL.snippetKey, snippetURL.snippetKey)
     }
+
+    func testSnippetKeysRequireExactUnambiguousRoutes() throws {
+        let snippet = try XCTUnwrap(URL(string: "internal://local/snippet?key=article%252Fone"))
+        XCTAssertTrue(snippet.isSnippetURL)
+        XCTAssertEqual(snippet.snippetKey, "article%2Fone")
+        XCTAssertEqual(
+            URL(string: "about:snippet?key=article%252Fone")?.snippetKey,
+            snippet.snippetKey
+        )
+
+        let wrapped = try XCTUnwrap(URL(string:
+            "internal://local/load/reader?reader-url=internal%3A%2F%2Flocal%2Fsnippet%3Fkey%3Darticle%25252Fone"))
+        XCTAssertEqual(wrapped.snippetKey, snippet.snippetKey)
+        XCTAssertFalse(wrapped.isSnippetURL, "The loader is a transport, not a direct snippet")
+
+        for value in [
+            "internal://local/snippet-extra?key=article%252Fone",
+            "internal://other/snippet?key=article%252Fone",
+            "internal://local:443/snippet?key=article%252Fone",
+            "internal://local/snippet?other=key%3Darticle%252Fone",
+            "internal://local/snippet?key=article%252Fone&other=x",
+            "internal://local/snippet#key=article%252Fone",
+            "about:snippet-other?key=article%252Fone",
+            "about:snippet#key=article%252Fone",
+        ] {
+            let candidate = try XCTUnwrap(URL(string: value))
+            XCTAssertNil(candidate.snippetKey, value)
+            XCTAssertFalse(candidate.isSnippetURL, value)
+        }
+    }
+
+    func testInternalLoadingRoutesCannotBeStoredAsSourceURLs() throws {
+        for value in [
+            "internal://local/load/reader?reader-url=https://example.com",
+            "INTERNAL://LOCAL/load/unknown",
+            "internal://local/LOAD/reader",
+            "internal://other/load/reader",
+            "internal://local/load",
+        ] {
+            let url = try XCTUnwrap(URL(string: value))
+            XCTAssertTrue(url.isInternalReaderLoadingURL, value)
+        }
+        for value in [
+            "internal://local/snippet?key=valid",
+            "https://example.com/load/reader",
+            "ebook://book/load/reader",
+        ] {
+            let url = try XCTUnwrap(URL(string: value))
+            XCTAssertFalse(url.isInternalReaderLoadingURL, value)
+        }
+    }
 }

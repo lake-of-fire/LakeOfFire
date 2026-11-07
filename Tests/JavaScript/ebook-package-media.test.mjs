@@ -147,3 +147,161 @@ test('reentrant document closure during blob creation releases it without publis
     assert.deepEqual(revoked, ['blob:closing']);
     assert.equal(audio.src, sessionURL('voice.m4a'));
 });
+
+for (const failureStage of ['fetch', 'response', 'blob']) {
+    test(`a ${failureStage} failure does not prevent a delayed valid media source from loading`, async () => {
+        const media = { loadCount: 0, load() { this.loadCount += 1; } };
+        const missing = makeElement(packageURL('missing.m4a'), media);
+        const valid = makeElement(packageURL('valid.m4a'), media);
+        const failure = new Error(`injected ${failureStage} failure`);
+        let releaseValid;
+        let sawFailure;
+        const failedRequest = new Promise(resolve => { sawFailure = resolve; });
+        const hydration = hydratePackageMedia({
+            document: { querySelectorAll: () => [missing, valid] },
+            fetch: async url => {
+                if (url === missing.src) {
+                    sawFailure();
+                    if (failureStage === 'fetch') throw failure;
+                    return {
+                        ok: failureStage !== 'response', status: 404,
+                        blob: async () => { throw failure; },
+                    };
+                }
+                return new Promise(resolve => { releaseValid = resolve; });
+            },
+            createObjectURL: () => 'blob:valid',
+        });
+        const rejected = assert.rejects(hydration, failureStage === 'response'
+            ? /Failed to load ebook media: 404/
+            : error => error === failure);
+        await failedRequest;
+        // Let the failure settle before the second source becomes available.
+        await new Promise(resolve => setImmediate(resolve));
+        releaseValid({ ok: true, blob: async () => ({}) });
+        await rejected;
+        await new Promise(resolve => setImmediate(resolve));
+
+        assert.equal(valid.src, 'blob:valid');
+        assert.equal(missing.src, packageURL('missing.m4a'));
+        assert.equal(media.loadCount, 1, 'The valid alternative must be offered to the media element');
+    });
+}
+
+test('ready media loads before an unrelated resource settles', async () => {
+    const ready = makeElement(packageURL('ready.m4a'));
+    const delayed = makeElement(packageURL('delayed.m4a'));
+    let readyLoads = 0, delayedLoads = 0;
+    ready.load = () => { readyLoads += 1; };
+    delayed.load = () => { delayedLoads += 1; };
+    let releaseDelayed, createdReady;
+    const readyBlobCreated = new Promise(resolve => { createdReady = resolve; });
+    const hydration = hydratePackageMedia({
+        document: { querySelectorAll: () => [ready, delayed] },
+        fetch: async url => url === ready.src
+            ? { ok: true, blob: async () => ({ ready: true }) }
+            : new Promise(resolve => { releaseDelayed = resolve; }),
+        createObjectURL: blob => {
+            if (blob.ready) createdReady();
+            return blob.ready ? 'blob:ready' : 'blob:delayed';
+        },
+    });
+    await readyBlobCreated;
+    await new Promise(resolve => setImmediate(resolve));
+    try {
+        assert.equal(readyLoads, 1, 'Unrelated network work must not block playable media');
+        assert.equal(delayedLoads, 0);
+    } finally {
+        releaseDelayed({ ok: true, blob: async () => ({}) });
+        assert.deepEqual(await hydration, [true, true]);
+    }
+    assert.equal(readyLoads, 1);
+    assert.equal(delayedLoads, 1);
+});
+
+test('one owner waits for its own alternatives but not a different held owner', async () => {
+    const owner = makeElement('');
+    let loads = 0;
+    owner.load = () => { loads += 1; };
+    const first = makeElement(packageURL('first.m4a'), owner);
+    const second = makeElement(packageURL('second.m4a'), owner);
+    const unrelated = makeElement(packageURL('unrelated.m4a'));
+    const releases = new Map();
+    const hydration = hydratePackageMedia({
+        document: { querySelectorAll: () => [first, second, unrelated] },
+        fetch: url => new Promise(resolve => releases.set(url, resolve)),
+        createObjectURL: blob => `blob:${blob.name}`,
+    });
+    const release = (name) => releases.get(packageURL(`${name}.m4a`))({
+        ok: true, blob: async () => ({ name }),
+    });
+    try {
+        release('first');
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(first.src, 'blob:first');
+        assert.equal(loads, 0, 'A pending alternative of this owner must settle first');
+        release('second');
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(loads, 1, 'Other owners must not delay this reload');
+    } finally {
+        release('unrelated');
+        await hydration;
+    }
+    assert.equal(loads, 1);
+});
+
+for (const change of ['owner-source', 'owner-detach', 'source-move', 'source-replace', 'pagehide']) {
+    test(`held sibling settlement does not reload stale media after ${change}`, async () => {
+        const owner = makeElement('');
+        let loads = 0, hide;
+        owner.load = () => { loads += 1; };
+        const first = makeElement(sessionURL('first.m4a'), owner);
+        const second = makeElement(sessionURL('second.m4a'), owner);
+        let release;
+        const hydration = hydratePackageMedia({
+            document: { querySelectorAll: () => [first, second] },
+            fetch: async url => url === sessionURL('first.m4a')
+                ? { ok: true, blob: async () => ({}) }
+                : new Promise(resolve => { release = resolve; }),
+            createObjectURL: () => 'blob:hydrated',
+            revokeObjectURL: () => {},
+            addPageHideListener: listener => { hide = listener; },
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(first.src, 'blob:hydrated');
+        assert.equal(loads, 0);
+        if (change === 'owner-source') owner.src = 'https://example.com/new.m4a';
+        if (change === 'owner-detach') owner.isConnected = false;
+        if (change === 'source-move') first.closest = second.closest = () => makeElement('');
+        if (change === 'source-replace') {
+            first.src = 'https://example.com/first.m4a';
+            second.src = 'https://example.com/second.m4a';
+        }
+        if (change === 'pagehide') hide();
+        release({ ok: true, blob: async () => ({}) });
+        await hydration;
+        assert.equal(loads, 0);
+        if (change === 'source-move' || change === 'owner-source' || change === 'owner-detach') {
+            assert.equal(second.src, sessionURL('second.m4a'), 'Late data cannot publish into a replacement owner');
+        }
+    });
+}
+
+test('hydration joins all failures and preserves their errors', async () => {
+    const errors = [new Error('first fetch'), new Error('second fetch')];
+    let rejectSecond, settled = false;
+    const hydration = hydratePackageMedia({
+        document: { querySelectorAll: () => [makeElement(packageURL('first')), makeElement(packageURL('second'))] },
+        fetch: url => url === packageURL('first') ? Promise.reject(errors[0])
+            : new Promise((resolve, reject) => { rejectSecond = reject; }),
+    });
+    const rejection = assert.rejects(hydration, error => {
+        assert.ok(error instanceof AggregateError);
+        assert.deepEqual(error.errors, errors);
+        return true;
+    }).then(() => { settled = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false, 'Failure reporting must join the remaining preparation');
+    rejectSecond(errors[1]);
+    await rejection;
+});

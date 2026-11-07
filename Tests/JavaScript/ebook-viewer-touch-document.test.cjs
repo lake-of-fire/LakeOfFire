@@ -23,10 +23,10 @@ const motion = declaration('const requestLookupCloseForPageMotion =', 'const res
 const main = declaration('        const postNoElementNavigationTouchStart =', '        const clearPendingMainDocumentBlankNavigationTouch =')
 const content = declaration('            const postContentDocumentBlankPointerTap =', '            const handleBlankPointerTouchStart =')
 
-function fixture() {
+function fixture({ timeOrigin = 12345 } = {}) {
     const posts = [], document = { body: { classList: { contains: () => false } } }
     const childDocument = { body: { classList: { contains: () => false } } }
-    const window = { document, performance: { timeOrigin: 12345 },
+    const window = { document, performance: { timeOrigin },
         webkit: { messageHandlers: { touchstartCallbackHandler: { postMessage: p => posts.push(p) } } } }
     const context = vm.createContext({ window, document, doc: childDocument, Date, Number,
         WeakSet, Object, Math, globalThis: window,
@@ -61,6 +61,16 @@ for (const route of ['Motion', 'Main', 'Content']) {
         const descriptor = Object.getOwnPropertyDescriptor(f.document, 'manabiDocumentStartedAtMs')
         assert.equal(descriptor.writable, false)
         assert.equal(descriptor.configurable, false)
+    })
+    test(`${route} publisher accepts a late canonical clock on its original document`, () => {
+        const f = fixture({ timeOrigin: null })
+        assert.equal(f.document.manabiDocumentStartedAtMs, undefined)
+        Object.defineProperty(f.document, 'manabiDocumentStartedAtMs', { value: 45678 })
+        publish(f)
+        assert.equal(f.posts.length, 1)
+        assert.equal(f.posts[0].documentStartedAtMs, 45678)
+        assert.equal(f.childDocument.manabiDocumentStartedAtMs, undefined,
+            'forwarded child events still belong to the original viewer posting frame')
     })
     test(`${route} retained publisher cannot borrow a replacement document clock`, () => {
         const f = fixture()

@@ -19,7 +19,7 @@ public extension Archive {
         var data = Data()
         var actualSize: Int64 = 0
         do {
-            _ = try self.extract(entry) { chunk in
+            let checksum = try self.extract(entry) { chunk in
                 try Task.checkCancellation()
                 let chunkSize = Int64(chunk.count)
                 let (newSize, overflow) = actualSize.addingReportingOverflow(chunkSize)
@@ -33,6 +33,8 @@ public extension Archive {
                 actualSize = newSize
                 data.append(chunk)
             }
+            guard checksum == entry.checksum,
+                  actualSize == Int64(entry.uncompressedSize) else { return nil }
             return data
         } catch {
             return nil
@@ -198,7 +200,7 @@ public struct ReaderPackageEntrySource: Sendable {
             var data = Data()
             var actualSize: Int64 = 0
             do {
-                try archive.extract(entry) { chunk in
+                let checksum = try archive.extract(entry) { chunk in
                     try Task.checkCancellation()
                     let chunkSize = Int64(chunk.count)
                     let (newSize, overflow) = actualSize.addingReportingOverflow(chunkSize)
@@ -211,6 +213,9 @@ public struct ReaderPackageEntrySource: Sendable {
                     }
                     actualSize = newSize
                     data.append(chunk)
+                }
+                guard checksum == entry.checksum, actualSize == advertisedSize else {
+                    throw ReaderPackageEntrySourceError.packageCorrupt
                 }
             } catch is CancellationError {
                 throw CancellationError()
@@ -579,11 +584,24 @@ public actor ReaderPackageEntrySourceCache {
         public let source: ReaderPackageEntrySource
         public let entries: [ReaderPackageEntryMetadata]
         public let generationID: String
+        private let fontObfuscation: ReaderEBookFontObfuscation
 
         public init(source: ReaderPackageEntrySource, entries: [ReaderPackageEntryMetadata], generationID: String) {
             self.source = source
             self.entries = entries
             self.generationID = generationID
+            self.fontObfuscation = .empty
+        }
+
+        init(source: ReaderPackageEntrySource, entries: [ReaderPackageEntryMetadata], generationID: String,
+             fontObfuscation: ReaderEBookFontObfuscation) {
+            self.source = source; self.entries = entries; self.generationID = generationID
+            self.fontObfuscation = fontObfuscation
+        }
+
+        public func readNativeResource(subpath: String) throws -> Data {
+            let rawBytes = try source.readEntry(subpath: subpath)
+            return try fontObfuscation.decode(rawBytes, subpath: subpath)
         }
     }
 
@@ -593,6 +611,7 @@ public actor ReaderPackageEntrySourceCache {
         let localURL: URL
         let freshnessToken: String
         let generationID: String
+        let fontObfuscation: ReaderEBookFontObfuscation
     }
 
     private let countLimit: Int
@@ -633,12 +652,23 @@ public actor ReaderPackageEntrySourceCache {
            cached.freshnessToken == freshnessToken {
             try Task.checkCancellation()
             recordAccess(forKey: cacheKey)
-            return CachedSource(source: cached.source, entries: cached.entries, generationID: cached.generationID)
+            return CachedSource(source: cached.source, entries: cached.entries, generationID: cached.generationID, fontObfuscation: cached.fontObfuscation)
         }
 
         let source = try Self.preparedSource(for: localURL)
         let entries = try source.enumerateEntries()
         let generationID = Self.generationID(for: freshnessToken)
+        let fontObfuscation: ReaderEBookFontObfuscation
+        do {
+            fontObfuscation = try ReaderEBookFontObfuscation.prepare(
+                entries: entries, packageDocumentPath: nil, readEntry: source.readEntry(subpath:)
+            )
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            // Optional obfuscation metadata must not break legacy packages
+            // whose raw resource reads previously succeeded.
+            fontObfuscation = .empty
+        }
         try Task.checkCancellation()
         store(
             CacheRecord(
@@ -646,11 +676,12 @@ public actor ReaderPackageEntrySourceCache {
                 entries: entries,
                 localURL: localURL,
                 freshnessToken: freshnessToken,
-                generationID: generationID
+                generationID: generationID,
+                fontObfuscation: fontObfuscation
             ),
             forKey: cacheKey
         )
-        return CachedSource(source: source, entries: entries, generationID: generationID)
+        return CachedSource(source: source, entries: entries, generationID: generationID, fontObfuscation: fontObfuscation)
     }
 
     private func freshCachedSource(forKey cacheKey: String) throws -> CachedSource? {
@@ -664,7 +695,7 @@ public actor ReaderPackageEntrySourceCache {
         }
         try Task.checkCancellation()
         recordAccess(forKey: cacheKey)
-        return CachedSource(source: cached.source, entries: cached.entries, generationID: cached.generationID)
+        return CachedSource(source: cached.source, entries: cached.entries, generationID: cached.generationID, fontObfuscation: cached.fontObfuscation)
     }
 
     private func store(_ record: CacheRecord, forKey cacheKey: String) {

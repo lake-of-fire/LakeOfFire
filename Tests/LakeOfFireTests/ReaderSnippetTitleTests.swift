@@ -1,14 +1,40 @@
 import XCTest
+import Combine
+import LakeKit
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 @testable import LakeOfFireContent
 import LakeOfFireCore
 @testable import LakeOfFireReader
-import SwiftUIWebView
+@testable import SwiftUIWebView
 import SwiftSoup
 
 final class ReaderSnippetTitleTests: XCTestCase {
+
+    func testStrippingRubyKeepsLiteralMarkupAndEntityText() {
+        let cases = [
+            ("前<ruby>&lt;猫&gt;<rt>ねこ</rt></ruby>後", "前<猫>後"),
+            ("<ruby>&amp;copy;<rt>読み</rt></ruby>", "&copy;"),
+            ("<ruby>&lt;b&gt;語&lt;/b&gt;<rp>(</rp><rt>ご</rt><rp>)</rp></ruby>", "<b>語</b>"),
+            ("<ruby>&amp;lt;猫&amp;gt;<rtc><rt>ねこ</rt></rtc></ruby>", "&lt;猫&gt;")
+        ]
+        for (html, expected) in cases {
+            XCTAssertEqual(html.strippingHTML(), expected, html)
+        }
+    }
+
+    func testStrippingRubyPreservesSurfaceFormattingAndNormalText() {
+        XCTAssertEqual(
+            "<p>前<ruby><strong>漢</strong>字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>後</p>".strippingHTML(),
+            "前漢字後"
+        )
+        XCTAssertEqual("<ruby>猫<rt>ねこ</rt></ruby>と<ruby>犬<rt>いぬ</rt></ruby>".strippingHTML(), "猫と犬")
+        XCTAssertEqual("<p>&lt;猫&gt; &amp;copy;</p>".strippingHTML(), "<猫> &copy;")
+        XCTAssertEqual("普通のテキスト".strippingHTML(), "普通のテキスト")
+    }
+
+
     func testReaderLoaderBuilderProducesOnlyRecoverableContentURLs() throws {
         let webURL = try XCTUnwrap(URL(
             string: "https://example.org/read?chapter=1&source=a%26b#part"
@@ -708,7 +734,6 @@ final class ReaderSnippetTitleTests: XCTestCase {
         try await withSnippetRealm { bookmarkConfiguration in
             let historyConfiguration = self.makeRealmConfiguration()
             ReaderContentLoader.historyRealmConfiguration = historyConfiguration
-            let storage = ReaderContentLoader.SnippetStorage.capture()
             let url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "separate-store-change"))
             try await { @RealmBackgroundActor in
                 let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkConfiguration)
@@ -723,6 +748,13 @@ final class ReaderSnippetTitleTests: XCTestCase {
                 history.title = "Original history"
                 try bookmarkRealm.write { bookmarkRealm.add(bookmark) }
                 try historyRealm.write { historyRealm.add(history) }
+            }()
+            // Capture the seeded files so the writer fences their physical identities.
+            let storage = ReaderContentLoader.SnippetStorage.capture()
+            try await { @RealmBackgroundActor in
+                let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkConfiguration)
+                let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyConfiguration)
+                let bookmark = try XCTUnwrap(bookmarkRealm.object(ofType: Bookmark.self, forPrimaryKey: "separate-bookmark"))
                 let historyBefore = Self.snippetWriteSnapshot(in: historyRealm)
                 let probe = SnippetCommittedStoreProbe(bookmarkRealm: bookmarkRealm)
                 do {
@@ -984,6 +1016,69 @@ final class ReaderSnippetTitleTests: XCTestCase {
         }
     }
 
+
+    @MainActor
+    func testYouTubeThumbnailsUseIframePathForImportAndDisplay() async throws {
+        try await withSnippetRealm { configuration in
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+            let thumbnail = "https://img.youtube.com/vi/dQw4w9WgXcQ/0.jpg"
+            let cases: [(html: String, enabled: Bool, explicit: String?, expected: String?)] = [
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ'></iframe>", true, nil, thumbnail),
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0&amp;autoplay=1'></iframe>", true, nil, thumbnail),
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ#t=10'></iframe>", true, nil, thumbnail),
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0#t=10'></iframe>", true, nil, thumbnail),
+                ("<iframe src='https://www.youtube.com/embed/video%3Fpart%23one?rel=0'></iframe>", true, nil,
+                 "https://img.youtube.com/vi/video%3Fpart%23one/0.jpg"),
+                ("<img src='https://example.com/preferred.jpg'><iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0'></iframe>",
+                 true, nil, "https://example.com/preferred.jpg"),
+                ("<iframe src='https://example.com/embed/dQw4w9WgXcQ?rel=0'></iframe>", true, nil, nil),
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0'></iframe>", false, nil, nil),
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0'></iframe>", true,
+                 "https://example.com/explicit.jpg", "https://example.com/explicit.jpg"),
+            ]
+            for (index, fixture) in cases.enumerated() {
+                let url = URL(string: "https://example.com/youtube-thumbnail-\(index)")!
+                let feed = Feed()
+                feed.extractImageFromContent = fixture.enabled
+                let entry = FeedEntry()
+                entry.feedID = feed.id
+                entry.url = url
+                entry.title = "Thumbnail \(index)"
+                entry.html = fixture.html
+                entry.imageUrl = fixture.explicit.flatMap(URL.init(string:))
+                entry.updateCompoundKey()
+                try realm.write { realm.add(feed); realm.add(entry) }
+                let key = entry.compoundKey
+                let expected = fixture.expected.flatMap(URL.init(string:))
+                try await { @RealmBackgroundActor in
+                    let sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                    try await sourceRealm.asyncRefresh()
+                    let source = try XCTUnwrap(sourceRealm.object(ofType: FeedEntry.self, forPrimaryKey: key))
+                    let beforeImage = source.imageUrl
+                    let beforeModified = source.modifiedAt
+                    let recordName = FeedEntry.className() + "." + key
+                    let beforeGeneration = sourceRealm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation
+                    let reference = try await ReaderContentLoader.importContent(.url(url), storage: storage, permitsCommit: { true })
+                    let history = try XCTUnwrap(sourceRealm.object(
+                        ofType: HistoryRecord.self,
+                        forPrimaryKey: try XCTUnwrap(reference).contentKey
+                    ))
+                    XCTAssertEqual(history.imageUrl, expected, "Imported thumbnail case \(index)")
+                    XCTAssertEqual(source.imageUrl, beforeImage)
+                    XCTAssertEqual(source.modifiedAt, beforeModified)
+                    XCTAssertEqual(sourceRealm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation, beforeGeneration)
+                }()
+                await realm.asyncRefresh()
+                XCTAssertEqual(entry.imageUrl, fixture.explicit.flatMap(URL.init(string:)))
+                let displayed = try await entry.imageURLToDisplay()
+                XCTAssertEqual(displayed, expected, "Displayed thumbnail case \(index)")
+                await realm.asyncRefresh()
+                XCTAssertEqual(entry.imageUrl, expected, "Cached thumbnail case \(index)")
+            }
+        }
+    }
+
     @MainActor
     func testOwnedHTTPSImportUsesHTTPFeedWithoutWritingLazyImageCache() async throws {
         try await withSnippetRealm { configuration in
@@ -1054,6 +1149,96 @@ final class ReaderSnippetTitleTests: XCTestCase {
             snapshot["journal." + journal.recordName] = journal.generation
         }
         return snapshot
+    }
+
+
+    @MainActor
+    func testSnippetSavePreservesCanonicallyEquivalentURLByteEdits() async throws {
+        // The editor-save producer parses and serializes HTML again. Its
+        // formatting is not the editor's wire contract; DOM content and URL
+        // bytes are. Independently inspect the persisted document and compressed
+        // payload, then verify the loader returns that exact committed payload.
+        func assertStoredSnippet(_ record: HistoryRecord, href: String) throws -> Data {
+            let html = try XCTUnwrap(record.html)
+            let wire = try XCTUnwrap(record.content)
+            let decoded = try (wire as NSData).decompressed(using: .lzfse) as Data
+            XCTAssertEqual(decoded, Data(html.utf8))
+            let document = try SwiftSoup.parse(html)
+            XCTAssertEqual(try document.select("body > div.mnb-snippet").count, 1)
+            XCTAssertEqual(try document.select("body > div.mnb-snippet > p").count, 1)
+            XCTAssertEqual(try document.select("body p").text(), "Before Link after.")
+            XCTAssertEqual(try document.select("body").text(), "Before Link after.")
+            XCTAssertEqual(try document.select("a").count, 1)
+            let link = try XCTUnwrap(document.select("body > div.mnb-snippet > p > a").first())
+            XCTAssertEqual(try link.text(), "Link")
+            XCTAssertEqual(Array(try link.attr("href").utf8), Array(href.utf8))
+            return wire
+        }
+
+        for suppliesOriginalHTML in [false, true] {
+            try await withSnippetRealm { configuration in
+                let composedURL = "https://example.com/caf\u{00e9}"
+                let decomposedURL = "https://example.com/cafe\u{0301}"
+                let composed = ReaderContentLoader.snippetHTML(fromHTML:
+                    "<p>Before <a href=\"\(composedURL)\">Link</a> after.</p>")
+                let decomposed = ReaderContentLoader.snippetHTML(fromHTML:
+                    "<p>Before <a href=\"\(decomposedURL)\">Link</a> after.</p>")
+                let loaded = try await ReaderContentLoader.load(html: composed)
+                let snippet = try XCTUnwrap(loaded)
+                let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: snippet))
+                let title = snippet.title
+                let editorHTML = try await ReaderContentLoader.snippetEditorHTML(for: snippet)
+                let realm = try await Realm(configuration: configuration)
+                let updated = try XCTUnwrap(realm.object(
+                    ofType: HistoryRecord.self, forPrimaryKey: snippet.compoundKey
+                ))
+                _ = try assertStoredSnippet(updated, href: composedURL)
+                let mutationKey = updated.objectSchema.className + "." + updated.compoundKey
+                let originalGeneration = try XCTUnwrap(realm.object(
+                    ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey)?.generation)
+
+                let changed = try await ReaderContentLoader.updateSnippetContent(
+                    contentURL: snippet.url, title: title, html: decomposed,
+                    originalEditorHTML: suppliesOriginalHTML ? editorHTML : nil,
+                    storage: storage, permitsCommit: { true }
+                )
+                XCTAssertTrue(changed)
+                try await realm.asyncRefresh()
+                let editedWire = try assertStoredSnippet(updated, href: decomposedURL)
+                let editedGeneration = try XCTUnwrap(realm.object(
+                    ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey)?.generation)
+                XCTAssertNotEqual(editedGeneration, originalGeneration)
+                await ReaderContentLoader.resetTransientCachesForTesting()
+                let reloaded = try await ReaderContentLoader.getContent(forURL: snippet.url)
+                XCTAssertEqual(try XCTUnwrap(reloaded).content, editedWire)
+
+                let repeated = try await ReaderContentLoader.updateSnippetContent(
+                    contentURL: snippet.url, title: title, html: decomposed,
+                    originalEditorHTML: suppliesOriginalHTML ? editorHTML : nil,
+                    storage: storage, permitsCommit: { true }
+                )
+                XCTAssertFalse(repeated)
+                try await realm.asyncRefresh()
+                XCTAssertEqual(updated.content, editedWire)
+                XCTAssertEqual(realm.object(ofType: BigSyncPendingMutation.self,
+                    forPrimaryKey: mutationKey)?.generation, editedGeneration)
+
+                let reverted = try await ReaderContentLoader.updateSnippetContent(
+                    contentURL: snippet.url, title: title, html: composed,
+                    originalEditorHTML: suppliesOriginalHTML ? decomposed : nil,
+                    storage: storage, permitsCommit: { true }
+                )
+                XCTAssertTrue(reverted)
+                try await realm.asyncRefresh()
+                let revertedWire = try assertStoredSnippet(updated, href: composedURL)
+                XCTAssertNotEqual(revertedWire, editedWire)
+                XCTAssertNotEqual(realm.object(ofType: BigSyncPendingMutation.self,
+                    forPrimaryKey: mutationKey)?.generation, editedGeneration)
+                await ReaderContentLoader.resetTransientCachesForTesting()
+                let reloadedRevert = try await ReaderContentLoader.getContent(forURL: snippet.url)
+                XCTAssertEqual(try XCTUnwrap(reloadedRevert).content, revertedWire)
+            }
+        }
     }
 
     @MainActor
@@ -1624,3 +1809,1075 @@ private final class OwnedImportWriteProbe: @unchecked Sendable {
         }
     }
 }
+
+@MainActor
+private extension ReaderSnippetTitleTests {
+    func nativeSnippet(_ key: String, title: String = "Original") -> HistoryRecord {
+        let row = HistoryRecord()
+        row.url = ReaderContentLoader.snippetURL(key: key)!
+        row.title = title
+        row.updateCompoundKey()
+        return row
+    }
+
+    func nativeIntent(from source: URL, to target: URL) throws -> WebViewURLTransitionIntent {
+        let caller = WebViewScriptCaller()
+        caller.installBinding(ownedBy: UUID(), asyncCaller: { _, _, _, _ in .init(nil) },
+            unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
+        let sequencer = WebViewURLPublicationReceiptSequencer()
+        sequencer.configure(webViewID: ObjectIdentifier(caller),
+            binding: try XCTUnwrap(caller.currentJavaScriptBindingToken), url: source)
+        // Intent retains its monotonic lifetime independently of the sequencer.
+        return try XCTUnwrap(sequencer.observe(target, from: ObjectIdentifier(caller)).intent)
+    }
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testNativeSnippetOwnerSurvivesLoaderSelectionAndRendererReplacement() async throws {
+        let reader = ReaderContent()
+        let row = nativeSnippet("native-handoff")
+        try await reader.load(url: row.url) { _ in row }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+        let oldSelection = reader.currentSelectionID
+        let loader = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: row.url))
+        let intent = try nativeIntent(from: row.url, to: loader)
+        XCTAssertNotNil(reader.receiveSelectionIntent(intent))
+        XCTAssertTrue(fence())
+        try await reader.load(url: loader, consuming: intent) { _ in
+            XCTFail("Same-content handoff should retain its native model")
+            return nil
+        }
+        XCTAssertNotEqual(reader.currentSelectionID, oldSelection)
+        XCTAssertTrue(fence(), "A selection replacement is not a logical content replacement")
+        let fragment = URL(string: row.url.absoluteString + "#paragraph")!
+        try await reader.load(url: fragment) { _ in row }
+        XCTAssertTrue(fence())
+    }
+
+    @MainActor
+    func testNativeSnippetIntentRevokesBeforeSemanticResolutionAndNeverRevives() async throws {
+        let reader = ReaderContent()
+        let first = nativeSnippet("native-first"), second = nativeSnippet("native-second")
+        try await reader.load(url: first.url) { _ in first }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        let selectionFence = reader.makeSelectionCommitFence(requiring: reader.currentSelectionID)
+        let intent = try nativeIntent(from: first.url, to: second.url)
+        XCTAssertNotNil(reader.receiveSelectionIntent(intent))
+        XCTAssertFalse(fence(), "Native intent retires edits before semantic work or resolver starts")
+        XCTAssertTrue(selectionFence(), "Do not break the predecessor selection handoff")
+        XCTAssertNil(reader.makeNativeContentCommitFence(for: first.url))
+        reader.withdrawSelectionIntent(intent)
+        try await reader.load(url: first.url) { _ in first }
+        XCTAssertFalse(fence(), "Returning to the same URL cannot reopen an old edit")
+        XCTAssertTrue(try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))())
+    }
+
+    @MainActor
+    func testDirectNativeSnippetLoadRevokesBeforeResolverAndAwayBackCannotRevive() async throws {
+        let reader = ReaderContent()
+        let first = nativeSnippet("native-direct-first"), second = nativeSnippet("native-direct-second")
+        try await reader.load(url: first.url) { _ in first }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        try await reader.load(url: second.url) { _ in
+            XCTAssertFalse(fence())
+            return second
+        }
+        try await reader.load(url: first.url) { _ in first }
+        XCTAssertFalse(fence())
+    }
+
+    @MainActor
+    func testNativeSnippetSavePublishesFreshTitleAndBodyOverFrozenCachedRow() async throws {
+        try await withSnippetRealm { _ in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Original native body</p>")
+            let row = try XCTUnwrap(loaded as? HistoryRecord)
+            let reference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: row))
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+            let frozen = row.freeze()
+            let reader = ReaderContent()
+            try await reader.load(url: row.url) { _ in frozen }
+            let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+            let changed = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: row.url, title: "Saved native title", html: "<p>Saved native body</p>",
+                storage: storage, permitsCommit: fence)
+            XCTAssertTrue(changed)
+            let resolved = try await reference.resolveOnMainActor()
+            let fresh = try XCTUnwrap(resolved)
+            XCTAssertTrue(reader.publishUpdatedContent(fresh, permitsPublication: { fence() }))
+            XCTAssertFalse(reader.content === frozen)
+            XCTAssertEqual(reader.contentTitle, "Saved native title")
+            XCTAssertEqual(reader.locationBarTitle, "Saved native title")
+            XCTAssertTrue(reader.content?.html?.contains("Saved native body") == true)
+            XCTAssertTrue(fence(), "Publishing a fresh row must not invalidate native ownership")
+            try await reader.load(url: row.url) { _ in
+                XCTFail("Same-URL reload reuses the freshly published row")
+                return frozen
+            }
+            XCTAssertEqual(reader.cachedContentTitle, "Saved native title")
+        }
+    }
+
+    @MainActor
+    func testNativeSnippetPublicationCannotOverwriteReentrantContentSubscriberSuccessor() async throws {
+        let reader = ReaderContent()
+        let first = nativeSnippet("native-publish-first"), successor = nativeSnippet("native-publish-next", title: "Successor")
+        let fresh = nativeSnippet("native-publish-first", title: "Saved")
+        try await reader.load(url: first.url) { _ in first }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        let intent = try nativeIntent(from: first.url, to: successor.url)
+        let observer = reader.$content.sink { value in
+            guard value === fresh else { return }
+            reader.receiveSelectionIntent(intent)
+            reader.content = successor
+            reader.pageURL = successor.url
+        }
+        defer { observer.cancel() }
+        XCTAssertFalse(reader.publishUpdatedContent(fresh, permitsPublication: { fence() }))
+        XCTAssertTrue(reader.content === successor)
+        XCTAssertEqual(reader.contentTitle, "Successor")
+        XCTAssertEqual(reader.locationBarTitle, "Successor")
+        XCTAssertFalse(fence())
+    }
+
+    @MainActor
+    func testNativeSnippetTitlePublicationStopsBeforeRefreshingReentrantSuccessor() async throws {
+        let reader = ReaderContent()
+        let first = nativeSnippet("native-title-first"), successor = nativeSnippet("native-title-next", title: "Successor")
+        let fresh = nativeSnippet("native-title-first", title: "Saved")
+        try await reader.load(url: first.url) { _ in first }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        let intent = try nativeIntent(from: first.url, to: successor.url)
+        let observer = reader.contentTitleSubject.sink { title in
+            guard title == "Saved" else { return }
+            reader.receiveSelectionIntent(intent)
+            reader.content = successor
+            reader.pageURL = successor.url
+        }
+        defer { observer.cancel() }
+        XCTAssertFalse(reader.publishUpdatedContent(fresh, permitsPublication: { fence() }))
+        XCTAssertTrue(reader.content === successor)
+        XCTAssertEqual(reader.contentTitle, "Successor")
+        XCTAssertEqual(reader.locationBarTitle, "Successor")
+    }
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testCapturedNativeSnippetSaveCannotReviveDeletedStorageRows() async throws {
+        try await withSnippetRealm { _ in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Native delete fixture</p>")
+            let row = try XCTUnwrap(loaded as? HistoryRecord)
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+            let reader = ReaderContent()
+            try await reader.load(url: row.url) { _ in row }
+            let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+            try await row.delete()
+            let changed = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: row.url, title: "Must not revive", html: "<p>Must not revive</p>",
+                storage: storage, permitsCommit: fence)
+            XCTAssertFalse(changed)
+            XCTAssertTrue(fence(), "Deletion is enforced by storage, independently of logical navigation")
+            let live = try await ReaderContentLoader.loadAll(url: row.url)
+            XCTAssertTrue(live.isEmpty)
+        }
+    }
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testCapturedNativeSnippetSaveRejectsRecreatedPrimaryKey() async throws {
+        try await withSnippetRealm { _ in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Original physical row</p>")
+            let row = try XCTUnwrap(loaded as? HistoryRecord)
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+            let reference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: row))
+            let url = row.url
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
+                try await realm.asyncWrite {
+                    let original = try XCTUnwrap(realm.object(ofType: HistoryRecord.self,
+                        forPrimaryKey: reference.contentKey))
+                    realm.delete(original) // Intentional physical replacement fixture.
+                    let replacement = HistoryRecord()
+                    replacement.compoundKey = reference.contentKey
+                    replacement.url = url
+                    replacement.title = "Successor row"
+                    realm.add(replacement)
+                    replacement.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }()
+            let changed = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: url, title: "Stale edit", html: "<p>Stale edit</p>",
+                storage: storage, permitsCommit: { true })
+            XCTAssertFalse(changed)
+            let resolved = try await reference.resolveOnMainActor()
+            XCTAssertEqual(resolved?.title, "Successor row")
+        }
+    }
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testSuppressedBlankIntentAndLoadPreserveNativeOwnerUntilRealBlank() async throws {
+        let reader = ReaderContent(), row = nativeSnippet("suppressed-native-blank")
+        try await reader.load(url: row.url) { _ in row }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+        reader.suppressTransientAboutBlank(untilNextNonBlankLoad: row.url)
+        let blank = URL(string: "about:blank")!
+        let intent = try nativeIntent(from: row.url, to: blank)
+        reader.receiveSelectionIntent(intent)
+        XCTAssertTrue(fence())
+        try await reader.load(url: blank, consuming: intent) { _ in
+            XCTFail("Suppressed blank must not reach semantic resolution")
+            return nil
+        }
+        XCTAssertEqual(reader.pageURL, row.url)
+        reader.content = ReaderContentLoader.unsavedHome
+        XCTAssertTrue(reader.content === row, "Ignored blank model publication must preserve native content")
+        reader.pageURL = blank
+        XCTAssertTrue(reader.isCurrentNativeContent(row.url))
+        XCTAssertTrue(fence())
+        reader.pageURL = row.url
+        try await reader.load(url: row.url) { _ in row } // Consumes suppression.
+        reader.content = ReaderContentLoader.unsavedHome
+        XCTAssertFalse(fence(), "Unsuppressed direct blank model publication must retire the owner")
+        try await reader.load(url: blank) { _ in ReaderContentLoader.unsavedHome }
+        XCTAssertFalse(fence(), "A real blank must permanently retire the old native action")
+    }
+
+    @MainActor
+    func testPendingPreProvisionalBlankIntentAndLoadPreserveNativeOwnerUntilRealBlank() async throws {
+        let reader = ReaderContent(), row = nativeSnippet("pending-native-blank")
+        try await reader.load(url: row.url) { _ in row }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+        let activity = WebViewReaderLoadActivity.shared, owner = NSObject(), id = UUID()
+        activity.begin(id, owner: owner)
+        defer { activity.end(id); withExtendedLifetime(owner) {} }
+        let blank = URL(string: "about:blank")!
+        let intent = try nativeIntent(from: row.url, to: blank)
+        reader.receiveSelectionIntent(intent)
+        XCTAssertTrue(fence())
+        try await reader.load(url: blank, consuming: intent) { _ in
+            XCTFail("Pending pre-provisional blank must not resolve content")
+            return nil
+        }
+        XCTAssertEqual(reader.pageURL, row.url)
+        reader.content = ReaderContentLoader.unsavedHome
+        XCTAssertTrue(reader.content === row, "Ignored blank model publication must preserve native content")
+        reader.pageURL = blank
+        XCTAssertTrue(reader.isCurrentNativeContent(row.url))
+        XCTAssertTrue(fence())
+        reader.pageURL = row.url
+        activity.end(id)
+        let realIntent = try nativeIntent(from: row.url, to: blank)
+        reader.receiveSelectionIntent(realIntent)
+        XCTAssertFalse(fence(), "Without either suppression reason a blank intent retires immediately")
+        try await reader.load(url: blank, consuming: realIntent) { _ in ReaderContentLoader.unsavedHome }
+        try await reader.load(url: row.url) { _ in row }
+        XCTAssertFalse(fence(), "Returning after real blank cannot revive the old owner")
+    }
+
+    @MainActor
+    func testDirectContentAndPagePublicationsRetireNativeOwnerWithoutResolver() async throws {
+        let reader = ReaderContent(), first = nativeSnippet("direct-public-first")
+        let successor = nativeSnippet("direct-public-successor", title: "Successor")
+        try await reader.load(url: first.url) { _ in first }
+        let contentFence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        let contentObserver = reader.$content.sink { value in
+            if value === successor { XCTAssertFalse(contentFence(), "Retire before public content delivery") }
+        }
+        reader.content = successor
+        reader.pageURL = successor.url
+        XCTAssertFalse(contentFence())
+        reader.content = first
+        reader.pageURL = first.url
+        XCTAssertFalse(contentFence())
+        let pageFence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: first.url))
+        let pageObserver = reader.$pageURL.sink { url in
+            if url == successor.url { XCTAssertFalse(pageFence(), "Retire before page URL delivery") }
+        }
+        reader.pageURL = successor.url
+        reader.pageURL = first.url
+        XCTAssertFalse(pageFence())
+        XCTAssertTrue(reader.isCurrentNativeContent(first.url))
+        contentObserver.cancel(); pageObserver.cancel()
+    }
+
+    @MainActor
+    func testNilCacheEvictionAndSameContentReplacementPreserveNativeOwner() async throws {
+        let reader = ReaderContent(), row = nativeSnippet("native-cache-eviction")
+        try await reader.load(url: row.url) { _ in row }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: row.url))
+        reader.content = nil
+        XCTAssertTrue(fence())
+        XCTAssertTrue(reader.isCurrentNativeContent(row.url))
+        let rehosted = nativeSnippet("native-cache-eviction", title: "Rehosted")
+        reader.content = rehosted
+        XCTAssertTrue(fence())
+        XCTAssertTrue(reader.isCurrentNativeContent(row.url))
+    }
+
+    @MainActor
+    private func assertReentrantNativeProjectionSuccessor(fromObjectWillChange: Bool) async throws {
+        let reader = ReaderContent(), original = nativeSnippet("native-projection-first")
+        let fresh = nativeSnippet("native-projection-first", title: "Saved")
+        let successor = nativeSnippet("native-projection-second", title: "Successor")
+        try await reader.load(url: original.url) { _ in original }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: original.url))
+        var selectedSuccessor = false
+        func selectSuccessor() {
+            guard !selectedSuccessor else { return }
+            selectedSuccessor = true
+            reader.content = successor
+            reader.pageURL = successor.url
+        }
+        let observation: AnyCancellable
+        if fromObjectWillChange {
+            observation = reader.objectWillChange.sink {
+                // Ignore the initial content notification: exercise the nested
+                // projection's will-set notification after fresh backing commit.
+                if reader.content === fresh { selectSuccessor() }
+            }
+        } else {
+            observation = reader.$locationBarTitle.sink { title in
+                if title == "Saved" { selectSuccessor() }
+            }
+        }
+        defer { observation.cancel() }
+        XCTAssertFalse(reader.publishUpdatedContent(fresh, permitsPublication: { fence() }))
+        XCTAssertTrue(selectedSuccessor)
+        XCTAssertTrue(reader.content === successor)
+        XCTAssertEqual(reader.pageURL, successor.url)
+        XCTAssertEqual(reader.locationBarTitle, "Successor")
+        XCTAssertEqual(reader.contentTitle, "Successor")
+        XCTAssertFalse(fence())
+        XCTAssertTrue(reader.isCurrentNativeContent(successor.url))
+    }
+
+    @MainActor
+    func testReentrantLocationBarTitleProjectionRepairsSuccessorState() async throws {
+        try await assertReentrantNativeProjectionSuccessor(fromObjectWillChange: false)
+    }
+
+    @MainActor
+    func testReentrantProjectionObjectWillChangeRepairsSuccessorState() async throws {
+        try await assertReentrantNativeProjectionSuccessor(fromObjectWillChange: true)
+    }
+
+    @MainActor
+    func testReentrantContentObjectWillChangeCannotStoreOlderPublication() async throws {
+        let reader = ReaderContent(), original = nativeSnippet("native-object-first")
+        let fresh = nativeSnippet("native-object-first", title: "Saved")
+        let successor = nativeSnippet("native-object-second", title: "Successor")
+        try await reader.load(url: original.url) { _ in original }
+        let fence = try XCTUnwrap(reader.makeNativeContentCommitFence(for: original.url))
+        var redirected = false
+        let observer = reader.objectWillChange.sink {
+            guard !redirected else { return }
+            redirected = true
+            reader.content = successor
+            reader.pageURL = successor.url
+        }
+        defer { observer.cancel() }
+        XCTAssertFalse(reader.publishUpdatedContent(fresh, permitsPublication: { fence() }))
+        XCTAssertTrue(reader.content === successor)
+        XCTAssertEqual(reader.pageURL, successor.url)
+        XCTAssertEqual(reader.locationBarTitle, "Successor")
+        XCTAssertEqual(reader.contentTitle, "Successor")
+        var replayed: (any ReaderContentProtocol)?
+        let replay = reader.$content.sink { replayed = $0 }
+        defer { replay.cancel() }
+        XCTAssertTrue(replayed === successor)
+    }
+
+    @MainActor
+    private func assertPhysicalSnippetFileReplacement(atWritePermission: Bool, afterMutation: Bool = false) async throws {
+        let replacement = makeRealmConfiguration(), retired = makeRealmConfiguration()
+        try await withSnippetRealm { original in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Original file fixture</p>")
+            let row = try XCTUnwrap(loaded as? HistoryRecord)
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+            let url = row.url, key = row.compoundKey
+            let originalURL = try XCTUnwrap(original.fileURL)
+            let replacementURL = try XCTUnwrap(replacement.fileURL)
+            let retiredURL = try XCTUnwrap(retired.fileURL)
+            try await { @RealmBackgroundActor in
+                let originalRealm = try await RealmBackgroundActor.shared.cachedRealm(for: original)
+                let replacementRealm = try await RealmBackgroundActor.shared.cachedRealm(for: replacement)
+                let replacementRow = HistoryRecord()
+                replacementRow.compoundKey = key
+                replacementRow.url = url
+                replacementRow.title = "Replacement file row"
+                replacementRow.html = "<p>Replacement bytes</p>"
+                try await replacementRealm.asyncWrite {
+                    replacementRealm.add(replacementRow)
+                    replacementRow.refreshChangeMetadata(explicitlyModified: true)
+                }
+                let originalBefore = Self.snippetWriteSnapshot(in: originalRealm)
+                let replacementBefore = Self.snippetWriteSnapshot(in: replacementRealm)
+                let probe = SnippetPhysicalFileReplacementProbe(
+                    realm: originalRealm, original: originalURL, replacement: replacementURL,
+                    retired: retiredURL, afterMutation: afterMutation)
+                defer {
+                    // Restore fixture paths only after writer settlement so the
+                    // existing canonical teardown releases the correct cache keys.
+                    do { try probe.restoreFixturePaths() }
+                    catch { XCTFail("Unable to restore physical-file fixture paths: \(error)") }
+                }
+                if !atWritePermission { try probe.replaceFile() }
+                do {
+                    _ = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                        contentURL: url, storage: storage,
+                        permitsCommit: { atWritePermission ? probe.permitsCommit() : true }
+                    ) { object in
+                        object.title = "Stale file save"
+                        object.html = "<p>Must roll back</p>"
+                        return true
+                    }
+                    XCTFail("Captured snippet storage must reject physical file replacement at the same URL")
+                } catch RealmBackgroundActorError.realmFileChangedDuringOpen {
+                    // Expected: the captured inode, rather than the URL, owns this save.
+                }
+                XCTAssertNil(probe.failure)
+                XCTAssertTrue(probe.didReplace)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: replacementRealm), replacementBefore,
+                               "Replacement rows and pending mutation generations must remain untouched")
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: originalRealm), originalBefore,
+                               "This single original store must roll back provisional fields and journals")
+            }()
+        }
+    }
+
+    @MainActor
+    func testCapturedSnippetStorageRejectsPhysicalFileReplacementAfterCapture() async throws {
+        try await assertPhysicalSnippetFileReplacement(atWritePermission: false)
+    }
+
+    @MainActor
+    func testCapturedSnippetStorageRejectsPhysicalFileReplacementAtWriterAdmission() async throws {
+        try await assertPhysicalSnippetFileReplacement(atWritePermission: true)
+    }
+
+    @MainActor
+    func testCapturedSnippetStorageRejectsPhysicalFileReplacementAtFinalPermission() async throws {
+        try await assertPhysicalSnippetFileReplacement(atWritePermission: true, afterMutation: true)
+    }
+}
+
+/// Called only on RealmBackgroundActor by the actual shared snippet writer.
+/// Files are moved within unique fixture paths; existing fixture teardown owns
+/// each path, including the retained original. No replacement data is copied.
+private final class SnippetPhysicalFileReplacementProbe: @unchecked Sendable {
+    let realm: Realm
+    let original: URL, replacement: URL, retired: URL
+    let afterMutation: Bool
+    private(set) var didReplace = false
+    private var retiredOriginal = false
+    private(set) var failure: Error?
+    init(realm: Realm, original: URL, replacement: URL, retired: URL, afterMutation: Bool) {
+        self.realm = realm; self.original = original; self.replacement = replacement
+        self.retired = retired; self.afterMutation = afterMutation
+    }
+    func replaceFile() throws {
+        try FileManager.default.moveItem(at: original, to: retired)
+        retiredOriginal = true
+        try FileManager.default.moveItem(at: replacement, to: original)
+        didReplace = true
+    }
+    func restoreFixturePaths() throws {
+        if didReplace { try FileManager.default.moveItem(at: original, to: replacement) }
+        if retiredOriginal { try FileManager.default.moveItem(at: retired, to: original) }
+    }
+    func permitsCommit() -> Bool {
+        guard realm.isInWriteTransaction, !didReplace else { return true }
+        if afterMutation, !realm.objects(HistoryRecord.self).contains(where: { $0.title == "Stale file save" }) {
+            return true
+        }
+        do { try replaceFile(); return true }
+        catch { failure = error; return false }
+    }
+}
+
+/// Every held resolver is released and its task joined within its test, including
+/// assertion-failure paths. Releasing before wait is also safe.
+private actor NativeSnippetNegativeLoadGate {
+    private var isOpen = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        isOpen = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testHeldDirectPredecessorCannotRegainNativeOwnerAfterSuccessorIntent() async throws {
+        let reader = ReaderContent()
+        let first = nativeSnippet("held-native-predecessor")
+        let successor = nativeSnippet("held-native-successor", title: "Successor")
+        let intent = try nativeIntent(from: first.url, to: successor.url)
+        let gate = NativeSnippetNegativeLoadGate()
+        let entered = expectation(description: "direct predecessor resolver entered")
+        let predecessor = Task { @MainActor in
+            do {
+                try await reader.load(url: first.url) { _ in
+                    entered.fulfill()
+                    await gate.wait()
+                    return first
+                }
+            } catch is CancellationError {
+                // A superseded predecessor may cancel or finish without publication.
+            } catch { XCTFail("Unexpected predecessor error: \(error)") }
+        }
+        let entry = await XCTWaiter.fulfillment(of: [entered], timeout: 5)
+        XCTAssertEqual(entry, .completed)
+        // No throwing unwrap after starting the held task: all paths join it.
+        let originalFence = reader.makeNativeContentCommitFence(for: first.url)
+        XCTAssertNotNil(originalFence)
+        let handoff = reader.receiveSelectionIntent(intent)
+        XCTAssertNotNil(handoff)
+        XCTAssertTrue(handoff?.permitsCapture == true)
+        XCTAssertFalse(originalFence?() ?? true)
+        await gate.release()
+        await predecessor.value
+        XCTAssertNil(reader.makeNativeContentCommitFence(for: first.url),
+                     "A retired direct resolver must not mint a fresh native mutation owner")
+        XCTAssertTrue(handoff?.permitsCapture == true,
+                      "Retiring A's native result must preserve B's predecessor handoff")
+        if handoff != nil {
+            do {
+                try await reader.load(url: successor.url, consuming: intent) { _ in successor }
+            } catch { XCTFail("Current successor intent must still consume its handoff: \(error)") }
+            XCTAssertTrue(reader.content === successor)
+            XCTAssertEqual(reader.pageURL, successor.url)
+            XCTAssertTrue(reader.makeNativeContentCommitFence(for: successor.url)?() == true)
+        }
+        XCTAssertFalse(originalFence?() ?? true)
+    }
+
+    @MainActor
+    func testFreshDirectRoundTripCannotCoalesceWithNativeRetiredPredecessor() async throws {
+        let reader = ReaderContent()
+        let old = nativeSnippet("held-native-roundtrip", title: "Retired result")
+        let fresh = nativeSnippet("held-native-roundtrip", title: "Fresh result")
+        let other = nativeSnippet("held-native-roundtrip-other")
+        let intent = try nativeIntent(from: old.url, to: other.url)
+        let oldGate = NativeSnippetNegativeLoadGate(), freshGate = NativeSnippetNegativeLoadGate()
+        let oldEntered = expectation(description: "old direct resolver entered")
+        let freshEntered = expectation(description: "fresh direct resolver entered independently")
+        let predecessor = Task { @MainActor in
+            do {
+                try await reader.load(url: old.url) { _ in
+                    oldEntered.fulfill()
+                    await oldGate.wait()
+                    return old
+                }
+            } catch is CancellationError { }
+            catch { XCTFail("Unexpected retired load error: \(error)") }
+        }
+        let oldEntry = await XCTWaiter.fulfillment(of: [oldEntered], timeout: 5)
+        XCTAssertEqual(oldEntry, .completed)
+        let oldFence = reader.makeNativeContentCommitFence(for: old.url)
+        XCTAssertNotNil(oldFence)
+        XCTAssertNotNil(reader.receiveSelectionIntent(intent))
+        XCTAssertFalse(oldFence?() ?? true)
+        let replacement = Task { @MainActor in
+            do {
+                try await reader.load(url: fresh.url) { _ in
+                    freshEntered.fulfill()
+                    await freshGate.wait()
+                    return fresh
+                }
+            } catch { XCTFail("Explicit fresh round-trip request must succeed: \(error)") }
+        }
+        let independentEntry = await XCTWaiter.fulfillment(of: [freshEntered], timeout: 5)
+        XCTAssertEqual(independentEntry, .completed,
+                       "A fresh direct request must not join the resolver retired by another native intent")
+        await freshGate.release()
+        if independentEntry == .completed {
+            // The real independent resolver can finish before the old result.
+            await replacement.value
+            XCTAssertTrue(reader.content === fresh)
+            await oldGate.release()
+            await predecessor.value
+        } else {
+            // Expected-red coalescing must fail assertions, not hang on oldGate.
+            await oldGate.release()
+            await predecessor.value
+            await replacement.value
+        }
+        XCTAssertTrue(reader.content === fresh, "Late predecessor completion must not displace the fresh result")
+        XCTAssertEqual(reader.contentTitle, "Fresh result")
+        XCTAssertFalse(oldFence?() ?? true)
+    }
+}
+
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testCapturedSnippetTargetURLChangeBeforeWriterRejectsAllRepresentations() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Original retargeted snippet</p>")
+            let original = try XCTUnwrap(loaded as? HistoryRecord)
+            let url = original.url, key = original.compoundKey
+            let successorURL = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "retargeted-before-writer"))
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: original))
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Self.seedSnippetRepresentations(url: url, in: realm)
+                let target = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+                // Keep the same physical row while replacing its logical target.
+                try realm.write { target.url = successorURL }
+                let before = Self.snippetWriteSnapshot(in: realm)
+                let changed = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                    contentURL: url, storage: storage, permitsCommit: { true },
+                    mutate: { Self.writeSnippetTestContent($0) })
+                XCTAssertFalse(changed, "A retargeted original row must not authorize edits to its old representations")
+                XCTAssertEqual(target.url, successorURL)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: realm), before)
+            }()
+        }
+    }
+
+    @MainActor
+    func testCapturedSnippetTargetURLChangeAtFinalPermissionRollsBackAllRepresentations() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: "<p>Original final retarget snippet</p>")
+            let original = try XCTUnwrap(loaded as? HistoryRecord)
+            let url = original.url, key = original.compoundKey
+            let successorURL = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "retargeted-at-final-permission"))
+            let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: original))
+            try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Self.seedSnippetRepresentations(url: url, in: realm)
+                let target = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+                let before = Self.snippetWriteSnapshot(in: realm)
+                let probe = SnippetTargetURLChangeProbe(row: target, destination: successorURL)
+                var rejected = false
+                do {
+                    _ = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                        contentURL: url, storage: storage,
+                        permitsCommit: { probe.permitsCommit() },
+                        mutate: { Self.writeSnippetTestContent($0) })
+                } catch is CancellationError { rejected = true }
+                XCTAssertTrue(probe.changedTarget, "The final-permission fault must execute inside the actual writer")
+                XCTAssertTrue(rejected, "A final target change must roll back the write")
+                XCTAssertEqual(target.url, url)
+                XCTAssertEqual(Self.snippetWriteSnapshot(in: realm), before)
+            }()
+        }
+    }
+}
+
+/// Invoked synchronously by the shared Realm writer on RealmBackgroundActor.
+private final class SnippetTargetURLChangeProbe: @unchecked Sendable {
+    let row: HistoryRecord
+    let destination: URL
+    private(set) var changedTarget = false
+    init(row: HistoryRecord, destination: URL) {
+        self.row = row
+        self.destination = destination
+    }
+    func permitsCommit() -> Bool {
+        if !changedTarget, row.realm?.isInWriteTransaction == true, row.title == "Atomic saved" {
+            row.url = destination
+            changedTarget = true
+        }
+        return true
+    }
+}
+
+#if DEBUG
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testPropagatedReaderMetadataRejectsRetiredAccountAndJournalsCurrentSuccessor() async throws {
+        try await withSnippetRealm { configuration in
+            let realm = try await Realm(configuration: configuration)
+            let row = HistoryRecord()
+            row.url = URL(string: "https://example.com/account-owned-metadata")!
+            row.title = ""
+            row.updateCompoundKey()
+            try realm.write { realm.add(row) }
+            let session = Session.ephemeralForTesting()
+            session.authenticated(authToken: "metadata-a", userID: 101)
+            let access = AccountSessionAccess(session: session)
+            let original = access.snapshot
+            session.authenticated(authToken: "metadata-b", userID: 101)
+            let before = realm.objects(BigSyncPendingMutation.self).count
+            do {
+                try await ReaderContentLoader.propagateReaderModeDefaults(
+                    for: row.url, excludingPrimaryKey: "another-row", primaryClassName: "HistoryRecord",
+                    readabilityHTML: "<p>Retired HTML</p>", resolvedTitle: "Retired title",
+                    account: (access, original), permitsCommit: { true }
+                )
+                XCTFail("A renewed authorization must retire the queued metadata writer")
+            } catch is CancellationError { }
+            try await realm.asyncRefresh()
+            XCTAssertEqual(row.title, "")
+            XCTAssertNil(row.html)
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, before)
+
+            try await ReaderContentLoader.propagateReaderModeDefaults(
+                for: row.url, excludingPrimaryKey: "another-row", primaryClassName: "HistoryRecord",
+                readabilityHTML: "<p>Current HTML</p>", resolvedTitle: "Current title",
+                account: (access, access.snapshot), permitsCommit: { true }
+            )
+            try await realm.asyncRefresh()
+            XCTAssertEqual(row.title, "Current title")
+            XCTAssertEqual(row.html, "<p>Current HTML</p>")
+            XCTAssertTrue(row.isReaderModeByDefault)
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, before + 1,
+                           "The accepted managed-row mutation must journal in its transaction")
+        }
+    }
+}
+#endif
+
+#if DEBUG
+/// Uses the real Session on MainActor while a real Realm writer runs on its
+/// owning actor. Semaphores coordinate only the test; no production lock/hook.
+private final class ReaderWriteRenewalProbe: @unchecked Sendable {
+    let session: Session
+    let attempted = DispatchSemaphore(value: 0)
+    let completed = DispatchSemaphore(value: 0)
+    let renewed = XCTestExpectation(description: "Same-user authorization renewed")
+
+    init(session: Session) { self.session = session }
+
+    func requestRenewal() {
+        Task { @MainActor in
+            self.attempted.signal()
+            self.session.authenticated(authToken: "writer-renewed", userID: 101)
+            self.completed.signal()
+            self.renewed.fulfill()
+        }
+        XCTAssertEqual(attempted.wait(timeout: .now() + 5), .success)
+    }
+}
+
+/// Captured Realm values remain on their owning actor; Sendable only carries
+/// the synchronous permission closure through the writer API.
+private final class ReaderProvisionalWriteRenewal: @unchecked Sendable {
+    let realm: Realm
+    let row: HistoryRecord
+    let probe: ReaderWriteRenewalProbe
+    let expectedMutations: Int
+
+    init(realm: Realm, row: HistoryRecord, probe: ReaderWriteRenewalProbe, expectedMutations: Int) {
+        self.realm = realm
+        self.row = row
+        self.probe = probe
+        self.expectedMutations = expectedMutations
+    }
+
+    func permitsCommit() -> Bool {
+        if row.title == "Provisional" {
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, expectedMutations)
+            probe.requestRenewal()
+            XCTAssertEqual(probe.completed.wait(timeout: .now() + 5), .success)
+        }
+        return true
+    }
+}
+
+/// Token is created, used and invalidated only on RealmBackgroundActor.
+private final class ReaderWriteCommitWitness: @unchecked Sendable {
+    var token: NotificationToken?
+    var observed = false
+}
+
+extension ReaderSnippetTitleTests {
+    @MainActor
+    func testCapturedWritersExcludeSameUserRenewalThroughDurableCommit() async throws {
+        for writer in ["snippet", "secondary", "primary"] {
+            try await withSnippetRealm { configuration in
+                let realm = try await Realm(configuration: configuration)
+                let row = HistoryRecord()
+                row.url = writer == "snippet"
+                    ? ReaderContentLoader.snippetURL(key: UUID().uuidString)!
+                    : URL(string: "https://example.com/commit-\(writer)")!
+                row.title = ""
+                row.updateCompoundKey()
+                let bookmark = Bookmark()
+                bookmark.url = row.url
+                bookmark.title = row.title
+                bookmark.updateCompoundKey()
+                try realm.write {
+                    realm.add(row)
+                    if writer == "snippet" { realm.add(bookmark) }
+                }
+                let expectedMutations = writer == "snippet" ? 2 : 1
+                let key = row.compoundKey, url = row.url
+                let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+                let session = Session.ephemeralForTesting()
+                session.authenticated(authToken: "writer-original", userID: 101)
+                let access = AccountSessionAccess(session: session), probe = ReaderWriteRenewalProbe(session: session)
+                let account = (access: access, snapshot: access.snapshot)
+                let witness = ReaderWriteCommitWitness()
+                try await { @RealmBackgroundActor in
+                    let writerRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                    witness.token = writerRealm.observe { notification, committedRealm in
+                        guard notification == .didChange, !witness.observed,
+                              committedRealm.object(ofType: HistoryRecord.self, forPrimaryKey: key)?.title == "Committed" else { return }
+                        witness.observed = true
+                        XCTAssertFalse(committedRealm.isInWriteTransaction)
+                        XCTAssertEqual(committedRealm.objects(BigSyncPendingMutation.self).count, expectedMutations)
+                        // This notification is delivered by the SDK's actual
+                        // commitWrite. Renewal must wait until it returns and the
+                        // publication fence is released. No Session read here.
+                        probe.requestRenewal()
+                        XCTAssertEqual(probe.completed.wait(timeout: .now() + 0.1), .timedOut,
+                                       "\(writer) released account exclusion before durable commit returned")
+                    }
+                }()
+                do {
+                    if writer == "primary" {
+                        try await row.asyncWrite(account: account) { _, live in
+                            live.title = "Committed"
+                            live.refreshChangeMetadata(explicitlyModified: true)
+                        }
+                    } else if writer == "secondary" {
+                        try await ReaderContentLoader.propagateReaderModeDefaults(
+                            for: url, excludingPrimaryKey: "other", primaryClassName: "HistoryRecord",
+                            readabilityHTML: "<p>Committed</p>", resolvedTitle: "Committed",
+                            account: account, permitsCommit: { true })
+                    } else {
+                        let changed = try await ReaderContentLoader.updateSnippetTitle(
+                            contentURL: url, title: "Committed", storage: storage,
+                            account: account, permitsCommit: { true })
+                        XCTAssertTrue(changed)
+                    }
+                } catch {
+                    await { @RealmBackgroundActor in witness.token?.invalidate() }()
+                    throw error
+                }
+                await { @RealmBackgroundActor in
+                    witness.token?.invalidate()
+                    XCTAssertTrue(witness.observed, "Must observe the actual \(writer) durable commit")
+                }()
+                await self.fulfillment(of: [probe.renewed], timeout: 5)
+                await realm.asyncRefresh()
+                XCTAssertEqual(row.title, "Committed")
+                if writer == "snippet" { XCTAssertEqual(bookmark.title, "Committed") }
+                XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, expectedMutations)
+                XCTAssertNotEqual(access.snapshot, account.snapshot)
+            }
+        }
+    }
+
+    @MainActor
+    func testSameUserRenewalAfterProvisionalMutationRollsBackRowsAndJournal() async throws {
+        for writer in ["snippet", "secondary", "primary"] {
+            try await withSnippetRealm { configuration in
+                let realm = try await Realm(configuration: configuration)
+                let row = HistoryRecord()
+                row.url = writer == "snippet" ? ReaderContentLoader.snippetURL(key: UUID().uuidString)!
+                    : URL(string: "https://example.com/rollback-\(writer)")!
+                row.title = "Original"
+                row.updateCompoundKey()
+                let bookmark = Bookmark()
+                bookmark.url = row.url
+                bookmark.title = row.title
+                bookmark.updateCompoundKey()
+                try realm.write {
+                    realm.add(row)
+                    if writer == "snippet" { realm.add(bookmark) }
+                }
+                let expectedMutations = writer == "snippet" ? 2 : 1
+                let key = row.compoundKey, url = row.url
+                let storage = try XCTUnwrap(ReaderContentLoader.SnippetStorage(content: row))
+                let session = Session.ephemeralForTesting()
+                session.authenticated(authToken: "writer-original", userID: 101)
+                let access = AccountSessionAccess(session: session), probe = ReaderWriteRenewalProbe(session: session)
+                let account = (access: access, snapshot: access.snapshot)
+                do {
+                    if writer == "primary" {
+                        try await row.asyncWrite(account: account) { _, live in
+                            live.title = "Provisional"
+                            live.refreshChangeMetadata(explicitlyModified: true)
+                            probe.requestRenewal()
+                            XCTAssertEqual(probe.completed.wait(timeout: .now() + 5), .success)
+                        }
+                    } else {
+                        try await { @RealmBackgroundActor in
+                            let writerRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                            let live = try XCTUnwrap(writerRealm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+                            // Permission is evaluated after provisional mutation
+                            // and journal refresh at the actual shared boundary.
+                            let permission = ReaderProvisionalWriteRenewal(
+                                realm: writerRealm, row: live, probe: probe, expectedMutations: expectedMutations)
+                            if writer == "snippet" {
+                                _ = try await ReaderContentLoader.updateCapturedSnippetRecords(
+                                    contentURL: url, storage: storage, account: account,
+                                    permitsCommit: { permission.permitsCommit() }, mutate: { $0.title = "Provisional"; return true })
+                            } else {
+                                try await ReaderContentLoader.updateContent(
+                                    url: url, account: account, permitsCommit: { permission.permitsCommit() },
+                                    mutate: { $0.title = "Provisional"; return true })
+                            }
+                        }()
+                    }
+                    XCTFail("\(writer) must propagate failed account publication")
+                } catch is CancellationError { }
+                await self.fulfillment(of: [probe.renewed], timeout: 5)
+                await realm.asyncRefresh()
+                XCTAssertEqual(row.title, "Original")
+                if writer == "snippet" { XCTAssertEqual(bookmark.title, "Original") }
+                XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty,
+                              "Rejected \(writer) metadata must not leave an upload generation")
+            }
+        }
+    }
+
+    @MainActor
+    func testQueuedSecondaryReaderPropagationRejectsRetargetedPhysicalRow() async throws {
+        try await assertQueuedSecondaryReaderPropagation(recreate: false)
+    }
+
+    @MainActor
+    func testQueuedSecondaryReaderPropagationRejectsRecreatedPhysicalRow() async throws {
+        try await assertQueuedSecondaryReaderPropagation(recreate: true)
+    }
+
+    @MainActor
+    private func assertQueuedSecondaryReaderPropagation(recreate: Bool) async throws {
+        try await withSnippetRealm { configuration in
+            let realm = try await Realm(configuration: configuration)
+            let row = HistoryRecord()
+            row.url = URL(string: "https://example.com/queued-secondary")!
+            row.title = ""
+            row.updateCompoundKey()
+            try realm.write { realm.add(row) }
+            let key = row.compoundKey, url = row.url, created = row.createdAt
+            let session = Session.ephemeralForTesting()
+            session.authenticated(authToken: "queued-secondary", userID: 101)
+            let access = AccountSessionAccess(session: session)
+            let account = (access: access, snapshot: access.snapshot)
+            let barrier = BookmarkWriterOwnerBarrier()
+            let owner = Task {
+                try await barrier.hold(configuration: configuration) { ownerRealm in
+                    let original = try XCTUnwrap(ownerRealm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+                    if recreate {
+                        ownerRealm.delete(original)
+                        let successor = HistoryRecord()
+                        successor.url = url
+                        successor.createdAt = created
+                        successor.compoundKey = key
+                        successor.title = ""
+                        ownerRealm.add(successor)
+                    } else {
+                        original.url = URL(string: "https://example.com/retargeted-secondary")!
+                    }
+                }
+            }
+            defer { barrier.release() }
+            await self.fulfillment(of: [barrier.entered], timeout: 5)
+            let submitted = self.expectation(description: "Secondary writer queued after physical row capture")
+            submitted.assertForOverFulfill = false
+            let propagation = Task {
+                try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                    try await ReaderContentLoader.propagateReaderModeDefaults(
+                        for: url, excludingPrimaryKey: "other", primaryClassName: "HistoryRecord",
+                        readabilityHTML: "<p>Old document</p>", resolvedTitle: "Old document",
+                        account: account, permitsCommit: { true })
+                }
+            }
+            self.addTeardownBlock {
+                barrier.release()
+                _ = await owner.result
+                _ = await propagation.result
+            }
+            await self.fulfillment(of: [submitted], timeout: 5)
+            barrier.release()
+            try await owner.value
+            try await propagation.value
+            await realm.asyncRefresh()
+            let successor = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+            XCTAssertEqual(successor.title, "")
+            XCTAssertNil(successor.html)
+            XCTAssertFalse(successor.isReaderModeByDefault)
+            XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+            XCTAssertEqual(access.snapshot, account.snapshot)
+            if recreate {
+                XCTAssertTrue(row.isInvalidated)
+                XCTAssertEqual(successor.url, url)
+                XCTAssertEqual(successor.createdAt, created)
+            } else {
+                XCTAssertNotEqual(successor.url, url)
+            }
+        }
+    }
+
+    @MainActor
+    func testScopedPropagationPreservesCanonicalHistoryAndHTTPSFeedDiscovery() async throws {
+        try await withSnippetRealm { configuration in
+            let realm = try await Realm(configuration: configuration)
+            let url = URL(string: "https://example.com/canonical-propagation")!
+            let history = HistoryRecord()
+            history.url = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+            history.title = ""
+            history.updateCompoundKey()
+            let feed = FeedEntry()
+            feed.url = URL(string: "http://example.com/canonical-propagation")!
+            feed.compoundKey = "http-feed-propagation"
+            let unrelated = FeedEntry()
+            unrelated.url = URL(string: "https://example.com/unrelated")!
+            unrelated.compoundKey = "unrelated-feed-propagation"
+            try realm.write { realm.add([history]); realm.add([feed, unrelated]) }
+            let session = Session.ephemeralForTesting()
+            let access = AccountSessionAccess(session: session)
+            try await ReaderContentLoader.propagateReaderModeDefaults(
+                for: url, excludingPrimaryKey: "other", primaryClassName: "HistoryRecord",
+                readabilityHTML: "<p>Canonical HTML</p>", resolvedTitle: "Canonical title",
+                account: (access, access.snapshot), permitsCommit: { true })
+            await realm.asyncRefresh()
+            XCTAssertEqual(history.title, "Canonical title")
+            XCTAssertEqual(feed.title, "Canonical title")
+            XCTAssertEqual(history.html, "<p>Canonical HTML</p>")
+            XCTAssertEqual(feed.html, "<p>Canonical HTML</p>")
+            XCTAssertEqual(unrelated.title, "")
+            XCTAssertNil(unrelated.html)
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 2)
+        }
+    }
+
+    @MainActor
+    func testPrimaryMetadataMutationFailurePropagatesAndRollsBackJournal() async throws {
+        enum Failure: Error { case metadata }
+        try await withSnippetRealm { configuration in
+            let realm = try await Realm(configuration: configuration)
+            let row = HistoryRecord()
+            row.url = URL(string: "https://example.com/throwing-primary")!
+            row.title = "Original"
+            row.updateCompoundKey()
+            try realm.write { realm.add(row) }
+            let session = Session.ephemeralForTesting() // Guest is intentionally admitted.
+            let access = AccountSessionAccess(session: session)
+            do {
+                try await row.asyncWrite(account: (access, access.snapshot)) { _, live in
+                    live.title = "Provisional"
+                    live.refreshChangeMetadata(explicitlyModified: true)
+                    throw Failure.metadata
+                }
+                XCTFail("The owning metadata failure must escape the write callback")
+            } catch Failure.metadata { }
+            await realm.asyncRefresh()
+            XCTAssertEqual(row.title, "Original")
+            XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+            try await row.asyncWrite(account: (access, access.snapshot)) { _, live in
+                live.title = "Guest saved"
+                live.refreshChangeMetadata(explicitlyModified: true)
+            }
+            XCTAssertEqual(row.title, "Guest saved")
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
+        }
+    }
+}
+#endif
