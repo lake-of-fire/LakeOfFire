@@ -498,8 +498,23 @@
                     publicationDateElement.id = 'reader-publication-date'
                     publicationDateElement.textContent = publishedTime || ''
                     const publishedTimeHTML = publishedTime ? publicationDateElement.outerHTML : ""
-                    const metaLine = publishedTimeHTML
-                        ? `<div id="reader-meta-line" class="byline-meta-line">${publishedTimeHTML}</div>`
+                    let viewOriginalHTML = ""
+                    try {
+                        const originalURL = new URL(windowURL)
+                        // Match the native metadata builder's internal-content exclusion.
+                        if (!(originalURL.protocol === 'internal:' && originalURL.hostname === 'local')) {
+                            const viewOriginalElement = document.createElement('a')
+                            viewOriginalElement.className = 'reader-view-original'
+                            viewOriginalElement.setAttribute('href', windowURL)
+                            viewOriginalElement.textContent = 'View Original'
+                            viewOriginalHTML = viewOriginalElement.outerHTML
+                        }
+                    } catch (_) {
+                        // A malformed canonical target cannot provide an original link.
+                    }
+                    const metaItems = [publishedTimeHTML, viewOriginalHTML].filter(Boolean)
+                    const metaLine = metaItems.length
+                        ? `<div id="reader-meta-line" class="byline-meta-line">${metaItems.join('<span class="reader-meta-divider">·</span>')}</div>`
                         : ""
 
                     // IMPORTANT: Keep `<body class="readability-mode">`; Swift uses it to identify reader-mode HTML.

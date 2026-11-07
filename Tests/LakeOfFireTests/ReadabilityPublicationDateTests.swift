@@ -70,9 +70,29 @@ final class ReadabilityPublicationDateTests: XCTestCase {
         XCTAssertEqual(result["payloadIsNull"], "true")
     }
 
+    func test_externalArticleWithoutDate_includesOriginalLink() async throws {
+        let sourceURL = try XCTUnwrap(URL(string: "https://reader.example/article?x=one&quote=%22&tag=%3Cpart%3E"))
+        let result = try await parseDate("", sourceURL: sourceURL)
+        XCTAssertEqual(result["originalCount"], "1")
+        XCTAssertEqual(result["originalHref"], sourceURL.absoluteString)
+        XCTAssertEqual(result["originalText"], "View Original")
+        XCTAssertEqual(result["metaCount"], "1")
+        XCTAssertEqual(result["dividerCount"], "0")
+    }
+
+    func test_externalArticleWithDate_separatesDateAndOriginalLink() async throws {
+        let result = try await parseDate("2026-10-22")
+        XCTAssertEqual(result["originalCount"], "1")
+        XCTAssertEqual(result["dateText"], result["expectedFormattedDate"])
+        XCTAssertEqual(result["dividerCount"], "1")
+    }
+
     // Execute the actual bundled parser, sanitizer and initialization template. Inspect the
     // generated DOM without executing it; this does not test rendered layout or image loading.
-    private func parseDate(_ value: String) async throws -> [String: String] {
+    private func parseDate(
+        _ value: String,
+        sourceURL: URL = URL(string: "https://reader.example/article")!
+    ) async throws -> [String: String] {
         let loaded = expectation(description: "Article fixture loaded")
         let parsed = expectation(description: "Production readability payload received")
         let delegate = PublicationDateFixtureDelegate(loaded: loaded, parsed: parsed)
@@ -93,7 +113,7 @@ final class ReadabilityPublicationDateTests: XCTestCase {
             <!doctype html><html><head><title>Reader date fixture</title></head><body>
             <article><h1>Reader date fixture</h1>\(String(repeating: paragraph, count: 12))</article>
             </body></html>
-            """, baseURL: URL(string: "https://reader.example/article"))
+            """, baseURL: sourceURL)
         await fulfillment(of: [loaded], timeout: 10)
         if let error = delegate.navigationError { throw error }
         _ = try await call("""
@@ -131,6 +151,11 @@ final class ReadabilityPublicationDateTests: XCTestCase {
                 datePresent: String(!!date),
                 dateChildren: String(date?.children.length || 0),
                 injectedNodes: String(output.querySelectorAll('#date-injected,img[onerror]').length),
+                originalCount: String(output.querySelectorAll('.reader-view-original').length),
+                originalHref: output.querySelector('.reader-view-original')?.getAttribute('href') || '',
+                originalText: output.querySelector('.reader-view-original')?.textContent || '',
+                metaCount: String(output.querySelectorAll('#reader-meta-line').length),
+                dividerCount: String(output.querySelectorAll('.reader-meta-divider').length),
                 expectedFormattedDate
             };
             """, arguments: [
