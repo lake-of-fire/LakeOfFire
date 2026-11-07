@@ -73,7 +73,7 @@ const childGetter = (doc, ns) => {
     }
 }
 
-const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
+const isExternal = uri => /^(?!blob:)[a-z][a-z\d+.-]*:/i.test(uri)
 
 // Archive identities are raw names. URI references stay encoded until an
 // exact storage lookup; a literal "%20" must never become a space twice.
@@ -92,9 +92,6 @@ const uriToArchivePath = href => {
 // relativeTo is always a raw archive path, never an already encoded URI.
 const resolveURL = (url, relativeTo) => {
     if (isExternal(url)) return url
-    // Check before URL dot-segment normalization can discard the component.
-    if (/%(?:2f|5c)/i.test(splitInternalResourceReference(url).resourceHref))
-        throw new URIError('Encoded archive path separator')
     const root = 'https://invalid.invalid/'
     let obj
     try {
@@ -104,10 +101,11 @@ const resolveURL = (url, relativeTo) => {
             throw new URIError('Invalid archive URI reference')
         throw error
     }
-    obj.search = ''
-    return obj.href.startsWith(root)
-        ? `${archivePathToURI(decodeArchivePath(obj.pathname.slice(1)))}${obj.hash}`
-        : obj.href
+    if (!obj.href.startsWith(root)) return obj.href
+    // Check the original input before URL normalization can discard a component.
+    if (/%(?:2f|5c)/i.test(splitInternalResourceReference(url).resourceHref))
+        throw new URIError('Encoded archive path separator')
+    return `${archivePathToURI(decodeArchivePath(obj.pathname.slice(1)))}${obj.hash}`
 }
 
 const manabiEpubReaderLoadLog = (stage, payload = {}) => {
@@ -1479,6 +1477,15 @@ ${doc.querySelector('parsererror').innerText}`)
         metadata?.creator?.map(mapContributor('author'))
             ?.concat(metadata?.contributor?.map?.(mapContributor('contributor')))
             ?.forEach(([keys, value]) => keys.forEach(key => {
+                // A DC publisher is a string until role metadata also names a
+                // publisher. Preserve both values in the contributor form.
+                if (key === 'publisher' && typeof this.metadata.publisher === 'string'
+                    && this.metadata.publisher) {
+                    this.metadata.publisher = [{
+                        name: this.metadata.publisher,
+                        sortAs: metadata.publisher?.fileAs,
+                    }]
+                }
                 if (this.metadata[key]) this.metadata[key].push(value)
                 else this.metadata[key] = [value]
             }))

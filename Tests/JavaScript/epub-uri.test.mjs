@@ -289,3 +289,130 @@ test('real View content links and TOC clicks reach the intended percent/reserved
         }
     } finally { view.close(); f.close() }
 })
+
+test('internal content links omit query strings while preserving encoded fragments', async () => {
+    const f = makeURIFixture({ names: ['chapter.xhtml'] })
+    try {
+        await f.book.init()
+        assert.equal(f.book.sections[0].resolveHref(`chapter.xhtml?edition=2#${encodedFragment}`),
+            `OPS/chapter.xhtml#${encodedFragment}`)
+        for (const href of ['nested%2F/../chapter.xhtml?edition=2', 'nested%5C/../chapter.xhtml?edition=2'])
+            assert.throws(() => f.book.sections[0].resolveHref(href), URIError)
+    } finally { f.close() }
+})
+
+const makeLinkViewFixture = async hrefs => {
+    globalThis.HTMLElement = DOMElement
+    globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
+    globalThis.CSSStyleSheet = class { replaceSync() {} }
+    globalThis.CustomEvent = class extends Event {
+        constructor(type, options = {}) { super(type, options); this.detail = options.detail }
+    }
+    globalThis.customElements = { define() {} }
+    globalThis.NodeFilter = { SHOW_ELEMENT: 1, SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8, FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3 }
+    const renderer = new Renderer()
+    globalThis.document = {
+        createElement: name => name === 'foliate-fxl' ? renderer : new DOMElement(),
+        createTreeWalker: () => ({}),
+    }
+    const { View } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/view.js')
+    const f = makeURIFixture({ names: ['chapter.xhtml'] })
+    const view = new View()
+    await f.book.init()
+    f.book.rendition.layout = 'pre-paginated'
+    await view.open(f.book)
+    const anchors = hrefs.map(href => {
+        const anchor = new DOMElement()
+        anchor.setAttribute('href', href)
+        return anchor
+    })
+    const doc = new EventTarget()
+    doc.documentElement = { lang: '', dir: '' }
+    doc.location = { href: 'ebook://processed/chapter' }
+    doc.querySelectorAll = selector => selector === 'a[href]' ? anchors : []
+    renderer.dispatchEvent(new CustomEvent('load', { detail: { doc, index: 0, location: doc.location.href } }))
+    const originalOpen = globalThis.open
+    const opened = []
+    globalThis.open = (...args) => opened.push(args)
+    return { ...f, view, renderer, anchors, opened,
+        close() { view.close(); f.close(); globalThis.open = originalOpen } }
+}
+
+test('real View forwards complete external scheme links to callbacks and the default open handoff', async () => {
+    const hrefs = [
+        'https://example.com/page?title=a%2Bb#part',
+        'mailto:reader@example.com?subject=Book#part',
+        'itms-apps://apps.apple.com/app/id123?mt=8#details',
+        'Web+Reader:book?edition=2#part',
+        'foo.bar:target?edition=2#part',
+        'blobster:target?edition=2#part',
+    ]
+    const f = await makeLinkViewFixture(hrefs)
+    const external = [], internal = []
+    f.view.addEventListener('external-link', event => external.push(event.detail.href))
+    f.view.addEventListener('link', event => internal.push(event.detail.href))
+    try {
+        for (const [index, anchor] of f.anchors.entries()) {
+            assert.equal(f.book.sections[0].resolveHref(hrefs[index]), hrefs[index])
+            anchor.dispatchEvent(new Event('click', { cancelable: true }))
+            await new Promise(resolve => setImmediate(resolve))
+        }
+        assert.deepEqual(external, hrefs)
+        assert.deepEqual(f.opened, hrefs.map(href => [href, '_blank']))
+        assert.deepEqual(internal, [])
+        assert.deepEqual(f.renderer.calls, [])
+    } finally { f.close() }
+})
+
+test('real View preserves network-path HTTPS queries and encoded path separators', async () => {
+    const hrefs = [
+        '//example.com/page?title=a%2Bb&edition=2#part',
+        '//example.com/a%2Fb?token=x%2By#part',
+        '//example.com/a%5Cb?token=x%2By#part',
+    ]
+    const expected = hrefs.map(href => 'https:' + href)
+    const f = await makeLinkViewFixture(hrefs)
+    const external = []
+    f.view.addEventListener('external-link', event => external.push(event.detail.href))
+    try {
+        for (const [index, anchor] of f.anchors.entries()) {
+            assert.equal(f.book.sections[0].resolveHref(hrefs[index]), expected[index])
+            anchor.dispatchEvent(new Event('click', { cancelable: true }))
+            await new Promise(resolve => setImmediate(resolve))
+        }
+        assert.deepEqual(external, expected)
+        assert.deepEqual(f.opened, expected.map(href => [href, '_blank']))
+        assert.deepEqual(f.renderer.calls, [])
+    } finally { f.close() }
+})
+
+test('an external-link consumer can cancel a custom-scheme handoff without internal navigation', async () => {
+    const href = 'web+reader:book?edition=2#part'
+    const f = await makeLinkViewFixture([href])
+    const received = []
+    f.view.addEventListener('external-link', event => {
+        received.push(event.detail.href)
+        event.preventDefault()
+    })
+    try {
+        f.anchors[0].dispatchEvent(new Event('click', { cancelable: true }))
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(received, [href])
+        assert.deepEqual(f.opened, [])
+        assert.deepEqual(f.renderer.calls, [])
+    } finally { f.close() }
+})
+
+test('external scheme classification follows ASCII URI grammar with an exact blob exception', () => {
+    const f = makeURIFixture()
+    try {
+        for (const href of ['https:target', 'mailto:reader@example.com', 'itms-apps:target',
+            'web+reader:target', 'foo.bar:target', 'A1+.-:target', 'blobster:target']) {
+            assert.equal(f.book.isExternal(href), true, href)
+        }
+        for (const href of ['blob:https://example.com/id', 'BLOB:https://example.com/id',
+            '1reader:target', 'reader_name:target', './A:B.xhtml', 'OPS/chapter.xhtml#part']) {
+            assert.equal(f.book.isExternal(href), false, href)
+        }
+    } finally { f.close() }
+})
