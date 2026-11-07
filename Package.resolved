@@ -1,5 +1,5 @@
 {
-  "originHash" : "296b8a1ae4db4aff85ea1ce0d66cf52931a12aa22c3a948b5789b06b3e966234",
+  "originHash" : "07ab5d73f186dd37b997b24c9a13a4fb9b38c5a6149e7f6181211faabac5cdf6",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -444,10 +444,9 @@
     {
       "identity" : "swiftuibackports",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/shaps80/SwiftUIBackports.git",
+      "location" : "https://github.com/lake-of-fire/SwiftUIBackports.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "6b1d4628ecf50fdfe3cdbe07389f0382dcf0cf1d"
+        "revision" : "bab0dd35861b9446476b46887280d1e32e154e7d"
       }
     },
     {
