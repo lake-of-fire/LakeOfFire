@@ -82,7 +82,7 @@ let package = Package(
         .package(path: "../swift-readability"),
         .package(url: "https://github.com/lake-of-fire/swift-dompurify.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
-        .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
+        .package(url: "https://github.com/lake-of-fire/SwiftUIBackports.git", revision: "bab0dd35861b9446476b46887280d1e32e154e7d"),
         .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", branch: "main"),
         .package(url: "https://github.com/facebook/zstd.git", from: "1.5.7"),
         .package(url: "https://github.com/EmergeTools/Pow.git", branch: "main"),
