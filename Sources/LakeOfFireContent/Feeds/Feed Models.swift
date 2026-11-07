@@ -1131,7 +1131,8 @@ fileprivate extension FeedEntry {
                 imageUrlOptional = try doc.getElementsByTag("iframe").compactMap({ iframeTag -> String? in
                     if let src = try? iframeTag.attr("src"),
                        src.hasPrefix("https://www.youtube.com"),
-                       let youtubeId = src.split(separator: "/").last {
+                       let components = URLComponents(string: src),
+                       let youtubeId = components.percentEncodedPath.split(separator: "/").last {
                         return "https://img.youtube.com/vi/\(youtubeId)/0.jpg"
                     }
                     return nil
@@ -1170,7 +1171,121 @@ fileprivate struct FeedFetchMetadata {
 
 fileprivate enum FeedFetchResult {
     case notModified(metadata: FeedFetchMetadata)
-    case fetched(Data, metadata: FeedFetchMetadata)
+    case fetched(Data, documentURL: URL, metadata: FeedFetchMetadata)
+}
+
+
+fileprivate struct ParsedAtomLink {
+    let href: String?
+    let resolvedHref: String?
+}
+
+/// FeedKit 9 retains href attributes but discards xml:base. Keep resolution in
+/// the document's XML scope, before any link relation is consumed by persistence.
+fileprivate final class AtomLinkBaseParser: NSObject, XMLParserDelegate {
+    private struct Element {
+        let name: String
+        let baseURL: URL?
+    }
+
+    private let documentURL: URL
+    private var elements: [Element] = []
+    private(set) var entryLinks: [[ParsedAtomLink]] = []
+    private(set) var completedFeed = false
+
+    init(documentURL: URL) {
+        self.documentURL = documentURL
+    }
+
+    private func matchesFeedKit(_ element: Element, named name: String) -> Bool {
+        // FeedKit 9 maps raw /feed/entry/link paths with namespace processing off.
+        // Match that association exactly, including namespace-less legacy feeds.
+        element.name == name
+    }
+
+    private static func resolve(_ reference: String, relativeTo baseURL: URL?) -> URL? {
+        let url = URL(string: reference, relativeTo: baseURL)
+            ?? reference.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
+                .flatMap { URL(string: $0, relativeTo: baseURL) }
+        guard let url, url.scheme != nil else { return nil }
+        return url.absoluteURL
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributes: [String: String] = [:]
+    ) {
+        let inheritedBase = elements.isEmpty ? documentURL : elements.last?.baseURL
+        let baseURL: URL?
+        if let reference = attributes["xml:base"] {
+            baseURL = Self.resolve(reference, relativeTo: inheritedBase)
+        } else {
+            baseURL = inheritedBase
+        }
+        let element = Element(name: elementName, baseURL: baseURL)
+        elements.append(element)
+        guard let root = elements.first, matchesFeedKit(root, named: "feed") else { return }
+
+        if elements.count == 2, matchesFeedKit(element, named: "entry") {
+            entryLinks.append([])
+        } else if elements.count == 3,
+                  matchesFeedKit(elements[1], named: "entry"),
+                  matchesFeedKit(element, named: "link"),
+                  !entryLinks.isEmpty {
+            let href = attributes["href"]
+            entryLinks[entryLinks.count - 1].append(
+                ParsedAtomLink(
+                    href: href,
+                    resolvedHref: href.flatMap { Self.resolve($0, relativeTo: baseURL)?.absoluteString }
+                )
+            )
+        }
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
+        if elements.count == 1, let root = elements.first, matchesFeedKit(root, named: "feed") {
+            completedFeed = true
+            // Match FeedKit's supported trailing-junk behavior after a complete feed.
+            parser.abortParsing()
+        }
+        elements.removeLast()
+    }
+}
+
+fileprivate func resolveAtomEntryLinks(
+    _ entries: [AtomFeedEntry], from data: Data, documentURL: URL
+) throws {
+    let delegate = AtomLinkBaseParser(documentURL: documentURL)
+    let parser = XMLParser(data: data)
+    parser.shouldProcessNamespaces = false
+    // External entity resolution remains disabled (XMLParser's default).
+    parser.delegate = delegate
+    _ = parser.parse()
+    guard delegate.completedFeed, delegate.entryLinks.count == entries.count else {
+        throw FeedError.parserFailed
+    }
+    // Validate the entire association before changing any FeedKit model. A parser
+    // disagreement must never attach one entry's base to a different entry/link.
+    for (entry, links) in zip(entries, delegate.entryLinks) {
+        let parsedLinks = entry.links ?? []
+        guard parsedLinks.count == links.count,
+              zip(parsedLinks, links).allSatisfy({ $0.0.attributes?.href == $0.1.href }) else {
+            throw FeedError.parserFailed
+        }
+    }
+    for (entry, links) in zip(entries, delegate.entryLinks) {
+        for (link, resolved) in zip(entry.links ?? [], links) {
+            link.attributes?.href = resolved.resolvedHref
+        }
+    }
 }
 
 fileprivate struct ParsedFeedEntryCollection {
@@ -1452,7 +1567,7 @@ fileprivate func getRssData(
         }
         throw FeedError.downloadFailed
     case 200..<300:
-        return .fetched(data, metadata: getMetadata)
+        return .fetched(data, documentURL: getHTTPResponse.url ?? rssUrl, metadata: getMetadata)
     case 300..<400:
         if shouldLogNiponica {
             logNiponica("stage=feedFetch.http.error rssURL=\(rssUrl.absoluteString) phase=get status=\(getHTTPResponse.statusCode) reason=unhandledRedirect")
@@ -1626,11 +1741,12 @@ public extension Feed {
 //                } else if let rawImageURL = item.media?.contents?
 //                    .lazy.compactMap({ $0.attributes?.url })
 //                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
-                } else if let rawImageURL = item.media?.mediaContents?
+                } else if let mediaImageURL = item.media?.mediaContents?
                     .lazy.compactMap({ $0.attributes?.url })
-                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
+                    .compactMap({ URL(string: $0) })
+                    .first(where: { entryImageExtensions.contains($0.pathExtension.lowercased()) })
                 {
-                    imageUrl = URL(string: rawImageURL)
+                    imageUrl = mediaImageURL
                 }
                 let content = item.content?.contentEncoded ?? item.description
                 let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
@@ -2020,7 +2136,7 @@ public extension Feed {
         switch fetchResult {
         case .notModified:
             throw FeedError.downloadFailed
-        case .fetched(var rssData, let metadata):
+        case .fetched(var rssData, let documentURL, let metadata):
             if shouldLogNiponica {
                 logNiponica(
                     "stage=feed.fetch.fetched feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) bytes=\(rssData.count) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
@@ -2081,6 +2197,7 @@ public extension Feed {
                         if shouldLogNiponica { logNiponica("stage=feed.fetch.parserError feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) feedType=atom reason=nilEntries collections=\(atomCollections.count)") }
                         throw FeedError.parserFailed
                     }
+                    try resolveAtomEntryLinks(items, from: rssData, documentURL: documentURL)
                     feedType = "atom"
                     itemCount = items.count
                     if shouldLogNiponica { logNiponica("stage=feed.fetch.parsed feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) feedType=atom entries=\(items.count) collections=\(atomCollections.count)") }

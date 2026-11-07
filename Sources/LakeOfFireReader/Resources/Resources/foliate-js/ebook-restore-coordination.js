@@ -90,13 +90,25 @@ export const runLocatorWithFractionFallback = async ({
 }) => {
     try {
         const receipt = await navigateLocator()
-        if (receipt == null || receipt === false) throw new Error('Saved locator was not accepted')
+        if (!isCurrent()) throw makeRestoreTransactionSupersededError('locator-completion')
+        // A busy renderer can refuse this attempt without retiring the restore.
+        // Other non-owning receipts must not navigate over their successor.
+        if (receipt?.superseded === true
+            || (receipt?.ignored === true && receipt.reason !== 'rendererNavigationInFlight')) {
+            throw makeRestoreTransactionSupersededError(receipt.reason)
+        }
+        const accepted = receipt === true
+            || (receipt?.ignored !== true && Number.isInteger(receipt?.index) && receipt.index >= 0)
+        if (!accepted) throw new Error('Saved locator was not accepted')
         return true
     } catch (error) {
         if (!isCurrent()) throw makeRestoreTransactionSupersededError('locator-fallback')
         if (isRestoreTransactionSupersededError(error) || !navigateFraction) throw error
         onFallback()
-        return (await navigateFraction()) === true
+        if (!isCurrent()) throw makeRestoreTransactionSupersededError('fraction-fallback')
+        const accepted = (await navigateFraction()) === true
+        if (!isCurrent()) throw makeRestoreTransactionSupersededError('fraction-completion')
+        return accepted
     }
 }
 

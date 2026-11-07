@@ -916,8 +916,9 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func importOPML(fileURL: URL, fromDownload download: Downloadable? = nil, realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration) async throws {
-        let text = try String(contentsOf: fileURL)
-        let opml = try OPML(Data(text.utf8))
+        // XML owns decoding: transcoding here leaves declarations such as UTF-16
+        // attached to UTF-8 bytes, rejecting valid subscription files.
+        let opml = try OPML(Data(contentsOf: fileURL))
         var allImportedCategories = OrderedSet<FeedCategory>()
         var allImportedDirectories = OrderedSet<FeedDirectory>()
         var allImportedFeeds = OrderedSet<Feed>()
@@ -926,9 +927,11 @@ public class LibraryDataManager: NSObject {
         guard let realm = configuration.realm else { return }
         let configurationID = configuration.id
         
+        var additiveCategoryIDs = Set<UUID>()
         for entry in opml.entries {
             try Task.checkCancellation()
-            let (importedCategories, importedDirectories, importedFeeds, importedScripts) = try await importOPMLEntry(entry, opml: opml, download: download, realmConfiguration: realmConfiguration)
+            let (importedCategories, importedDirectories, importedFeeds, importedScripts) = try await importOPMLEntry(entry, opml: opml, download: download, realmConfiguration: realmConfiguration,
+                recordAdditiveCategory: { additiveCategoryIDs.insert($0) })
             allImportedCategories.formUnion(importedCategories)
             allImportedDirectories.formUnion(importedDirectories)
             allImportedFeeds.formUnion(importedFeeds)
@@ -1037,6 +1040,7 @@ public class LibraryDataManager: NSObject {
             categoryIDs: allImportedCategoryIDs,
             scriptIDs: allImportedScriptIDs,
             downloadURL: download?.url,
+            preservingCategoryOrder: additiveCategoryIDs,
             in: realm
         )
     }
@@ -1050,6 +1054,7 @@ public class LibraryDataManager: NSObject {
         categoryIDs: [UUID],
         scriptIDs: [UUID],
         downloadURL: URL?,
+        preservingCategoryOrder: Set<UUID> = [],
         in realm: Realm
     ) async throws {
         try await realm.asyncWritePreservingOwnership {
@@ -1065,7 +1070,8 @@ public class LibraryDataManager: NSObject {
                 current: [UUID],
                 imported: [UUID],
                 sourceNeighborIDs: Set<UUID>,
-                reorderImported: Bool
+                reorderImported: Bool,
+                preservingOrder: Set<UUID> = []
             ) -> [UUID] {
                 var result = orderedUniqueIdentifiers(current)
                 let desired = orderedUniqueIdentifiers(imported)
@@ -1076,11 +1082,12 @@ public class LibraryDataManager: NSObject {
                 }).map { $0 + 1 } ?? result.count
                 result.insert(contentsOf: additions, at: insertion)
                 if reorderImported {
-                    let desiredSet = Set(desired)
+                    let reordered = desired.filter { !preservingOrder.contains($0) }
+                    let desiredSet = Set(reordered)
                     let positions = result.indices.filter {
                         desiredSet.contains(result[$0])
                     }
-                    for (position, identifier) in zip(positions, desired) {
+                    for (position, identifier) in zip(positions, reordered) {
                         result[position] = identifier
                     }
                 }
@@ -1115,7 +1122,8 @@ public class LibraryDataManager: NSObject {
                 current: currentCategoryIDs,
                 imported: importedCategoryIDs,
                 sourceNeighborIDs: categoryNeighbors,
-                reorderImported: true
+                reorderImported: true,
+                preservingOrder: preservingCategoryOrder
             )
             let finalScriptIDs = reconciledIdentifiers(
                 current: currentScriptIDs,
@@ -1155,6 +1163,96 @@ public class LibraryDataManager: NSObject {
         }
     }
 
+
+    /// Ordinary local OPML has no durable record IDs. Match only within its
+    /// current local container and add missing rows without editing reused rows.
+    @RealmBackgroundActor
+    private static func importStandardOPMLNode(
+        _ entry: OPMLEntry,
+        opml: OPML,
+        category: FeedCategory?,
+        directory: FeedDirectory?,
+        ordinal: Int?,
+        in realm: Realm
+    ) async throws -> (category: FeedCategory, directory: FeedDirectory?, feed: Feed?) {
+        try await realm.asyncWritePreservingOwnership {
+            try Task.checkCancellation()
+            func requireUnique<T>(_ matches: [T]) throws -> T? {
+                guard matches.count <= 1 else {
+                    throw CocoaError(.fileReadCorruptFile, userInfo: [
+                        NSLocalizedDescriptionKey: "This OPML item matches more than one local library item."
+                    ])
+                }
+                return matches.first
+            }
+            if let category {
+                guard !category.isInvalidated, !category.isDeleted, category.opmlURL == nil,
+                      category.realm == realm else { throw CocoaError(.fileReadNoPermission) }
+            }
+            if let directory {
+                guard !directory.isInvalidated, !directory.isDeleted, directory.opmlURL == nil,
+                      directory.realm == realm, directory.categoryID == category?.id else {
+                    throw CocoaError(.fileReadNoPermission)
+                }
+            }
+            let timestamp = Date()
+            let selectedCategory: FeedCategory
+            if let category {
+                selectedCategory = category
+            } else {
+                let title = entry.feedURL == nil ? (entry.title ?? entry.text) : "My Library"
+                let matches = Array(realm.objects(FeedCategory.self).filter {
+                    !$0.isDeleted && $0.opmlURL == nil && $0.title == title
+                })
+                if let existing = try requireUnique(matches) {
+                    selectedCategory = existing
+                } else {
+                    let created = FeedCategory()
+                    if entry.feedURL == nil {
+                        try Self.applyAttributes(opml: opml, opmlEntry: entry, category: created)
+                    } else {
+                        created.title = title
+                    }
+                    realm.add(created)
+                    created.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                    selectedCategory = created
+                }
+            }
+            if let feedURL = entry.feedURL {
+                let matches = Array(realm.objects(Feed.self).filter {
+                    !$0.isDeleted && $0.categoryID == selectedCategory.id
+                        && $0.directoryID == directory?.id && $0.rssUrl == feedURL
+                })
+                if let existing = try requireUnique(matches) {
+                    return (selectedCategory, directory, existing)
+                }
+                let created = Feed()
+                try Self.applyAttributes(opml: opml, opmlEntry: entry, feed: created,
+                                         categoryID: selectedCategory.id, directoryID: directory?.id,
+                                         ordinal: ordinal)
+                realm.add(created)
+                created.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                return (selectedCategory, directory, created)
+            }
+            guard category != nil else { return (selectedCategory, nil, nil) }
+            let title = entry.title ?? entry.text
+            let matches = Array(realm.objects(FeedDirectory.self).filter {
+                !$0.isDeleted && $0.opmlURL == nil && $0.categoryID == selectedCategory.id
+                    && $0.parentDirectoryID == directory?.id && $0.title == title
+            })
+            if let existing = try requireUnique(matches) {
+                return (selectedCategory, existing, nil)
+            }
+            let created = FeedDirectory()
+            try Self.applyAttributes(opml: opml, opmlEntry: entry, directory: created,
+                                     categoryID: selectedCategory.id, parentDirectoryID: directory?.id,
+                                     ordinal: ordinal, downloadURL: nil)
+            realm.add(created)
+            created.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+            return (selectedCategory, created, nil)
+        }
+    }
+
     @RealmBackgroundActor
     func importOPMLEntry(
         _ opmlEntry: OPMLEntry,
@@ -1167,7 +1265,9 @@ public class LibraryDataManager: NSObject {
         importedCategories: OrderedSet<FeedCategory> = OrderedSet(),
         importedDirectories: OrderedSet<FeedDirectory> = OrderedSet(),
         importedFeeds: OrderedSet<Feed> = OrderedSet(),
-        importedScripts: OrderedSet<UserScript> = OrderedSet()
+        importedScripts: OrderedSet<UserScript> = OrderedSet(),
+        recordAdditiveCategory: @RealmBackgroundActor (UUID) -> Void = { _ in },
+        standardImportAllowed: Bool = true
     ) async throws -> (OrderedSet<FeedCategory>, OrderedSet<FeedDirectory>, OrderedSet<Feed>, OrderedSet<UserScript>) {
         // Library documents never deliver executable behavior.
         if opmlEntry.attributeStringValue("script") != nil
@@ -1195,7 +1295,24 @@ public class LibraryDataManager: NSObject {
             actor: RealmBackgroundActor.shared
         )
 
-        if opmlEntry.feedURL != nil {
+        if download == nil, standardImportAllowed,
+           opmlEntry.attributeStringValue("uuid") == nil {
+            let node = try await Self.importStandardOPMLNode(
+                opmlEntry, opml: opml, category: category, directory: directory,
+                ordinal: ordinal, in: realm
+            )
+            if category == nil {
+                importedCategories.append(node.category)
+                recordAdditiveCategory(node.category.id)
+            }
+            category = node.category
+            directory = node.directory
+            if let feed = node.feed {
+                importedFeeds.append(feed)
+            } else if let directory = node.directory {
+                importedDirectories.append(directory)
+            }
+        } else if opmlEntry.feedURL != nil {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {
                 let feedCategory = feed.getCategory()
                 let feedURLChangedInManagedOPML = opmlEntry.feedURL.map { feed.rssUrl != $0 } == true
@@ -1316,7 +1433,10 @@ public class LibraryDataManager: NSObject {
                 importedCategories: importedCategories,
                 importedDirectories: importedDirectories,
                 importedFeeds: importedFeeds,
-                importedScripts: importedScripts
+                importedScripts: importedScripts,
+                recordAdditiveCategory: recordAdditiveCategory,
+                standardImportAllowed: standardImportAllowed
+                    && (opmlEntry.attributeStringValue("uuid") == nil || uuid != nil)
             )
             importedCategories.append(contentsOf: newCategories)
             importedDirectories.append(contentsOf: newDirectories)
