@@ -349,11 +349,12 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             try await feed.freeze().fetch(realmConfiguration: configuration)
             await realm.asyncRefresh()
             let active = Array(realm.objects(FeedEntry.self).filter { $0.feedID == feed.id && !$0.isDeleted })
-            XCTAssertEqual(active.count, 3)
+            let context = "Atom base case \(revision): href=\(fixture.href.debugDescription), expected=\(fixture.expected), active=\(active.map { "\($0.title):\($0.url.absoluteString)" })"
+            XCTAssertEqual(active.count, 3, context)
             XCTAssertEqual(active.first { $0.title == "Legacy extension" }?.url.absoluteString,
                            "https://foreign.example/article",
                            "URL resolution preserves FeedKit's raw-path namespace conventions")
-            let article = try XCTUnwrap(active.first { $0.title == "Article" })
+            let article = try XCTUnwrap(active.first { $0.title == "Article" }, context)
             XCTAssertEqual(article.url.absoluteString, fixture.expected)
             XCTAssertEqual(article.imageUrl?.absoluteString, "https://media.example/assets/cover.jpg")
             XCTAssertEqual(article.voiceFrameUrl?.absoluteString, "https://media.example/assets/frame")
