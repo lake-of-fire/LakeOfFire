@@ -60,6 +60,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public var isTemporarilySuspendedForLoading = false
     @Published public private(set) var isRecordedAudioSuspendedForLookup = false
     @Published public private(set) var shouldResumeRecordedAudioAfterLookupDismissal = false
+    public private(set) var recordedAudioLookupOwner: ReaderMediaPlaybackOwner?
     @Published public private(set) var isAITTSSuspendedForLookup = false
     @Published public private(set) var shouldResumeAITTSAfterLookupDismissal = false
     @Published public var playbackSource: ReaderPlaybackSource = .recordedAudio
@@ -232,17 +233,34 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    public func recordLookupRecordedAudioSuspension(wasPlaying: Bool) {
-        guard !isRecordedAudioSuspendedForLookup else { return }
+    public func recordLookupRecordedAudioSuspension(
+        wasPlaying: Bool,
+        owner: ReaderMediaPlaybackOwner? = nil
+    ) {
+        // Retargeting inside the same lookup keeps its original resume intent.
+        // A different media owner starts a new suspension lifetime.
+        guard !isRecordedAudioSuspendedForLookup || recordedAudioLookupOwner != owner else { return }
+        recordedAudioLookupOwner = owner
         isRecordedAudioSuspendedForLookup = true
         shouldResumeRecordedAudioAfterLookupDismissal = wasPlaying
     }
 
     @MainActor
+    public func consumeOwnedLookupRecordedAudioResumeRequest()
+        -> (owner: ReaderMediaPlaybackOwner, shouldResume: Bool)? {
+        guard isRecordedAudioSuspendedForLookup, let owner = recordedAudioLookupOwner else { return nil }
+        let shouldResume = shouldResumeRecordedAudioAfterLookupDismissal
+        cancelLookupRecordedAudioSuspension()
+        return (owner, shouldResume)
+    }
+
+    @MainActor
     public func consumeLookupRecordedAudioResumeRequest() -> Bool {
-        let shouldResume = isRecordedAudioSuspendedForLookup && shouldResumeRecordedAudioAfterLookupDismissal
-        isRecordedAudioSuspendedForLookup = false
-        shouldResumeRecordedAudioAfterLookupDismissal = false
+        // Legacy callers cannot consume a source-owned permission and resume
+        // whichever unrelated recording happens to occupy the shared player.
+        let shouldResume = recordedAudioLookupOwner == nil
+            && isRecordedAudioSuspendedForLookup && shouldResumeRecordedAudioAfterLookupDismissal
+        cancelLookupRecordedAudioSuspension()
         return shouldResume
     }
 
@@ -250,6 +268,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     public func cancelLookupRecordedAudioSuspension() {
         isRecordedAudioSuspendedForLookup = false
         shouldResumeRecordedAudioAfterLookupDismissal = false
+        recordedAudioLookupOwner = nil
     }
 
     @MainActor
