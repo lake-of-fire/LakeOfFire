@@ -261,6 +261,19 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     public static func getConsolidatedOrCreate(
         realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
     ) async throws -> LibraryConfiguration {
+        try await getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration, repairingMembership: true
+        )
+    }
+
+    /// Import publishes only its own relationships after identity matching.
+    /// General library repair must not remove archived slots or admit unrelated
+    /// orphan rows before an additive import can reject an ambiguous identity.
+    @RealmBackgroundActor
+    static func getConsolidatedOrCreate(
+        realmConfiguration: Realm.Configuration,
+        repairingMembership: Bool
+    ) async throws -> LibraryConfiguration {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(
             for: realmConfiguration
         )
@@ -288,6 +301,9 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                 return configuration.id
             }
             let duplicateIDs = configurations.dropFirst().map(\.id)
+            if !repairingMembership, duplicateIDs.isEmpty {
+                return primary.id
+            }
 
             func normalizedExistingCategories() -> [UUID] {
                 orderedUniqueIdentifiers(Array(primary.categoryIDs)).filter { id in
@@ -299,7 +315,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                         // CloudKit delivery; absence is not a deletion decision.
                         return true
                     }
-                    return !category.isDeleted && !category.isArchived
+                    return !category.isDeleted && (!repairingMembership || !category.isArchived)
                 }
             }
 
@@ -349,7 +365,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                         ofType: FeedCategory.self,
                         forPrimaryKey: id
                     ) {
-                        guard !category.isDeleted, !category.isArchived else { continue }
+                        guard !category.isDeleted, (!repairingMembership || !category.isArchived) else { continue }
                         register(
                             id: id,
                             key: LibraryAdmissionKey(
@@ -415,7 +431,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
             // archive/deletion decisions are never reused.
             for category in realm.objects(FeedCategory.self).where({
                 !$0.isDeleted && !$0.isArchived
-            }) where !existingCategoryIDs.contains(category.id) {
+            }) where repairingMembership && !existingCategoryIDs.contains(category.id) {
                 register(
                     id: category.id,
                     key: LibraryAdmissionKey(
@@ -430,7 +446,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
             }
             for script in realm.objects(UserScript.self).where({
                 !$0.isDeleted
-            }) where !existingScriptIDs.contains(script.id) {
+            }) where repairingMembership && !existingScriptIDs.contains(script.id) {
                 register(
                     id: script.id,
                     key: LibraryAdmissionKey(
@@ -923,7 +939,9 @@ public class LibraryDataManager: NSObject {
         var allImportedDirectories = OrderedSet<FeedDirectory>()
         var allImportedFeeds = OrderedSet<Feed>()
         var allImportedScripts = OrderedSet<UserScript>()
-        let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(realmConfiguration: realmConfiguration)
+        let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
+            realmConfiguration: realmConfiguration, repairingMembership: download != nil
+        )
         guard let realm = configuration.realm else { return }
         let configurationID = configuration.id
         
