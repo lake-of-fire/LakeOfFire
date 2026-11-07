@@ -1131,7 +1131,8 @@ fileprivate extension FeedEntry {
                 imageUrlOptional = try doc.getElementsByTag("iframe").compactMap({ iframeTag -> String? in
                     if let src = try? iframeTag.attr("src"),
                        src.hasPrefix("https://www.youtube.com"),
-                       let youtubeId = src.split(separator: "/").last {
+                       let components = URLComponents(string: src),
+                       let youtubeId = components.percentEncodedPath.split(separator: "/").last {
                         return "https://img.youtube.com/vi/\(youtubeId)/0.jpg"
                     }
                     return nil
@@ -1720,11 +1721,12 @@ public extension Feed {
 //                } else if let rawImageURL = item.media?.contents?
 //                    .lazy.compactMap({ $0.attributes?.url })
 //                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
-                } else if let rawImageURL = item.media?.mediaContents?
+                } else if let mediaImageURL = item.media?.mediaContents?
                     .lazy.compactMap({ $0.attributes?.url })
-                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
+                    .compactMap({ URL(string: $0) })
+                    .first(where: { entryImageExtensions.contains($0.pathExtension.lowercased()) })
                 {
-                    imageUrl = URL(string: rawImageURL)
+                    imageUrl = mediaImageURL
                 }
                 let content = item.content?.contentEncoded ?? item.description
                 let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
@@ -2110,6 +2112,7 @@ public extension Feed {
                 )
             }
             let parser = FeedKit.FeedParser(data: rssData)
+            let atomDocumentData = rssData
             return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
                 parser.parseAsync { parserResult in
@@ -2192,7 +2195,7 @@ public extension Feed {
                                           FeedRefreshRegistry.shared.isCurrent(refreshLease) else {
                                         throw CancellationError()
                                     }
-                                    try resolveAtomEntryLinks(items, from: rssData, documentURL: documentURL)
+                                    try resolveAtomEntryLinks(items, from: atomDocumentData, documentURL: documentURL)
                                     try await self.persist(
                                         atomItems: items,
                                         collections: atomCollections,

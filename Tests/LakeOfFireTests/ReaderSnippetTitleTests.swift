@@ -1016,6 +1016,69 @@ final class ReaderSnippetTitleTests: XCTestCase {
         }
     }
 
+
+    @MainActor
+    func testYouTubeThumbnailsUseIframePathForImportAndDisplay() async throws {
+        try await withSnippetRealm { configuration in
+            let storage = ReaderContentLoader.ImportStorage.capture()
+            let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+            let thumbnail = "https://img.youtube.com/vi/dQw4w9WgXcQ/0.jpg"
+            let cases: [(html: String, enabled: Bool, explicit: String?, expected: String?)] = [
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ'></iframe>", true, nil, thumbnail),
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0&amp;autoplay=1'></iframe>", true, nil, thumbnail),
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ#t=10'></iframe>", true, nil, thumbnail),
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0#t=10'></iframe>", true, nil, thumbnail),
+                ("<iframe src='https://www.youtube.com/embed/video%3Fpart%23one?rel=0'></iframe>", true, nil,
+                 "https://img.youtube.com/vi/video%3Fpart%23one/0.jpg"),
+                ("<img src='https://example.com/preferred.jpg'><iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0'></iframe>",
+                 true, nil, "https://example.com/preferred.jpg"),
+                ("<iframe src='https://example.com/embed/dQw4w9WgXcQ?rel=0'></iframe>", true, nil, nil),
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0'></iframe>", false, nil, nil),
+                ("<iframe src='https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0'></iframe>", true,
+                 "https://example.com/explicit.jpg", "https://example.com/explicit.jpg"),
+            ]
+            for (index, fixture) in cases.enumerated() {
+                let url = URL(string: "https://example.com/youtube-thumbnail-\(index)")!
+                let feed = Feed()
+                feed.extractImageFromContent = fixture.enabled
+                let entry = FeedEntry()
+                entry.feedID = feed.id
+                entry.url = url
+                entry.title = "Thumbnail \(index)"
+                entry.html = fixture.html
+                entry.imageUrl = fixture.explicit.flatMap(URL.init(string:))
+                entry.updateCompoundKey()
+                try realm.write { realm.add(feed); realm.add(entry) }
+                let key = entry.compoundKey
+                let expected = fixture.expected.flatMap(URL.init(string:))
+                try await { @RealmBackgroundActor in
+                    let sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                    try await sourceRealm.asyncRefresh()
+                    let source = try XCTUnwrap(sourceRealm.object(ofType: FeedEntry.self, forPrimaryKey: key))
+                    let beforeImage = source.imageUrl
+                    let beforeModified = source.modifiedAt
+                    let recordName = FeedEntry.className() + "." + key
+                    let beforeGeneration = sourceRealm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation
+                    let reference = try await ReaderContentLoader.importContent(.url(url), storage: storage, permitsCommit: { true })
+                    let history = try XCTUnwrap(sourceRealm.object(
+                        ofType: HistoryRecord.self,
+                        forPrimaryKey: try XCTUnwrap(reference).contentKey
+                    ))
+                    XCTAssertEqual(history.imageUrl, expected, "Imported thumbnail case \(index)")
+                    XCTAssertEqual(source.imageUrl, beforeImage)
+                    XCTAssertEqual(source.modifiedAt, beforeModified)
+                    XCTAssertEqual(sourceRealm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation, beforeGeneration)
+                }()
+                await realm.asyncRefresh()
+                XCTAssertEqual(entry.imageUrl, fixture.explicit.flatMap(URL.init(string:)))
+                let displayed = try await entry.imageURLToDisplay()
+                XCTAssertEqual(displayed, expected, "Displayed thumbnail case \(index)")
+                await realm.asyncRefresh()
+                XCTAssertEqual(entry.imageUrl, expected, "Cached thumbnail case \(index)")
+            }
+        }
+    }
+
     @MainActor
     func testOwnedHTTPSImportUsesHTTPFeedWithoutWritingLazyImageCache() async throws {
         try await withSnippetRealm { configuration in

@@ -806,12 +806,18 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     ) -> Bool {
         do { try packageRead?.validate() }
         catch { return failActiveTask(urlSchemeTask, error: error) }
-        guard schemeTaskCompletionOwnership.claimCompletion(urlSchemeTask as AnyObject) else {
+        guard schemeTaskCompletionOwnership.isActive(urlSchemeTask as AnyObject) else {
             return false
         }
         urlSchemeTask.didReceive(response)
         if let data {
+            guard schemeTaskCompletionOwnership.isActive(urlSchemeTask as AnyObject) else {
+                return false
+            }
             urlSchemeTask.didReceive(data)
+        }
+        guard schemeTaskCompletionOwnership.claimCompletion(urlSchemeTask as AnyObject) else {
+            return false
         }
         urlSchemeTask.didFinish()
         return true
