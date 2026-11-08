@@ -127,7 +127,14 @@ public struct TranscriptPageAsset: Sendable, Hashable {
         func parseCueBlock(_ block: String) -> Cue? {
             let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
-            if trimmed.hasPrefix("WEBVTT") || trimmed.hasPrefix("STYLE") || trimmed.hasPrefix("NOTE") {
+            let firstLine = trimmed.components(separatedBy: "\n")[0]
+            // Metadata keywords must end at their grammar boundary, not merely
+            // prefix a cue identifier such as NOTEworthy or STYLEguide.
+            let isHeader = firstLine == "WEBVTT"
+                || firstLine.hasPrefix("WEBVTT ") || firstLine.hasPrefix("WEBVTT\t")
+            let isNote = firstLine == "NOTE"
+                || firstLine.hasPrefix("NOTE ") || firstLine.hasPrefix("NOTE\t")
+            if isHeader || isNote || firstLine.trimmingCharacters(in: .whitespaces) == "STYLE" {
                 return nil
             }
 
