@@ -228,8 +228,11 @@ public actor TranscriptPageRegistry {
     }
 
     public func htmlData(for url: URL) -> Data? {
-        guard let key = url.transcriptAssetKey,
-              let asset = assetsByKey[key]
+        guard url.isTranscriptPageURL,
+              let key = url.transcriptAssetKey,
+              let asset = assetsByKey[key],
+              let expectedURL = asset.pageURL,
+              url.absoluteString == expectedURL.absoluteString
         else {
             return nil
         }
@@ -237,8 +240,11 @@ public actor TranscriptPageRegistry {
     }
 
     public func webVTTData(for url: URL) -> Data? {
-        guard let key = url.transcriptAssetKey,
+        guard url.isTranscriptVTTURL,
+              let key = url.transcriptAssetKey,
               let asset = assetsByKey[key],
+              let expectedURL = asset.webVTTURL,
+              url.absoluteString == expectedURL.absoluteString,
               let webVTT = asset.webVTT
         else {
             return nil
