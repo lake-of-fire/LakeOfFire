@@ -21,6 +21,7 @@ public enum MediaTranscriptCodecError: Error {
     case decompressionFailed(String)
     case compressionFailed(String)
     case contentTooLarge
+    case immutableIdentity
 }
 
 private extension URL {
@@ -99,11 +100,14 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
     }
 
     public func updateCompoundKey() {
-        compoundKey = Self.makeCompoundKey(
+        guard realm == nil else { return }
+        let key = Self.makeCompoundKey(
             contentURL: contentURL,
             stableMediaIdentity: stableMediaIdentity,
             languageCode: languageCode
         )
+        guard key != compoundKey else { return }
+        compoundKey = key
     }
 
     public func matchesReuse(
@@ -141,6 +145,14 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
         mediaFingerprint: String? = nil,
         generatorVersion: Int = MediaTranscript.currentGeneratorVersion
     ) throws {
+        let expectedKey = Self.makeCompoundKey(
+            contentURL: contentURL,
+            stableMediaIdentity: stableMediaIdentity,
+            languageCode: languageCode
+        )
+        guard realm == nil || compoundKey == expectedKey else {
+            throw MediaTranscriptCodecError.immutableIdentity
+        }
         content = try Self.encodeWebVTT(webVTT)
         format = .webvtt
         compression = .zstd
