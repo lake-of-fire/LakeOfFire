@@ -10,6 +10,7 @@ const harness = ({
     postThrows = false,
     requestID = null,
     timeoutThrows = false,
+    maximumDeliveryAttempts = 2,
 } = {}) => {
     const posted = []
     const timeouts = new Map()
@@ -23,6 +24,7 @@ const harness = ({
         isOwnerCurrent: () => current,
         makeRequestID: () => requestID ?? `request-${++requestSequence}`,
         maximumRequestIDAttempts: 3,
+        maximumDeliveryAttempts,
         scheduleTimeout: callback => {
             if (timeoutThrows) throw new Error('timer unavailable')
             const identifier = ++timeoutSequence
@@ -121,15 +123,58 @@ test('bridge and timeout setup failures settle without pending work', async () =
     assert.equal(timer.coordinator.pendingCount, 0)
 })
 
-test('timeout and cancellation fail closed', async () => {
+test('lost reply retries the original payload and accepts the replayed result', async () => {
+    const h = harness()
+    const message = { segments: [{ stableSegmentID: 'segment-a', metadata: { source: 'reader' } }] }
+    const completion = h.coordinator.request({
+        sectionID: 'section-a',
+        message,
+    })
+    message.segments[0].stableSegmentID = 'mutated-after-send'
+    message.segments[0].metadata.source = 'mutated-after-send'
+    const firstTimeout = [...h.timeouts.values()][0]
+    firstTimeout()
+
+    assert.equal(h.posted.length, 2)
+    assert.deepEqual(h.posted[1], h.posted[0])
+    const { requestID, sectionId, ...retriedPayload } = h.posted[1]
+    assert.equal(requestID, 'request-1')
+    assert.equal(sectionId, 'section-a')
+    assert.deepEqual(retriedPayload, {
+        segments: [{ stableSegmentID: 'segment-a', metadata: { source: 'reader' } }],
+    })
+    assert.equal(h.coordinator.settle({
+        requestID: 'request-1',
+        sectionId: 'section-a',
+        success: true,
+    }), true)
+    assert.equal((await completion).success, true)
+})
+
+test('retry exhaustion and cancellation fail closed', async () => {
     const timeout = harness()
     const timedCompletion = timeout.coordinator.request({
         sectionID: 'section-a',
         message: { segments: [] },
     })
-    const timeoutCallback = [...timeout.timeouts.values()][0]
-    timeoutCallback()
+    const firstTimeoutCallback = [...timeout.timeouts.values()][0]
+    firstTimeoutCallback()
+    const finalTimeoutCallback = [...timeout.timeouts.values()].at(-1)
+    finalTimeoutCallback()
     assert.equal((await timedCompletion).errorCode, 'nativeCommitTimeout')
+
+    const stale = harness()
+    const staleCompletion = stale.coordinator.request({
+        sectionID: 'section-stale',
+        message: { segments: [] },
+    })
+    stale.setCurrent(false)
+    const staleTimeoutCallback = [...stale.timeouts.values()][0]
+    staleTimeoutCallback()
+    const staleResult = await staleCompletion
+    assert.equal(stale.posted.length, 1)
+    assert.equal(staleResult.stale, true)
+    assert.equal(staleResult.errorCode, 'nativeCommitTimeout')
 
     const cancelled = harness()
     const cancelledCompletion = cancelled.coordinator.request({
@@ -154,6 +199,12 @@ test('invalid inputs and exhausted request IDs fail without posting', async () =
         sectionID: 'section-a',
         message: [],
     })).errorCode, 'invalidMessage')
+    const cyclicMessage = {}
+    cyclicMessage.self = cyclicMessage
+    assert.equal((await invalid.coordinator.request({
+        sectionID: 'section-a',
+        message: cyclicMessage,
+    })).errorCode, 'invalidMessage')
     assert.equal((await invalid.coordinator.request({
         sectionID: 's'.repeat(513),
         message: {},
@@ -172,4 +223,104 @@ test('invalid inputs and exhausted request IDs fail without posting', async () =
         message: {},
     })).errorCode, 'requestIDUnavailable')
     assert.equal(oversizedRequestID.posted.length, 0)
+})
+
+
+// Adapted from hotfix b2fcec0a's transport-error regressions. Diagnostics are
+// page-realm values and must never prevent the existing coordinator settling.
+const transportDiagnosticHarness = (t, makeError, nativeReply = undefined) => {
+    const timers = new Map()
+    let posts = 0
+    const coordinator = createNativeMarkReadRequestCoordinator({
+        makeRequestID: () => 'diagnostic-request',
+        postMessage: message => {
+            ++posts
+            if (nativeReply !== undefined) coordinator.settle({
+                requestID: message.requestID, sectionId: message.sectionId,
+                success: nativeReply, errorCode: 'nativeRejected',
+            })
+            throw makeError(coordinator)
+        },
+        scheduleTimeout: callback => { timers.set(1, callback); return 1 },
+        cancelTimeout: id => timers.delete(id),
+    })
+    t.after(() => coordinator.cancelAll())
+    return { coordinator, timers, get posts() { return posts } }
+}
+
+const unreadableTransportErrors = [
+    ['throwing message getter', () => Object.defineProperty({}, 'message', {
+        get() { throw new Error('unreadable message') },
+    })],
+    ['throwing string conversion', () => ({ toString() { throw new Error('unreadable string') } })],
+    ['null prototype', () => Object.create(null)],
+]
+for (const [name, makeError] of unreadableTransportErrors) {
+    test(`${name} cannot interrupt transport failure settlement`, async t => {
+        const h = transportDiagnosticHarness(t, makeError)
+        const result = await h.coordinator.request({ sectionID: 'section-a', message: {} })
+        assert.equal(result.success, false)
+        assert.equal(result.errorCode, 'nativePostFailed')
+        assert.equal(result.stale, false)
+        assert.equal(h.coordinator.pendingCount, 0)
+        assert.equal(h.timers.size, 0)
+        assert.equal(h.posts, 1)
+    })
+}
+for (const error of [new Error('bridge unavailable'), 'bridge unavailable', null]) {
+    test(`transport diagnostics preserve ${error === null ? 'null fallback' : typeof error} errors`, async t => {
+        const h = transportDiagnosticHarness(t, () => error)
+        const result = await h.coordinator.request({ sectionID: 'section-a', message: {} })
+        assert.equal(result.errorCode, error === null ? 'nativePostFailed' : 'bridge unavailable')
+        assert.equal(h.coordinator.pendingCount, 0)
+        assert.equal(h.timers.size, 0)
+    })
+}
+for (const success of [true, false]) {
+    test(`synchronous native ${success} survives an unreadable wrapper error`, async t => {
+        const h = transportDiagnosticHarness(t, unreadableTransportErrors[0][1], success)
+        const result = await h.coordinator.request({ sectionID: 'section-a', message: {} })
+        assert.equal(result.success, success)
+        assert.equal(result.errorCode, success ? null : 'nativeRejected')
+        assert.equal(h.coordinator.pendingCount, 0)
+        assert.equal(h.timers.size, 0)
+    })
+}
+test('diagnostic reentry cannot replace an already settled cancellation', async t => {
+    const h = transportDiagnosticHarness(t, coordinator => Object.defineProperty({}, 'message', {
+        get() { coordinator.cancelAll('readerReplaced'); throw new Error('after cancellation') },
+    }))
+    const result = await h.coordinator.request({ sectionID: 'section-a', message: {} })
+    assert.equal(result.success, false)
+    assert.equal(result.stale, true)
+    assert.equal(result.errorCode, 'readerReplaced')
+    assert.equal(h.coordinator.pendingCount, 0)
+    assert.equal(h.timers.size, 0)
+})
+
+test('an unreadable retry error retires the successor timer without another post', async t => {
+    const timers = new Map()
+    let timerID = 0
+    let posts = 0
+    const coordinator = createNativeMarkReadRequestCoordinator({
+        makeRequestID: () => 'retry-diagnostic',
+        postMessage: () => {
+            if (++posts === 2) throw unreadableTransportErrors[0][1]()
+        },
+        scheduleTimeout: callback => { timers.set(++timerID, callback); return timerID },
+        cancelTimeout: id => timers.delete(id),
+    })
+    t.after(() => coordinator.cancelAll())
+    const completion = coordinator.request({ sectionID: 'section-a', message: {} })
+    const firstTimer = timers.get(1)
+    timers.delete(1) // A real scheduler removes a timer before invoking it.
+    assert.doesNotThrow(() => firstTimer())
+    const result = await completion
+    assert.equal(result.success, false)
+    assert.equal(result.errorCode, 'nativePostFailed')
+    assert.equal(posts, 2)
+    assert.equal(coordinator.pendingCount, 0)
+    assert.equal(timers.size, 0)
+    firstTimer() // A late invocation cannot revive the retired request.
+    assert.equal(posts, 2)
 })
