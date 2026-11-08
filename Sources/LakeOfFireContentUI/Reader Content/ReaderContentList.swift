@@ -433,7 +433,7 @@ struct ListItemToggleStyle: ToggleStyle {
     }
 }
 
-public enum ReaderContentSortOrder: Sendable {
+public enum ReaderContentSortOrder: Equatable, Sendable {
     case providedOrder
     case publicationDate
     case createdAt
@@ -453,8 +453,13 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         filteredContentSnapshot = FilteredContentSnapshot(contents: [], ids: [])
     }
 
-    public init(initialContents contents: [C], sortOrder: ReaderContentSortOrder? = nil) {
-        let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
+    public init(
+        initialContents contents: [C],
+        sortOrder: ReaderContentSortOrder? = nil,
+        hasContentFilter: Bool = false
+    ) {
+        // An asynchronous filter must approve rows before their first display.
+        let initialContents = hasContentFilter ? [] : Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
         filteredContentSnapshot = FilteredContentSnapshot(
             contents: initialContents,
             ids: initialContents.map(\.compoundKey)
@@ -568,6 +573,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         if !hasLoadedBefore,
            filteredContents.isEmpty,
            !contents.isEmpty,
+           contentFilter == nil,
            postSortTransform == nil {
             let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
             applyFilteredContents(initialContents, ids: initialContents.map(\.compoundKey))
@@ -963,6 +969,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
 public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections: View, Header: View, EmptyState: View>: View {
     let contents: [C]
     var contentFilter: (@Sendable (Int, C) async throws -> Bool)? = nil
+    let contentFilterRevision: AnyHashable?
     var sortOrder = ReaderContentSortOrder.publicationDate
     let postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])?
     let includeSource: Bool
@@ -990,7 +997,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
-    @StateObject private var viewModel = ReaderContentListViewModel<C>()
+    @StateObject private var viewModel: ReaderContentListViewModel<C>
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     @State private var groupedSections: [ReaderContentGroupingSection<C>] = []
     @State private var sectionExpanded: [String: Bool] = [:]
@@ -1008,6 +1015,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @State private var multiSelection = Set<String>()
     @State private var pendingScrollTargetID: String?
     @State private var lastScrolledTargetID: String?
+    @State private var currentLoadRequestID: UUID?
     
     private var showEmptyState: Bool {
         return !viewModel.showLoadingIndicator && viewModel.filteredContents.isEmpty
@@ -1196,23 +1204,25 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     @MainActor
-    private func scheduleScrollToTarget(with proxy: ScrollViewProxy, reason: String) {
-        guard let targetID = normalizedScrollTargetID else { return }
-        guard viewModel.filteredContentIDs.contains(targetID) else {
-            return
-        }
-        guard pendingScrollTargetID != targetID else {
-            return
-        }
+    private func scrollToTarget(with proxy: ScrollViewProxy, requestID: UUID) async {
+        guard !Task.isCancelled, currentLoadRequestID == requestID,
+              let targetID = normalizedScrollTargetID,
+              viewModel.filteredContentIDs.contains(targetID) else { return }
         let anchorID = readerContentListSeparatedRowScrollAnchorID(targetID)
         pendingScrollTargetID = targetID
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            guard pendingScrollTargetID == targetID else { return }
-            pendingScrollTargetID = nil
-            withAnimation(.easeInOut(duration: 0.25)) {
-                proxy.scrollTo(anchorID, anchor: .center)
+        await performReaderContentListScroll(
+            isCurrent: {
+                currentLoadRequestID == requestID
+                    && pendingScrollTargetID == targetID
+                    && viewModel.filteredContentIDs.contains(targetID)
+            },
+            scroll: {
+                pendingScrollTargetID = nil
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(anchorID, anchor: .center)
+                }
             }
-        }
+        )
     }
 
 #if os(iOS)
@@ -1253,6 +1263,13 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 
     @ViewBuilder
     private func listBody(scrollProxy: ScrollViewProxy) -> some View {
+        let request = ReaderContentListLoadRequest(
+            contents: contents,
+            contentFilterRevision: contentFilterRevision,
+            sortOrder: sortOrder,
+            hasContentFilter: contentFilter != nil,
+            hasPostSortTransform: postSortTransform != nil
+        )
         listContainerWithSpacing
                 .toolbar {
                     //#if os(iOS)
@@ -1285,34 +1302,35 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     }
                     refreshDeleteEligibilityCache()
                 }
-            .task { @MainActor in
-                    try? await viewModel.load(
-                        contents: contents,
+                .task(id: request) { @MainActor in
+                    guard !Task.isCancelled else { return }
+                    let requestID = UUID()
+                    currentLoadRequestID = requestID
+                    pendingScrollTargetID = nil
+                    deleteEligibilityRefreshTask?.cancel()
+                    await performReaderContentListLoad(
+                        viewModel: viewModel,
+                        request: request,
                         contentFilter: contentFilter,
-                        sortOrder: sortOrder,
-                        postSortTransform: postSortTransform
+                        postSortTransform: postSortTransform,
+                        isCurrent: { currentLoadRequestID == requestID },
+                        onLoaded: {
+                            refreshGrouping()
+                            refreshDeleteEligibilityCache()
+                            await scrollToTarget(with: scrollProxy, requestID: requestID)
+                        }
                     )
-                    refreshGrouping()
-                    refreshDeleteEligibilityCache()
-                    scheduleScrollToTarget(with: scrollProxy, reason: "taskEnd")
-                }
-                .onChange(of: contents) { contents in
-                    Task { @MainActor in
-                        try? await viewModel.load(
-                            contents: contents,
-                            contentFilter: contentFilter,
-                            sortOrder: sortOrder,
-                            postSortTransform: postSortTransform
-                        )
-                        refreshGrouping()
-                        refreshDeleteEligibilityCache()
-                        scheduleScrollToTarget(with: scrollProxy, reason: "contentsChanged")
-                    }
                 }
                 .onChange(of: viewModel.filteredContents) { _ in
+                    // Group the displayed snapshot immediately, including the
+                    // existing no-filter preview, without starting more work.
+                    guard currentLoadRequestID != nil else { return }
                     refreshGrouping()
-                    refreshDeleteEligibilityCache()
-                    scheduleScrollToTarget(with: scrollProxy, reason: "filteredContentsChanged")
+                }
+                .onDisappear {
+                    currentLoadRequestID = nil
+                    pendingScrollTargetID = nil
+                    deleteEligibilityRefreshTask?.cancel()
                 }
     }
 
@@ -1525,9 +1543,13 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         }
     }
     
+    /// Change contentFilterRevision when state captured by contentFilter changes,
+    /// including filter preferences and progress notifications. It restarts only
+    /// the list's load task and does not recreate the list or its selection state.
     public init(
         contents: [C],
         contentFilter: (@Sendable (Int, C) async throws -> Bool)? = nil,
+        contentFilterRevision: AnyHashable? = nil,
         sortOrder: ReaderContentSortOrder,
         includeSource: Bool,
         entrySelection: Binding<String?>,
@@ -1554,6 +1576,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     ) {
         self.contents = contents
         self.contentFilter = contentFilter
+        self.contentFilterRevision = contentFilterRevision
         self.sortOrder = sortOrder
         self.postSortTransform = postSortTransform
         self.includeSource = includeSource
@@ -1577,7 +1600,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.onContentSelected = onContentSelected
         self.onContentAppear = onContentAppear
         self.scrollTargetID = scrollTargetID
-        _viewModel = StateObject(wrappedValue: ReaderContentListViewModel(initialContents: contents, sortOrder: sortOrder))
+        _viewModel = StateObject(wrappedValue: ReaderContentListViewModel(
+            initialContents: contents,
+            sortOrder: sortOrder,
+            hasContentFilter: contentFilter != nil
+        ))
     }
 }
 
@@ -1585,6 +1612,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
     init(
         contents: [C],
         contentFilter: (@Sendable (Int, C) async throws -> Bool)? = nil,
+        contentFilterRevision: AnyHashable? = nil,
         sortOrder: ReaderContentSortOrder,
         includeSource: Bool,
         entrySelection: Binding<String?>,
@@ -1611,6 +1639,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         self.init(
             contents: contents,
             contentFilter: contentFilter,
+            contentFilterRevision: contentFilterRevision,
             sortOrder: sortOrder,
             includeSource: includeSource,
             entrySelection: entrySelection,
