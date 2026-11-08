@@ -55,7 +55,8 @@ public struct TranscriptPageAsset: Sendable, Hashable {
     public static func makeHTML(
         title: String,
         canonicalContentURL: URL,
-        cues: [Cue]
+        cues: [Cue],
+        languageIdentifier: String = "en"
     ) -> String {
         let cueMarkup = cues.enumerated().map { index, cue -> String in
             let identifierAttribute = cue.identifier.map {
@@ -68,7 +69,7 @@ public struct TranscriptPageAsset: Sendable, Hashable {
 
         return """
         <!doctype html>
-        <html lang="en">
+        <html lang="\(escapeHTML(normalizedLanguageIdentifier(languageIdentifier)))">
         <head>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -184,13 +185,15 @@ public struct TranscriptPageAsset: Sendable, Hashable {
         canonicalContentURL: URL,
         title: String,
         webVTT: String,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        languageIdentifier: String = "en"
     ) -> TranscriptPageAsset {
         let cues = cues(fromWebVTT: webVTT)
         let html = makeHTML(
             title: title,
             canonicalContentURL: canonicalContentURL,
-            cues: cues
+            cues: cues,
+            languageIdentifier: languageIdentifier
         )
         return TranscriptPageAsset(
             key: key,
@@ -200,6 +203,22 @@ public struct TranscriptPageAsset: Sendable, Hashable {
             webVTT: webVTT,
             createdAt: createdAt
         )
+    }
+
+    /// Bounded language-tag shape for HTML metadata, not registry validation.
+    /// Rendering normalization must never be reused to change transcript keys.
+    private static func normalizedLanguageIdentifier(_ value: String) -> String {
+        let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: "-")
+        let parts = raw.split(separator: "-", omittingEmptySubsequences: false)
+        guard !raw.isEmpty, raw.count <= 64, let language = parts.first,
+              (2...8).contains(language.count),
+              language.allSatisfy({ $0.isASCII && $0.isLetter }),
+              parts.dropFirst().allSatisfy({
+                  !$0.isEmpty && $0.count <= 8
+                      && $0.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) })
+              }) else { return "und" }
+        return raw.lowercased()
     }
 
     private static func escapeHTML(_ string: String) -> String {
