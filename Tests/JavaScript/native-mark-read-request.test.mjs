@@ -123,19 +123,26 @@ test('bridge and timeout setup failures settle without pending work', async () =
     assert.equal(timer.coordinator.pendingCount, 0)
 })
 
-test('lost reply retries the exact request and accepts the replayed result', async () => {
+test('lost reply retries the original payload and accepts the replayed result', async () => {
     const h = harness()
-    const message = { segments: [{ stableSegmentID: 'segment-a' }] }
+    const message = { segments: [{ stableSegmentID: 'segment-a', metadata: { source: 'reader' } }] }
     const completion = h.coordinator.request({
         sectionID: 'section-a',
         message,
     })
     message.segments[0].stableSegmentID = 'mutated-after-send'
+    message.segments[0].metadata.source = 'mutated-after-send'
     const firstTimeout = [...h.timeouts.values()][0]
     firstTimeout()
 
     assert.equal(h.posted.length, 2)
     assert.deepEqual(h.posted[1], h.posted[0])
+    const { requestID, sectionId, ...retriedPayload } = h.posted[1]
+    assert.equal(requestID, 'request-1')
+    assert.equal(sectionId, 'section-a')
+    assert.deepEqual(retriedPayload, {
+        segments: [{ stableSegmentID: 'segment-a', metadata: { source: 'reader' } }],
+    })
     assert.equal(h.coordinator.settle({
         requestID: 'request-1',
         sectionId: 'section-a',
