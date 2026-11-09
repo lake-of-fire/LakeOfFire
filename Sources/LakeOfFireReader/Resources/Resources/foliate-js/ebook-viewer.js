@@ -106,9 +106,10 @@ const touchPostingDocument = window.document
 const touchPostingDocumentStartedAtMs = readerDocumentStartedAtMs(window)
 const postViewerTouchStart = payload => {
     if (window.document !== touchPostingDocument) return
+    const documentStartedAtMs = touchPostingDocumentStartedAtMs ?? readerDocumentStartedAtMs(window)
     window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
         ...payload,
-        documentStartedAtMs: touchPostingDocumentStartedAtMs,
+        documentStartedAtMs,
     })
 }
 

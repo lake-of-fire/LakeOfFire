@@ -2182,3 +2182,265 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     }
 
 }
+
+
+extension ReaderWebViewCallbackContractTests {
+    func testNavigationFinishRetainsTransientHandlerUntilObserverRuns() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let gate = ReaderCallbackGate()
+        let commitStarted = expectation(description: "semantic commit is suspended")
+        addTeardownBlock { @MainActor in
+            await gate.release()
+            let commit = fixture.taskManager.onNavigationCommittedTask
+            let finish = fixture.taskManager.onNavigationFinishedTask
+            fixture.taskManager.cancelNavigationWork()
+            _ = try? await commit?.value
+            _ = try? await finish?.value
+        }
+        var observedFinishes = 0
+        var transientHandler: ReaderWebViewHandler? = ReaderWebViewHandler(
+            navigationTaskManager: fixture.taskManager,
+            onNavigationFinished: { _ in observedFinishes += 1 },
+            readerContent: fixture.readerContent,
+            readerViewModel: fixture.handler.readerViewModel,
+            readerModeViewModel: fixture.readerModeViewModel,
+            readerMediaPlayerViewModel: fixture.handler.readerMediaPlayerViewModel,
+            scriptCaller: fixture.handler.scriptCaller,
+            navigator: fixture.handler.navigator
+        )
+        fixture.taskManager.startOnNavigationCommitted {
+            commitStarted.fulfill()
+            await gate.wait()
+        }
+        await fulfillment(of: [commitStarted], timeout: 5)
+        transientHandler?.onNavigationFinished(state: .empty)
+        let finish = try XCTUnwrap(fixture.taskManager.onNavigationFinishedTask)
+        // SwiftUI can replace its callback relay's handler while semantic
+        // commit work is suspended. The queued finish still owns its observer.
+        transientHandler = nil
+        await gate.release()
+        try await finish.value
+        XCTAssertEqual(observedFinishes, 1)
+    }
+
+    func testPreparedDocumentURLAnnouncementPreservesRenderSelectionUntilPhysicalCommit() async throws {
+        try await verifyPreparedDocumentURLAnnouncement(supersededByUserNavigation: false)
+    }
+
+    func testSameURLUserNavigationSupersedesPreparedDocumentExpectation() async throws {
+        try await verifyPreparedDocumentURLAnnouncement(supersededByUserNavigation: true)
+    }
+
+    func testDistinctSameDocumentIntentRemainsAdmittedAfterPreparedCommit() async throws {
+        try await verifyPreparedDocumentURLAnnouncement(
+            supersededByUserNavigation: false, distinctSameDocumentIntent: true
+        )
+    }
+
+    func testCanceledPreparedDocumentCannotExemptLaterSameURLSelection() async throws {
+        try await verifyPreparedDocumentURLAnnouncement(
+            supersededByUserNavigation: false, cancelBeforeReadiness: true
+        )
+    }
+
+    func testDistinctSameDocumentIntentRemainsAdmittedBeforePreparedCommit() async throws {
+        try await verifyPreparedDocumentURLAnnouncement(
+            supersededByUserNavigation: false, distinctBeforePhysicalCommit: true
+        )
+    }
+
+    private func verifyPreparedDocumentURLAnnouncement(
+        supersededByUserNavigation: Bool, distinctSameDocumentIntent: Bool = false,
+        cancelBeforeReadiness: Bool = false, distinctBeforePhysicalCommit: Bool = false
+    ) async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let mode = fixture.readerModeViewModel
+        let reader = fixture.readerContent
+        let caller = fixture.handler.scriptCaller
+        let callbackReader = ReaderCallbackViewModel(
+            realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []
+        )
+        fixture.handler.readerViewModel = callbackReader
+        fixture.handler.readerMediaPlayerViewModel = ReaderCallbackMediaViewModel(readAloudController: ReaderReadAloudController())
+        let url = URL(string: "internal://local/snippet?key=prepared-selection")!
+        let (realm, row) = try cachedHistoryRecord(url: url)
+        try realm.write {
+            row.isReaderModeByDefault = true
+            row.isReaderModeAvailable = false
+            row.isReaderModeOfferHidden = false
+            row.rssContainsFullContent = true
+        }
+        reader.pageURL = url
+        reader.content = row
+        caller.installBinding(
+            ownedBy: UUID(), asyncCaller: { _, _, _, _ in .init(nil) },
+            unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+        )
+        let binding = try XCTUnwrap(caller.currentJavaScriptBindingToken)
+        let originalIntent = WebViewURLTransitionIntent(destinationURL: url, javaScriptBindingToken: binding)
+        XCTAssertNotNil(reader.receiveSelectionIntent(originalIntent))
+        try await reader.load(url: url, consuming: originalIntent)
+        let originalSelection = try XCTUnwrap(reader.currentSelectionID)
+        let selectionIsCurrent = reader.makeSelectionCommitFence(requiring: originalSelection)
+        reader.isRenderingReaderHTML = true
+        mode.navigator = fixture.handler.navigator
+        mode.sharedFontCSSBase64Provider = { nil }
+        mode.readerPublicationDateLoader = { _ in nil }
+        var state = WebViewState.empty
+        state.pageURL = url
+        // Settle the originating document through the real callback manager.
+        fixture.handler.onNavigationCommitted(state: state)
+        fixture.handler.onNavigationFinished(state: state)
+        try await XCTUnwrap(fixture.taskManager.onNavigationFinishedTask).value
+        XCTAssertEqual(callbackReader.committedCount, 1)
+        reader.isRenderingReaderHTML = true
+        mode.readabilityContent = "<html><body><div id='reader-content'><p>Prepared reader selection.</p></div></body></html>"
+        var generatedHTML: Data?
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run { generatedHTML = Data(bytes) }
+            return bytes
+        }
+        defer {
+            mode.processHTMLBytes = nil
+            mode.readerPublicationDateLoader = nil
+            withExtendedLifetime(realm) {}
+        }
+        mode.showReaderView(readerContent: reader, scriptCaller: caller)
+        await mode.waitForReaderModeRender(for: url)
+        let html = try XCTUnwrap(generatedHTML)
+        let document = try SwiftSoup.parse(String(decoding: html, as: UTF8.self))
+        let generationText = try XCTUnwrap(document.select("html").first()).attr("data-mnb-reader-render-generation")
+        let generation = try XCTUnwrap(UUID(uuidString: generationText))
+        XCTAssertEqual(mode.currentRenderGenerationDescription(for: url), generation.uuidString)
+
+        var publicURLCount = 0
+        fixture.handler.onURLChanged = { _ in publicURLCount += 1 }
+        state.isLoading = true
+        if supersededByUserNavigation {
+            fixture.handler.navigator.load(URLRequest(url: url))
+            XCTAssertFalse(mode.expectsSyntheticReaderLoaderCommit(for: url))
+            state.urlTransitionIntent = WebViewURLTransitionIntent(
+                destinationURL: url, javaScriptBindingToken: binding
+            )
+            fixture.handler.onURLChanged(state: state)
+            try await XCTUnwrap(fixture.taskManager.onURLChangedTask).value
+            XCTAssertNotEqual(reader.currentSelectionID, originalSelection,
+                "An explicit same-URL navigation must acquire its own selection")
+            XCTAssertFalse(selectionIsCurrent())
+            XCTAssertEqual(callbackReader.committedCount, 2)
+            XCTAssertEqual(publicURLCount, 1)
+            return
+        }
+
+        // Native URL publication may arrive before physical commit, while its
+        // semantic commit is suspended, or after expectation consumption. All
+        // deliveries of this exact intent belong to the prepared document.
+        let preparedIntent = WebViewURLTransitionIntent(destinationURL: url, javaScriptBindingToken: binding)
+        state.urlTransitionIntent = preparedIntent
+        fixture.handler.onURLChanged(state: state)
+        XCTAssertNil(reader.selectionHandoff(for: preparedIntent),
+            "Classify the prepared URL before reserving a successor selection")
+        XCTAssertNil(fixture.taskManager.onURLChangedTask)
+        XCTAssertEqual(mode.expectedSyntheticReaderLoaderURL, url)
+
+        if distinctBeforePhysicalCommit {
+            state.urlTransitionIntent = WebViewURLTransitionIntent(
+                destinationURL: url, javaScriptBindingToken: binding
+            )
+            fixture.handler.onURLChanged(state: state)
+            try await XCTUnwrap(fixture.taskManager.onURLChangedTask).value
+            XCTAssertNotEqual(reader.currentSelectionID, originalSelection)
+            XCTAssertFalse(selectionIsCurrent())
+            XCTAssertNil(mode.expectedSyntheticReaderLoaderURL)
+            XCTAssertEqual(callbackReader.committedCount, 2)
+            XCTAssertEqual(publicURLCount, 1)
+            return
+        }
+
+        let beforeMode = ReaderCallbackGate()
+        let afterMode = ReaderCallbackGate()
+        let commitEntered = expectation(description: "physical commit suspended before mode initialization")
+        let expectationConsumed = expectation(description: "semantic commit consumed prepared expectation")
+        callbackReader.beforeCommitReturns = {
+            commitEntered.fulfill()
+            await beforeMode.wait()
+        }
+        fixture.handler.onNavigationCommitted = { _ in
+            XCTAssertNil(mode.expectedSyntheticReaderLoaderURL)
+            expectationConsumed.fulfill()
+            await afterMode.wait()
+        }
+        addTeardownBlock { @MainActor in
+            await beforeMode.release()
+            await afterMode.release()
+            let commit = fixture.taskManager.onNavigationCommittedTask
+            let finish = fixture.taskManager.onNavigationFinishedTask
+            let urlChange = fixture.taskManager.onURLChangedTask
+            fixture.taskManager.cancelNavigationWork()
+            _ = try? await commit?.value
+            _ = try? await finish?.value
+            _ = try? await urlChange?.value
+        }
+        fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+        fixture.handler.onNavigationCommitted(state: state)
+        await fulfillment(of: [commitEntered], timeout: 5)
+        fixture.handler.onURLChanged(state: state)
+        fixture.handler.onNavigationFinished(state: state)
+        let finish = try XCTUnwrap(fixture.taskManager.onNavigationFinishedTask)
+        XCTAssertNil(reader.selectionHandoff(for: preparedIntent))
+
+        await beforeMode.release()
+        await fulfillment(of: [expectationConsumed], timeout: 5)
+        // The finish task is now waiting on semantic commit after its synthetic
+        // expectation was consumed. A deferred execution-time check is too late.
+        fixture.handler.onURLChanged(state: state)
+        XCTAssertNil(reader.selectionHandoff(for: preparedIntent))
+        await afterMode.release()
+        try await finish.value
+        callbackReader.beforeCommitReturns = nil
+        fixture.handler.onNavigationCommitted = nil
+        fixture.handler.onURLChanged(state: state)
+
+        XCTAssertNil(fixture.taskManager.onURLChangedTask)
+        XCTAssertEqual(publicURLCount, 0)
+        XCTAssertEqual(callbackReader.committedCount, 2)
+        XCTAssertEqual(reader.currentSelectionID, originalSelection)
+        XCTAssertTrue(selectionIsCurrent(), "Prepared navigation must retain the render's original selection fence")
+        XCTAssertEqual(mode.currentRenderGenerationDescription(for: url), generation.uuidString)
+        XCTAssertTrue(mode.isReaderModeLoadPending(for: url))
+
+        if cancelBeforeReadiness {
+            mode.cancelReaderModeLoad()
+            mode.beginReaderModeLoad(for: url)
+            XCTAssertFalse(mode.isPreparedReaderDocumentURLAnnouncement(for: url, intent: preparedIntent),
+                "Canceled preparation cannot exempt a later same-URL selection")
+            XCTAssertNil(mode.expectedSyntheticReaderLoaderURL)
+            return
+        }
+        if distinctSameDocumentIntent {
+            // A fresh native intent (for example A → B → A before semantic URL
+            // publication) cannot inherit the synthetic intent's exemption.
+            state.urlTransitionIntent = WebViewURLTransitionIntent(
+                destinationURL: url, javaScriptBindingToken: binding
+            )
+            fixture.handler.onURLChanged(state: state)
+            try await XCTUnwrap(fixture.taskManager.onURLChangedTask).value
+            XCTAssertNotEqual(reader.currentSelectionID, originalSelection)
+            XCTAssertFalse(selectionIsCurrent())
+            XCTAssertEqual(callbackReader.committedCount, 3)
+            XCTAssertEqual(publicURLCount, 1)
+            return
+        }
+        XCTAssertFalse(mode.handleRenderedReaderDocumentReady(pageURL: url, hasReaderContent: true))
+        XCTAssertFalse(mode.handleRenderedReaderDocumentReady(
+            pageURL: url, hasReaderContent: true, renderGeneration: UUID()
+        ))
+        XCTAssertTrue(mode.handleRenderedReaderDocumentReady(
+            pageURL: url, hasReaderContent: true, renderGeneration: generation
+        ))
+        XCTAssertFalse(mode.isReaderModeLoading)
+        mode.beginReaderModeLoad(for: url)
+        XCTAssertFalse(mode.isPreparedReaderDocumentURLAnnouncement(for: url, intent: preparedIntent),
+            "Completed preparation cannot exempt a later same-URL selection")
+    }
+}

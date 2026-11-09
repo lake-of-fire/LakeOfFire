@@ -987,9 +987,14 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
                 let shouldShowOverlay =
                     readerModeViewModel.isReaderModeLoading
                     && !hasVisibleContent
+                let failure = readerModeViewModel.currentPreparationFailure()
                 content.modifier(
                     ReaderLoadingProgressOverlayViewModifier(
-                        isLoading: shouldShowOverlay
+                        isLoading: shouldShowOverlay,
+                        failureMessage: failure?.message,
+                        retry: {
+                            if let failure { readerModeViewModel.retryPreparation(failureID: failure.id) }
+                        }
                     )
                 )
             } else {

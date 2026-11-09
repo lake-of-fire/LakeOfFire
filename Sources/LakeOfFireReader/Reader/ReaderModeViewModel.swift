@@ -942,6 +942,7 @@ internal enum ReaderSnippetFinalDocumentDiagnostics {
 #if DEBUG
         guard contentURL.canonicalReaderContentURLForHotfix().isSnippetURL,
               ProcessInfo.processInfo.arguments.contains("--ui-test-enable-presentation-routing-diagnostics")
+                || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-snippet-processing-diagnostics")
                 || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-lookup-probe") else { return }
         NSLog("ReaderSnippetProcessingDiagnostics phase=%@ generation=%@ cancelled=%@",
               phase, generation?.uuidString ?? "nil", String(Task.isCancelled))
@@ -952,7 +953,8 @@ internal enum ReaderSnippetFinalDocumentDiagnostics {
 #if DEBUG
         guard contentURL.isSnippetURL,
               ProcessInfo.processInfo.arguments.contains("--ui-test-enable-lookup-probe")
-                || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-presentation-routing-diagnostics") else {
+                || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-presentation-routing-diagnostics")
+                || ProcessInfo.processInfo.arguments.contains("--ui-test-enable-snippet-processing-diagnostics") else {
             return
         }
         let snapshot = ReaderSnippetFinalDocumentSnapshot.make(htmlBytes: htmlBytes)
@@ -1524,6 +1526,7 @@ public class ReaderModeViewModel: ObservableObject {
     public var readerAccountSessionAccess: AccountSessionAccess? {
         willSet {
             if newValue?.boundaryID != readerAccountSessionAccess?.boundaryID {
+                clearPreparationFailure()
                 // Replacing the host Session retires work even when both
                 // snapshots happen to have the same user and generation.
                 for render in activeRendersByURL.values { render.task.cancel() }
@@ -1556,6 +1559,65 @@ public class ReaderModeViewModel: ObservableObject {
     ) async -> ReaderModeFrameContentReplacement?)?
     
     @Published public var isReaderMode = false
+    public struct PreparationFailure: Identifiable, Equatable {
+        public let id: UUID
+        public let message: String
+    }
+
+    @Published public private(set) var preparationFailure: PreparationFailure?
+    private var preparationFailureIsCurrent: (@MainActor () -> Bool)?
+    private var preparationRetry: (@MainActor () -> Void)?
+    private var preparationFailureRevision: UInt64 = 0
+
+    /// Presentation and action share the original selection/account fence.
+    public func currentPreparationFailure() -> PreparationFailure? {
+        guard preparationFailureIsCurrent?() == true else { return nil }
+        return preparationFailure
+    }
+
+    public func retryPreparation(failureID: UUID) {
+        guard preparationFailure?.id == failureID,
+              preparationFailureIsCurrent?() == true,
+              let retry = preparationRetry else { return }
+        clearPreparationFailure()
+        retry()
+    }
+
+    private func clearPreparationFailure() {
+        preparationFailureRevision &+= 1
+        preparationFailure = nil
+        preparationFailureIsCurrent = nil
+        preparationRetry = nil
+    }
+
+    private func failPreparation(
+        for url: URL, generation: UUID, readerContent: ReaderContent,
+        scriptCaller: WebViewScriptCaller
+    ) {
+        guard let originatingContentIsCurrent = activeRendersByURL[canonicalRenderKey(url)]?.originatingContentIsCurrent,
+              originatingContentIsCurrent(), isCurrentRender(for: url, generation: generation) else { return }
+        let failedBinding = scriptCaller.currentJavaScriptBindingToken
+        cancelReaderModeLoad(for: url, readerContent: readerContent)
+        let failureRevision = preparationFailureRevision
+        navigator?.forceClearLoadingIndicators(reason: "readerMode.preparationFailed", pageURL: url)
+        guard preparationFailureRevision == failureRevision,
+              originatingContentIsCurrent(),
+              scriptCaller.currentJavaScriptBindingToken == failedBinding else { return }
+        preparationFailureIsCurrent = { [weak scriptCaller] in
+            guard let scriptCaller else { return false }
+            return originatingContentIsCurrent()
+                && scriptCaller.currentJavaScriptBindingToken == failedBinding
+        }
+        preparationRetry = { [weak self, weak readerContent, weak scriptCaller] in
+            guard let self, let readerContent, let scriptCaller else { return }
+            self.showReaderView(readerContent: readerContent, scriptCaller: scriptCaller)
+        }
+        preparationFailure = PreparationFailure(
+            id: UUID(),
+            message: "Reader preparation failed. Check your connection and available storage, then try again."
+        )
+    }
+
     public let loadingState = ReaderModeLoadingState()
     @Published public var isReaderModeLoading = false {
         didSet { updateLoadingStateSnapshot() }
@@ -1664,9 +1726,11 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func beginReaderModeLoad(for url: URL, suppressSpinner: Bool = false) {
+        clearPreparationFailure()
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         if !pendingMatches {
+            expectedSyntheticReaderNavigation = nil
             if let expectedSyntheticReaderLoaderURL = authoritativeSyntheticReaderLoaderURL,
                !urlsMatchWithoutHashForHotfix(expectedSyntheticReaderLoaderURL, canonicalURL) {
                 publishSyntheticReaderLoaderExpectation(for: nil)
@@ -1687,6 +1751,8 @@ public class ReaderModeViewModel: ObservableObject {
         if let url, let pendingReaderModeURL, !pendingKeysMatch(pendingReaderModeURL, url) {
             return
         }
+        clearPreparationFailure()
+        expectedSyntheticReaderNavigation = nil
         let completedURL = pendingReaderModeURL ?? url ?? lastRenderedURL
         if let url {
             cancelActiveRender(for: url)
@@ -1758,6 +1824,8 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func clearReadabilityCache(for url: URL) {
+        clearPreparationFailure()
+        expectedSyntheticReaderNavigation = nil
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let matchesLastRendered = pendingKeysMatch(lastRenderedURL, canonicalURL)
         let matchesPending = pendingKeysMatch(pendingReaderModeURL, canonicalURL)
@@ -2279,7 +2347,26 @@ public class ReaderModeViewModel: ObservableObject {
     
     public init() { }
 
+    private struct PreparedReaderNavigation {
+        weak var navigator: WebViewNavigator?
+        let intent: WebViewNavigator.IssuedDataNavigationIdentity
+        let url: URL
+        var urlTransitionIntentID: UUID?
+    }
+    private var expectedSyntheticReaderNavigation: PreparedReaderNavigation?
+
+    private func preparedReaderNavigationIsCurrent() -> Bool {
+        guard let dispatched = expectedSyntheticReaderNavigation else { return false }
+        guard dispatched.navigator?.isCurrent(dispatched.intent) == true else {
+            expectedSyntheticReaderNavigation = nil
+            publishSyntheticReaderLoaderExpectation(for: nil)
+            return false
+        }
+        return true
+    }
+
     func expectSyntheticReaderLoaderCommit(for baseURL: URL?) {
+        expectedSyntheticReaderNavigation = nil
         _ = publishSyntheticReaderLoaderExpectation(for: baseURL)
     }
 
@@ -2309,10 +2396,38 @@ public class ReaderModeViewModel: ObservableObject {
 
     func expectsSyntheticReaderLoaderCommit(for url: URL) -> Bool {
         guard let expectedSyntheticReaderLoaderURL = authoritativeSyntheticReaderLoaderURL else { return false }
+        if expectedSyntheticReaderNavigation != nil, !preparedReaderNavigationIsCurrent() { return false }
         return urlsMatchWithoutHashForHotfix(
             expectedSyntheticReaderLoaderURL,
             url
         )
+    }
+
+    /// Classify before NavigationTaskManager can reserve or defer a selection.
+    /// The exact native URL intent can be delivered again after semantic commit
+    /// consumes the expectation; a distinct same-document intent cannot inherit it.
+    func isPreparedReaderDocumentURLAnnouncement(
+        for url: URL, intent: WebViewURLTransitionIntent?
+    ) -> Bool {
+        guard isReaderModeLoadPending(for: url),
+              preparedReaderNavigationIsCurrent(),
+              let dispatched = expectedSyntheticReaderNavigation,
+              urlsMatchWithoutHashForHotfix(dispatched.url, url) else { return false }
+        if let capturedID = dispatched.urlTransitionIntentID {
+            guard intent?.isCurrent == true else { return false }
+            guard intent?.id == capturedID else {
+                expectedSyntheticReaderNavigation = nil
+                publishSyntheticReaderLoaderExpectation(for: nil)
+                return false
+            }
+            return true
+        }
+        guard expectsSyntheticReaderLoaderCommit(for: url) else { return false }
+        if let intent {
+            guard intent.isCurrent, intent.destinationURL.matchesReaderURL(url) else { return false }
+            expectedSyntheticReaderNavigation?.urlTransitionIntentID = intent.id
+        }
+        return true
     }
 
     @discardableResult
@@ -2547,6 +2662,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         let generation = UUID()
+        expectedSyntheticReaderNavigation = nil
         ReaderSnippetFinalDocumentDiagnostics.record("render-start", contentURL: canonicalURL, generation: generation)
         completedRenderOwner = nil
         let task = Task { @ReaderViewModelActor [weak self] in
@@ -2706,20 +2822,23 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedContainerSelector = readabilityContainerSelector
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
         let renderBinding = scriptCaller.currentJavaScriptBindingToken
+        let requiresOriginalFrameBinding = cachedContainerFrameInfo?.isMainFrame == false
         let initialContent = readerContent.content
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         let processingAccount = readerAccountSessionAccess.map(ReaderModeProcessingAccount.init(access:))
         guard processingAccount?.isCurrent != false else { return }
         let accountSession = processingAccount?.snapshot
         let accountBoundaryID = processingAccount?.access.boundaryID
-        let originatingContentIsCurrent = { @MainActor in
-            self.readerAccountSessionAccess?.snapshot == accountSession
+        let originatingContentIsCurrent = { @MainActor [weak self, weak readerContent] in
+            guard let self, let readerContent else { return false }
+            return self.readerAccountSessionAccess?.snapshot == accountSession
                 && self.readerAccountSessionAccess?.boundaryID == accountBoundaryID
                 && selectionIsCurrent()
                 && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
                 && (initialContent.map { self.readerModeContentIsCurrent($0, readerContent: readerContent) } ?? true)
                 && initialContent?.isInvalidated != true
-                && self.ownsReaderDocumentBinding(renderBinding, scriptCaller: scriptCaller)
+                && (!requiresOriginalFrameBinding
+                    || scriptCaller.currentJavaScriptBindingToken == renderBinding)
         }
         let publicationDateLoader = readerPublicationDateLoader
         beginReaderModeLoad(for: contentURL)
@@ -2820,11 +2939,9 @@ public class ReaderModeViewModel: ObservableObject {
                     )
                 } catch {
                     print(error)
-                    await self.cancelReaderModeLoad(
-                        for: contentURL,
-                        ifOwnedBy: generation,
-                        readerContent: readerContent,
-                        originatingContentIsCurrent: originatingContentIsCurrent
+                    await self.failPreparation(
+                        for: contentURL, generation: generation,
+                        readerContent: readerContent, scriptCaller: scriptCaller
                     )
                 }
             case .unavailable:
@@ -3031,11 +3148,9 @@ public class ReaderModeViewModel: ObservableObject {
             guard originatingContentIsCurrent(), selectionIsCurrent(), resolvedContentIsCurrent?() ?? true,
                   urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL) else { return }
             print(error)
-            cancelReaderModeLoad(
-                for: contentURL,
-                ifOwnedBy: renderGeneration,
-                readerContent: readerContent,
-                originatingContentIsCurrent: originatingContentIsCurrent
+            failPreparation(
+                for: contentURL, generation: renderGeneration,
+                readerContent: readerContent, scriptCaller: scriptCaller
             )
         }
     }
@@ -3585,6 +3700,14 @@ public class ReaderModeViewModel: ObservableObject {
                         characterEncodingName: "UTF-8",
                         baseURL: displayURL
                     )
+                    guard let issued = navigator.issuedDataNavigationIdentity else {
+                        cancelReaderModeLoad(for: requestedURL, ifOwnedBy: renderGeneration,
+                            readerContent: readerContent, originatingContentIsCurrent: originatingContentIsCurrent)
+                        return
+                    }
+                    expectedSyntheticReaderNavigation = PreparedReaderNavigation(
+                        navigator: navigator, intent: issued, url: displayURL
+                    )
 #if DEBUG
                     if let readerDocumentDispatchedForTesting {
                         await readerDocumentDispatchedForTesting()
@@ -3715,6 +3838,9 @@ public class ReaderModeViewModel: ObservableObject {
         }
         try Task.checkCancellation()
         
+        if preparationFailure != nil, preparationFailureIsCurrent?() != true {
+            clearPreparationFailure()
+        }
         let committedURL = content.url
         let navigationBindingToken = scriptCaller.currentJavaScriptBindingToken
         let accountSession = readerAccountSessionAccess?.snapshot
@@ -4172,3 +4298,172 @@ nonisolated public func processForReaderMode(
         }
     }
 }
+
+#if DEBUG && os(iOS)
+/// Mount the real Reader/WebView, overlay and document-ready message handling
+/// around controlled HTML. The first processing attempt fails; Retry returns
+/// the fixture article through the same rendering entrypoint.
+@MainActor
+public struct ReaderPreparationRetryUITestHost: View {
+    @StateObject private var fixture = ReaderPreparationRetryUITestModel()
+
+    public init() {}
+
+    public var body: some View {
+        WithPerceptionTracking {
+            ReaderPreparationRetryUITestReader(fixture: fixture)
+        }
+    }
+}
+
+@MainActor
+private struct ReaderPreparationRetryUITestReader: View {
+    @ObservedObject private var fixture: ReaderPreparationRetryUITestModel
+    @ObservedObject private var mode: ReaderModeViewModel
+    @ObservedObject private var caller: WebViewScriptCaller
+    @ObservedObject private var readerViewModel: ReaderViewModel
+
+    init(fixture: ReaderPreparationRetryUITestModel) {
+        // Derive every observed dependency from SwiftUI's retained owner.
+        // A reinitialized host must not observe a discarded replacement model.
+        _fixture = ObservedObject(wrappedValue: fixture)
+        _mode = ObservedObject(wrappedValue: fixture.mode)
+        _caller = ObservedObject(wrappedValue: fixture.caller)
+        _readerViewModel = ObservedObject(wrappedValue: fixture.viewModel)
+    }
+
+    var body: some View {
+        WithPerceptionTracking {
+            let fixture = fixture
+            let hasCaller = caller.hasAsyncCaller
+            let renderReady = readerViewModel.state.hasReaderRenderReady
+            let isLoading = mode.isReaderModeLoading
+            VStack(spacing: 0) {
+                Reader(onNavigationFinished: { state in
+                    guard let binding = fixture.caller.currentJavaScriptBindingToken else { return }
+                    Task { @MainActor in
+                        await fixture.startAfterBootstrapFinished(state: state, requiring: binding)
+                    }
+                })
+                .environmentObject(fixture.reader)
+                .environmentObject(readerViewModel)
+                .environmentObject(mode)
+                .environmentObject(caller)
+                .environmentObject(fixture.media)
+                .environmentObject(fixture.fileManager)
+                .environment(\.webViewNavigator, fixture.navigator)
+                Text(fixture.report)
+                    .font(.caption)
+                    .accessibilityIdentifier("ReaderPreparationRetry.Report")
+            }
+            .task(id: hasCaller) {
+                if hasCaller { fixture.bootstrap() }
+            }
+            .onChange(of: renderReady) { _ in fixture.recordRecoveryIfReady() }
+            .onChange(of: isLoading) { _ in fixture.recordRecoveryIfReady() }
+        }
+    }
+}
+
+@MainActor
+private final class ReaderPreparationRetryUITestModel: ObservableObject {
+    private enum InjectedFailure: Error { case requiredPreparation }
+    let mode = ReaderModeViewModel()
+    let reader = ReaderContent()
+    let viewModel = ReaderViewModel(systemScripts: [])
+    let media = ReaderMediaPlayerViewModel()
+    let fileManager = ReaderFileManager()
+    let navigator = WebViewNavigator()
+    let caller = WebViewScriptCaller()
+    private let url = URL(string: "reader-file://file/load/ui-test/preparation-retry.txt")!
+    private var realm: Realm?
+    private var attempts = 0
+    private var bootstrapStarted = false
+    @Published private(set) var report = "Preparing reader"
+
+    init() {
+        let html = "<html><body><div id='reader-content'><p>Recovered reader content.</p></div></body></html>"
+        mode.navigator = navigator
+        viewModel.navigator = navigator
+        viewModel.scriptCaller = caller
+        mode.readerLocalHTMLLoader = { _ in html }
+        mode.readerPublicationDateLoader = { _ in nil }
+        mode.swiftReadabilityProcessor = { _, _, _, _ in html }
+        mode.processReadabilityContent = { [weak self] content, _, _, _, _, _, _ in
+            let attempt = await MainActor.run {
+                guard let self else { return 0 }
+                self.attempts += 1
+                return self.attempts
+            }
+            guard attempt > 0 else { throw CancellationError() }
+            if attempt == 1 { throw InjectedFailure.requiredPreparation }
+            return try SwiftSoup.parse(content)
+        }
+    }
+
+    func bootstrap() {
+        guard !Task.isCancelled, caller.canEvaluateJavaScript, !bootstrapStarted else { return }
+        bootstrapStarted = true
+        // A bound prewarmed WebView may still have its initial blank navigation
+        // in flight. Finish an explicit document before admitting the failure;
+        // otherwise that startup commit correctly retires its document owner.
+        navigator.loadHTML(
+            "<html><body data-reader-retry-bootstrap='ready'></body></html>",
+            baseURL: URL(string: "about:blank")!
+        )
+    }
+
+    func startAfterBootstrapFinished(
+        state: WebViewState,
+        requiring binding: WebViewScriptCaller.JavaScriptBindingToken
+    ) async {
+        guard bootstrapStarted, realm == nil, state.pageURL.absoluteString == "about:blank",
+              caller.currentJavaScriptBindingToken == binding else { return }
+        // Verify this fixture's completed document, including when an older
+        // blank finish callback was queued before the explicit load.
+        let isBootstrap = try? await caller.evaluateJavaScript(
+            "return document.readyState === 'complete' && document.body?.dataset.readerRetryBootstrap === 'ready';",
+            requiring: binding
+        ) as? Bool
+        guard isBootstrap == true, !Task.isCancelled,
+              caller.currentJavaScriptBindingToken == binding, realm == nil else { return }
+        do {
+            // Finish isolated MainActor fixture setup before rendering can suspend.
+            let realm = try Realm(configuration: .init(
+                inMemoryIdentifier: UUID().uuidString,
+                objectTypes: [HistoryRecord.self]
+            ), queue: nil)
+            let row = HistoryRecord()
+            row.url = url
+            row.title = "Retry fixture"
+            row.isReaderModeByDefault = true
+            row.isReaderModeAvailable = false
+            row.isReaderModeOfferHidden = false
+            row.rssContainsFullContent = true
+            row.updateCompoundKey()
+            try realm.write { realm.add(row) }
+            self.realm = realm
+            reader.pageURL = url
+            reader.content = row
+            reader.isRenderingReaderHTML = true
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
+            await mode.waitForReaderModeRender(for: url)
+            if attempts == 1 {
+                report = mode.currentPreparationFailure() == nil ? "Missing expected failure" : "Failed attempt 1"
+            }
+            recordRecoveryIfReady()
+        } catch {
+            report = "Fixture setup failed: \(error)"
+        }
+    }
+
+    func recordRecoveryIfReady() {
+        guard attempts == 2,
+              viewModel.state.hasReaderRenderReady,
+              !mode.isReaderModeLoading,
+              mode.currentPreparationFailure() == nil,
+              navigator.debugLoadSnapshot.lastDataLoadBaseURL == url.absoluteString else { return }
+        report = "Recovered after 2 attempts"
+    }
+}
+#endif

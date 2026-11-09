@@ -296,8 +296,10 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationFinished(state: WebViewState) {
-        navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
-            guard let self else { return }
+        // The admitted finish belongs to this handler even if SwiftUI replaces
+        // the callback relay while semantic commit work is suspended. The task
+        // manager still fences cancellation and replacement document generations.
+        navigationTaskManager.startOnNavigationFinished { @MainActor [self] in
             await self.handleNavigationFinished(state: state)
             guard !Task.isCancelled else { return }
             self.onNavigationFinished?(state)
@@ -348,6 +350,11 @@ final class ReaderWebViewHandler {
     }
 
     func onURLChanged(state: WebViewState) {
+        // A prepared document announces its own navigation; classify before a
+        // URL task can reserve a successor selection and retire its render.
+        if readerModeViewModel.isPreparedReaderDocumentURLAnnouncement(
+            for: state.pageURL, intent: state.urlTransitionIntent
+        ) { return }
         // Capture at native receipt, not after semantic commit/finish deferral.
         let context = URLChangeContext(binding: scriptCaller.currentJavaScriptBindingToken)
         navigationTaskManager.startOnURLChanged(state: state, readerContent: readerContent) { @MainActor in
