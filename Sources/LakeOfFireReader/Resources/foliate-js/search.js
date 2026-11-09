@@ -156,7 +156,11 @@ const collatedRanges = function* (text, query, options = {}) {
         graphemes = new Intl.Segmenter('en', { granularity: 'grapheme' })
         collator = new Intl.Collator('en', { sensitivity })
     }
-    const normalized = mapSearchText(text, graphemes, normalizeSearchSegment, true)
+    // Printable ASCII has single-code-unit graphemes and no format tokens.
+    // With no whitespace run, normalization and its offset map are identities.
+    const identityOffsets = /^[\x20-\x7e]*$/.test(text) && !text.includes('  ')
+    const normalized = identityOffsets ? { text }
+        : mapSearchText(text, graphemes, normalizeSearchSegment, true)
     const needle = mapSearchText(query, graphemes, normalizeSearchSegment, true).text
     if (!normalized.text || !needle) return
     const segments = Array.from(segmenter.segment(normalized.text))
@@ -174,7 +178,8 @@ const collatedRanges = function* (text, query, options = {}) {
             Array.from(words.segment(normalized.text)), Array.from(words.segment(needle)).length, collator))
     }
     for (const { start, end } of candidates) {
-        yield { startOffset: normalized.starts[start], endOffset: normalized.ends[end - 1] }
+        yield { startOffset: identityOffsets ? start : normalized.starts[start],
+            endOffset: identityOffsets ? end : normalized.ends[end - 1] }
     }
 }
 
