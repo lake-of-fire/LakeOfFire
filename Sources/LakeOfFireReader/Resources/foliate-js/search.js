@@ -40,7 +40,7 @@ const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => 
 const simpleSearch = function* (strs, query, options = {}) {
     if (!query.length) return
     const { locales = 'en', sensitivity } = options
-    const matchCase = sensitivity === 'variant'
+    const matchCase = sensitivity === 'variant' || sensitivity === 'case'
     const haystack = strs.join('')
     const lowerHaystack = matchCase ? haystack : haystack.toLocaleLowerCase(locales)
     const needle = matchCase ? query : query.toLocaleLowerCase(locales)
