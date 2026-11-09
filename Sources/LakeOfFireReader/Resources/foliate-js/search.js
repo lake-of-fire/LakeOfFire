@@ -1,7 +1,28 @@
 // length for context in excerpts
 const CONTEXT_LENGTH = 50
 
-const normalizeWhitespace = str => str.replace(/\s+/g, ' ')
+// Read only the normalized context that can appear in the excerpt. Scanning
+// outward preserves the old trimStart/trimEnd behavior without normalizing
+// the entire text-node prefix and suffix for every match.
+const excerptContext = (text, offset, backwards) => {
+    const step = backwards ? -1 : 1
+    let index = backwards ? offset - 1 : offset
+    const inside = () => index >= 0 && index < text.length
+    const characters = []
+    while (inside() && characters.length < CONTEXT_LENGTH) {
+        const character = text[index]
+        index += step
+        if (/\s/.test(character)) {
+            while (inside() && /\s/.test(text[index])) index += step
+            // Whitespace at the outer edge was removed by trimStart/trimEnd.
+            if (!inside()) break
+            characters.push(' ')
+        } else characters.push(character)
+    }
+    const ellipsis = characters.length < CONTEXT_LENGTH ? '' : '…'
+    return backwards ? ellipsis + characters.reverse().join('')
+        : characters.join('') + ellipsis
+}
 
 const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => {
     const start = strs[startIndex]
@@ -11,12 +32,8 @@ const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => 
         : start.slice(startOffset)
             + strs.slice(startIndex + 1, endIndex).join('')
             + end.slice(0, endOffset)
-    const trimmedStart = normalizeWhitespace(start.slice(0, startOffset)).trimStart()
-    const trimmedEnd = normalizeWhitespace(end.slice(endOffset)).trimEnd()
-    const ellipsisPre = trimmedStart.length < CONTEXT_LENGTH ? '' : '…'
-    const ellipsisPost = trimmedEnd.length < CONTEXT_LENGTH ? '' : '…'
-    const pre = `${ellipsisPre}${trimmedStart.slice(-CONTEXT_LENGTH)}`
-    const post = `${trimmedEnd.slice(0, CONTEXT_LENGTH)}${ellipsisPost}`
+    const pre = excerptContext(start, startOffset, true)
+    const post = excerptContext(end, endOffset, false)
     return { pre, match, post }
 }
 
