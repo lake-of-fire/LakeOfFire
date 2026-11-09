@@ -1594,8 +1594,13 @@ public class ReaderModeViewModel: ObservableObject {
         for url: URL, generation: UUID, readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller
     ) {
-        guard let originatingContentIsCurrent = activeRendersByURL[canonicalRenderKey(url)]?.originatingContentIsCurrent,
-              originatingContentIsCurrent(), isCurrentRender(for: url, generation: generation) else { return }
+        guard let render = activeRendersByURL[canonicalRenderKey(url)],
+              render.generation == generation, !render.task.isCancelled, !Task.isCancelled,
+              render.preparationFailureRevision == preparationFailureRevision,
+              render.originatingContentIsCurrent() else { return }
+        // A same-content full-page host handoff can still present this failure.
+        // A successor load has advanced the revision and owns its own cleanup.
+        let originatingContentIsCurrent = render.originatingContentIsCurrent
         let failedBinding = scriptCaller.currentJavaScriptBindingToken
         cancelReaderModeLoad(for: url, readerContent: readerContent)
         let failureRevision = preparationFailureRevision
@@ -1689,6 +1694,7 @@ public class ReaderModeViewModel: ObservableObject {
         let generation: UUID
         let originatingContentIsCurrent: @MainActor () -> Bool
         let documentBindingIsCurrent: @MainActor () -> Bool
+        var preparationFailureRevision: UInt64
         var hasDispatchedHTML = false
         let accountSession: AccountSessionSnapshot?
         let accountBoundaryID: AccountSessionBoundaryID?
@@ -2489,7 +2495,8 @@ public class ReaderModeViewModel: ObservableObject {
         guard renderAccountIsCurrent(for: url) else { return false }
         let active = activeRendersByURL[key]
         let activeGeneration = active.flatMap {
-            !$0.task.isCancelled && $0.originatingContentIsCurrent() ? $0.generation : nil
+            !$0.task.isCancelled && $0.originatingContentIsCurrent()
+                && ($0.hasDispatchedHTML || $0.documentBindingIsCurrent()) ? $0.generation : nil
         }
         let hasCompletedOwner = completedRenderOwner?.key == key
         let completedGeneration = hasCompletedOwner && completedRenderOwner?.contentIsCurrent?() != false
@@ -2571,7 +2578,8 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func isCurrentRender(for url: URL, generation: UUID) -> Bool {
         guard let render = activeRendersByURL[canonicalRenderKey(url)],
-              render.originatingContentIsCurrent() else { return false }
+              render.originatingContentIsCurrent(),
+              render.hasDispatchedHTML || render.documentBindingIsCurrent() else { return false }
         return readerModeRenderGenerationIsCurrent(
             activeGeneration: render.generation,
             expectedGeneration: generation,
@@ -2586,7 +2594,9 @@ public class ReaderModeViewModel: ObservableObject {
         originatingContentIsCurrent: @MainActor () -> Bool
     ) {
         guard ownsRender(for: url, generation: generation) else { return }
-        guard originatingContentIsCurrent() else {
+        guard originatingContentIsCurrent(),
+              let render = activeRendersByURL[canonicalRenderKey(url)],
+              render.hasDispatchedHTML || render.documentBindingIsCurrent() else {
             let key = canonicalRenderKey(url)
             if activeRendersByURL[key]?.hasDispatchedHTML != true {
                 retireRender(forKey: key, ifOwnedBy: generation)
@@ -2652,7 +2662,7 @@ public class ReaderModeViewModel: ObservableObject {
         processingAccount: ReaderModeProcessingAccount?,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
-        guard originatingContentIsCurrent() else { return false }
+        guard originatingContentIsCurrent(), documentBindingIsCurrent() else { return false }
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let key = canonicalRenderKey(canonicalURL)
         cancelOtherActiveRenders(except: key)
@@ -2661,6 +2671,8 @@ public class ReaderModeViewModel: ObservableObject {
         // at the same URL needs its own render instead of inheriting or waiting
         // for an obsolete task that will correctly discard its output.
         if hasActiveRender(for: canonicalURL) {
+            // An admitted duplicate keeps the shared preparation's failure owner.
+            activeRendersByURL[key]?.preparationFailureRevision = preparationFailureRevision
             return false
         }
 
@@ -2680,6 +2692,7 @@ public class ReaderModeViewModel: ObservableObject {
             generation: generation,
             originatingContentIsCurrent: originatingContentIsCurrent,
             documentBindingIsCurrent: documentBindingIsCurrent,
+            preparationFailureRevision: preparationFailureRevision,
             accountSession: processingAccount?.snapshot,
             accountBoundaryID: processingAccount?.access.boundaryID
         )

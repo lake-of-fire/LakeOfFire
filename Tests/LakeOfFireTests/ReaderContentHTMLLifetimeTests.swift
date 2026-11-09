@@ -1574,7 +1574,7 @@ extension ReaderContentHTMLLifetimeTests {
     }
 
     func testFullPagePreparationFailureSurvivesSameContentWebViewHandoff() async throws {
-        for initiallyMounted in [true, false] {
+        for (initiallyMounted, repeatsRequest) in [(true, false), (false, false), (true, true), (false, true)] {
             let (realm, row, reader, mode, _) = try renderFixture()
             defer { withExtendedLifetime(realm) {} }
             try prepareFinalTransformMetadata(row, in: realm)
@@ -1588,6 +1588,10 @@ extension ReaderContentHTMLLifetimeTests {
             var replacedBinding = false
             mode.processReadabilityContent = { _, _, _, _, _, _, _ in
                 await MainActor.run {
+                    if repeatsRequest {
+                        // Deduplication preserves the shared preparation's current failure owner.
+                        mode.showReaderView(readerContent: reader, scriptCaller: caller)
+                    }
                     caller.installBinding(ownedBy: UUID(), asyncCaller: { @MainActor _, _, _, _ in
                         .init(true)
                     }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { .zero })

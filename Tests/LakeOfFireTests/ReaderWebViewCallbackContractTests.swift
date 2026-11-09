@@ -676,9 +676,10 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                                       asyncCaller: { _, _, _, _ in .init(nil) },
                                       unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
                 mode.showReaderView(readerContent: fixture.readerContent, scriptCaller: caller)
+                let retiredTask = try XCTUnwrap(mode.readerModeRenderTaskForTesting(for: source))
+                cleanUpCallbackRenderAtTeardown(retiredTask, mode: mode, releasing: gate)
                 await fulfillment(of: [started], timeout: 1)
                 let retiredGeneration = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: source)))
-                let retiredTask = try XCTUnwrap(mode.readerModeRenderTaskForTesting(for: source))
                 XCTAssertNil(mode.expectedSyntheticReaderLoaderURL, "No self-issued HTML navigation exists yet")
 
                 // Reproduce the native committed-replacement ordering: retire the old
@@ -707,7 +708,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                 fixture.readerContent.isRenderingReaderHTML = true
 
                 await gate.release()
-                await retiredTask.value
+                await awaitCallbackRenderTasks([retiredTask], description: "retired same-URL render finishes")
                 XCTAssertEqual(fixture.handler.navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil",
                                "The old document's processing must not replace the newly committed document")
                 XCTAssertEqual(mode.readabilityContent, replacementCapture,
@@ -817,8 +818,9 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         }
         mode.showReaderView(readerContent: fixture.readerContent, scriptCaller: caller)
         let retiredTask = try XCTUnwrap(mode.readerModeRenderTaskForTesting(for: source))
+        cleanUpCallbackRenderAtTeardown(retiredTask, mode: mode)
         let retiredGeneration = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: source)))
-        await retiredTask.value
+        await awaitCallbackRenderTasks([retiredTask], description: "retired throwing render finishes")
         await fulfillment(of: [processed], timeout: 1)
         XCTAssertEqual(fixture.handler.navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
         XCTAssertEqual(mode.readabilityContent, replacementCapture)
@@ -892,8 +894,9 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             defer { publication.cancel() }
             mode.showReaderView(readerContent: fixture.readerContent, scriptCaller: caller)
             let predecessorTask = try XCTUnwrap(mode.readerModeRenderTaskForTesting(for: source))
+            cleanUpCallbackRenderAtTeardown(predecessorTask, mode: mode)
             let generation = try XCTUnwrap(UUID(uuidString: mode.currentRenderGenerationDescription(for: source)))
-            await predecessorTask.value
+            await awaitCallbackRenderTasks([predecessorTask], description: "reentrant render finishes")
             XCTAssertTrue(replaced)
             XCTAssertEqual(fixture.handler.navigator.debugLoadSnapshot.lastDataLoadBaseURL, "nil")
             XCTAssertEqual(mode.expectedSyntheticReaderLoaderURL, successorPublication == "none" ? nil : successorURL)
@@ -970,6 +973,19 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertEqual(mode.lastRenderedURL, source)
         XCTAssertNil(mode.pendingReaderModeURL)
         XCTAssertFalse(mode.isReaderModeLoading)
+    }
+
+    private func cleanUpCallbackRenderAtTeardown(
+        _ task: Task<Void, Never>, mode: ReaderModeViewModel, releasing gate: ReaderCallbackGate? = nil
+    ) {
+        addTeardownBlock { @MainActor in
+            await gate?.release()
+            mode.cancelReaderModeLoad()
+            task.cancel()
+            await self.awaitCallbackRenderTasks([task], description: "callback render teardown")
+            mode.swiftReadabilityProcessor = nil
+            mode.processReadabilityContent = nil
+        }
     }
 
     private func awaitCallbackRenderTasks(_ tasks: [Task<Void, Never>], description: String) async {
