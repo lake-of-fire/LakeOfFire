@@ -49,7 +49,7 @@ let package = Package(
         .package(url: "https://github.com/dagronf/DSFStepperView.git", branch: "main"),
         .package(path: "../swift-readability"),
         .package(url: "https://github.com/facebook/zstd.git", from: "1.5.7"),
-        .package(url: "https://github.com/EmergeTools/Pow.git", branch: "main"),
+        .package(url: "https://github.com/EmergeTools/Pow.git", revision: "1b4b1dda28c50b95f0872927ee2226fe8b58950e"),
         .package(path: "../LakeKit"),
         .package(url: "https://github.com/nicklockwood/LRUCache.git", from: "1.1.2"),
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
