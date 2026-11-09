@@ -590,6 +590,22 @@ class BookEndcapShellTests(unittest.TestCase):
                 self.assertEqual(page.evaluate('reader.view.book.sections.map(s => s.href)'), canonical)
                 first = page.evaluate('reader.buildGoToSheetSnapshot()')
                 self.assertEqual(first['currentChapterHref'], canonical[0])
+                references = page.evaluate('''(canonical) => {
+                    const section = reader.view.book.sections[0];
+                    const name = canonical.slice(canonical.lastIndexOf('/') + 1);
+                    const external = '//example.com/a%2Fb?token=x%2By#part';
+                    const rejected = ['nested%2F/../', 'nested%5C/../'].map(prefix => {
+                        try { section.resolveHref(prefix + name + '?edition=2'); return false; }
+                        catch (error) { return error instanceof URIError; }
+                    });
+                    return {internal:section.resolveHref(name + '?next=nested%2Fpart#part%2Ftoken'),
+                        external:section.resolveHref(external), rejected};
+                }''', canonical[0])
+                self.assertEqual(references, {
+                    'internal': canonical[0] + '#part%2Ftoken',
+                    'external': 'https://example.com/a%2Fb?token=x%2By#part',
+                    'rejected': [True, True],
+                })
                 self.assertEqual(first['currentChapterTitle'], 'Chapter 0' if with_toc else '100%')
                 self.assertTrue(all(item['percent'] is not None for item in first['chapters']))
                 locale = page.evaluate('''async () => {

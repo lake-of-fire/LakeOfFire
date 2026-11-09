@@ -102,7 +102,9 @@ const resolveURL = (url, relativeTo) => {
         throw error
     }
     if (!obj.href.startsWith(root)) return obj.href
-    // Check the original input before URL normalization can discard a component.
+    // Validate the original archive reference, including components discarded
+    // by URL dot-segment normalization. External network references above keep
+    // their complete path/query; internal queries are omitted from storage identity.
     if (/%(?:2f|5c)/i.test(splitInternalResourceReference(url).resourceHref))
         throw new URIError('Encoded archive path separator')
     return `${archivePathToURI(decodeArchivePath(obj.pathname.slice(1)))}${obj.hash}`

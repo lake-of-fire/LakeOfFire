@@ -294,8 +294,10 @@ test('internal content links omit query strings while preserving encoded fragmen
     const f = makeURIFixture({ names: ['chapter.xhtml'] })
     try {
         await f.book.init()
-        assert.equal(f.book.sections[0].resolveHref(`chapter.xhtml?edition=2#${encodedFragment}`),
-            `OPS/chapter.xhtml#${encodedFragment}`)
+        for (const query of ['edition=2', 'next=nested%2Fpart', 'next=nested%5Cpart']) {
+            assert.equal(f.book.sections[0].resolveHref(`chapter.xhtml?${query}#${encodedFragment}`),
+                `OPS/chapter.xhtml#${encodedFragment}`)
+        }
         for (const href of ['nested%2F/../chapter.xhtml?edition=2', 'nested%5C/../chapter.xhtml?edition=2'])
             assert.throws(() => f.book.sections[0].resolveHref(href), URIError)
     } finally { f.close() }
