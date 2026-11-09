@@ -1688,6 +1688,7 @@ public class ReaderModeViewModel: ObservableObject {
         let task: Task<Void, Never>
         let generation: UUID
         let originatingContentIsCurrent: @MainActor () -> Bool
+        let documentBindingIsCurrent: @MainActor () -> Bool
         var hasDispatchedHTML = false
         let accountSession: AccountSessionSnapshot?
         let accountBoundaryID: AccountSessionBoundaryID?
@@ -2531,7 +2532,8 @@ public class ReaderModeViewModel: ObservableObject {
         guard let render = activeRendersByURL[key] else {
             return false
         }
-        guard !render.task.isCancelled, render.originatingContentIsCurrent() else {
+        guard !render.task.isCancelled, render.originatingContentIsCurrent(),
+              render.hasDispatchedHTML || render.documentBindingIsCurrent() else {
             activeRendersByURL.removeValue(forKey: key)
             render.task.cancel()
             return false
@@ -2646,6 +2648,7 @@ public class ReaderModeViewModel: ObservableObject {
     private func startRenderTaskIfNeeded(
         for url: URL,
         originatingContentIsCurrent: @escaping @MainActor () -> Bool,
+        documentBindingIsCurrent: @escaping @MainActor () -> Bool,
         processingAccount: ReaderModeProcessingAccount?,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
@@ -2676,6 +2679,7 @@ public class ReaderModeViewModel: ObservableObject {
             task: task,
             generation: generation,
             originatingContentIsCurrent: originatingContentIsCurrent,
+            documentBindingIsCurrent: documentBindingIsCurrent,
             accountSession: processingAccount?.snapshot,
             accountBoundaryID: processingAccount?.access.boundaryID
         )
@@ -2845,6 +2849,9 @@ public class ReaderModeViewModel: ObservableObject {
         startRenderTaskIfNeeded(
             for: contentURL,
             originatingContentIsCurrent: originatingContentIsCurrent,
+            // A new request cannot reuse another document's suspended work.
+            // Dispatched HTML retains its existing completed-document handoff.
+            documentBindingIsCurrent: { scriptCaller.currentJavaScriptBindingToken == renderBinding },
             processingAccount: processingAccount
         ) { [weak self] generation in
             guard let self else { return }

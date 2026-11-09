@@ -236,7 +236,11 @@ extension ReaderContentHTMLLifetimeTests {
 
     private func render(_ mode: ReaderModeViewModel, reader: ReaderContent) async {
         let url = reader.pageURL
-        mode.showReaderView(readerContent: reader, scriptCaller: WebViewScriptCaller())
+        let caller = WebViewScriptCaller()
+        // Model the mounted host's ownership through a later Retry action.
+        // The failure's retry closure intentionally keeps its caller weak.
+        addTeardownBlock { @MainActor in withExtendedLifetime(caller) {} }
+        mode.showReaderView(readerContent: reader, scriptCaller: caller)
         await mode.waitForReaderModeRender(for: url)
     }
 

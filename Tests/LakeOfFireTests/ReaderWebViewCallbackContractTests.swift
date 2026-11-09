@@ -205,7 +205,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         let reader = fixture.readerContent
         let navigator = fixture.handler.navigator
         let url = URL(string: "internal://local/snippet?key=generated-font-readiness")!
-        let (realm, row) = try cachedHistoryRecord(url: url)
+        let (realm, row) = try cachedHistoryRecord(url: url, in: makeReaderHTMLRenderingRealm())
         let readableHTML = "<html><body><div id='reader-content'><p>Readable fallback source 日本語.</p></div></body></html>"
         try realm.write {
             row.title = "Readable fallback"
@@ -972,6 +972,17 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertFalse(mode.isReaderModeLoading)
     }
 
+    private func awaitCallbackRenderTasks(_ tasks: [Task<Void, Never>], description: String) async {
+        let completed = expectation(description: description)
+        let waiter = Task { @MainActor in
+            for task in tasks { await task.value }
+            guard !Task.isCancelled else { return }
+            completed.fulfill()
+        }
+        await fulfillment(of: [completed], timeout: 5)
+        waiter.cancel()
+    }
+
     func testRenderDeduplicationUsesDocumentBindingAndDispatchesCurrentLocation() async throws {
         for replacesBinding in [false, true] {
             let fixture = makeReaderWebViewHandlerFixture()
@@ -994,6 +1005,14 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             mode.readerLocalHTMLLoader = { _ in record.html }
             mode.readerPublicationDateLoader = { _ in nil }
             let gate = ReaderCallbackGate()
+            var renderTasks: [Task<Void, Never>] = []
+            addTeardownBlock { @MainActor in
+                await gate.release()
+                mode.cancelReaderModeLoad()
+                renderTasks.forEach { $0.cancel() }
+                await self.awaitCallbackRenderTasks(renderTasks, description: "deduplication render teardown")
+                mode.swiftReadabilityProcessor = nil
+            }
             let started = expectation(description: "same-binding processing suspended")
             var processingCalls = 0
             mode.swiftReadabilityProcessor = { _, _, _, _ in
@@ -1011,9 +1030,10 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                                   unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
             defer { _ = caller.clearBinding(ownedBy: owner) }
             mode.showReaderView(readerContent: fixture.readerContent, scriptCaller: caller)
+            let predecessorTask = try XCTUnwrap(mode.readerModeRenderTaskForTesting(for: source))
+            renderTasks.append(predecessorTask)
             await fulfillment(of: [started], timeout: 1)
             let generation = mode.currentRenderGenerationDescription(for: source)
-            let predecessorTask = try XCTUnwrap(mode.readerModeRenderTaskForTesting(for: source))
             let anchor = try XCTUnwrap(URL(string: source.absoluteString + "#next%2Fpart"))
             try await fixture.readerContent.load(url: anchor)
             if replacesBinding {
@@ -1025,15 +1045,24 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             mode.showReaderView(readerContent: fixture.readerContent, scriptCaller: caller)
             if replacesBinding {
                 XCTAssertNotEqual(mode.currentRenderGenerationDescription(for: source), generation)
-                // A new render must finish without waiting for retired processing.
-                await mode.waitForReaderModeRender(for: source)
+                // Prove completion while the predecessor's gate remains closed.
+                // A deduplication regression must fail finitely, then release it.
+                let successorTask = try XCTUnwrap(mode.readerModeRenderTaskForTesting(for: source))
+                renderTasks.append(successorTask)
+                let successorFinished = expectation(description: "replacement render finishes independently")
+                let successorObserver = Task { @MainActor in
+                    await successorTask.value
+                    guard !Task.isCancelled else { return }
+                    successorFinished.fulfill()
+                }
+                renderTasks.append(successorObserver)
+                await fulfillment(of: [successorFinished], timeout: 5)
                 XCTAssertTrue(mode.readabilityContent?.contains("Processed document 2.") == true)
             } else {
                 XCTAssertEqual(mode.currentRenderGenerationDescription(for: source), generation)
             }
             await gate.release()
-            await predecessorTask.value
-            await mode.waitForReaderModeRender(for: source)
+            await awaitCallbackRenderTasks(renderTasks, description: "deduplication renders finish")
             XCTAssertEqual(processingCalls, replacesBinding ? 2 : 1)
             XCTAssertEqual(fixture.handler.navigator.debugLoadSnapshot.lastDataLoadBaseURL, anchor.absoluteString)
         }
@@ -2263,7 +2292,7 @@ extension ReaderWebViewCallbackContractTests {
         fixture.handler.readerViewModel = callbackReader
         fixture.handler.readerMediaPlayerViewModel = ReaderCallbackMediaViewModel(readAloudController: ReaderReadAloudController())
         let url = URL(string: "internal://local/snippet?key=prepared-selection")!
-        let (realm, row) = try cachedHistoryRecord(url: url)
+        let (realm, row) = try cachedHistoryRecord(url: url, in: makeReaderHTMLRenderingRealm())
         try realm.write {
             row.isReaderModeByDefault = true
             row.isReaderModeAvailable = false
