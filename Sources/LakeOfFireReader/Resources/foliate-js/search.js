@@ -4,7 +4,7 @@ const CONTEXT_LENGTH = 50
 // Read only the normalized context that can appear in the excerpt. Scanning
 // outward preserves the old trimStart/trimEnd behavior without normalizing
 // the entire text-node prefix and suffix for every match.
-const excerptContext = (text, offset, backwards) => {
+const excerptContext = (text, offset, backwards, skipWhitespace) => {
     const step = backwards ? -1 : 1
     let index = backwards ? offset - 1 : offset
     const inside = () => index >= 0 && index < text.length
@@ -13,7 +13,8 @@ const excerptContext = (text, offset, backwards) => {
         const character = text[index]
         index += step
         if (/\s/.test(character)) {
-            while (inside() && /\s/.test(text[index])) index += step
+            if (skipWhitespace) index = skipWhitespace(index - step, backwards)
+            else while (inside() && /\s/.test(text[index])) index += step
             // Whitespace at the outer edge was removed by trimStart/trimEnd.
             if (!inside()) break
             characters.push(' ')
@@ -24,7 +25,7 @@ const excerptContext = (text, offset, backwards) => {
         : characters.join('') + ellipsis
 }
 
-const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => {
+const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }, whitespaceSkipper) => {
     const start = strs[startIndex]
     const end = strs[endIndex]
     const match = startIndex === endIndex
@@ -32,9 +33,45 @@ const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => 
         : start.slice(startOffset)
             + strs.slice(startIndex + 1, endIndex).join('')
             + end.slice(0, endOffset)
-    const pre = excerptContext(start, startOffset, true)
-    const post = excerptContext(end, endOffset, false)
+    const pre = excerptContext(start, startOffset, true, whitespaceSkipper?.(startIndex))
+    const post = excerptContext(end, endOffset, false, whitespaceSkipper?.(endIndex))
     return { pre, match, post }
+}
+
+// Literal fallback hits can repeatedly enter the same long whitespace run.
+// Cache only long runs actually encountered, within this generator's lifetime;
+// do not scan or index the rest of a node for a sparse early match.
+const makeWhitespaceSkipper = strs => {
+    const nodes = new Map()
+    return nodeIndex => (offset, backwards) => {
+        const text = strs[nodeIndex]
+        let entry = nodes.get(nodeIndex)
+        if (!entry || entry.text !== text) {
+            entry = { text, runs: [] }
+            nodes.set(nodeIndex, entry)
+        }
+        const { runs } = entry
+        let low = 0, high = runs.length
+        while (low < high) {
+            const middle = (low + high) >>> 1
+            if (runs[middle][1] <= offset) low = middle + 1
+            else high = middle
+        }
+        const cached = runs[low]
+        if (cached && cached[0] <= offset)
+            return backwards ? cached[0] - 1 : cached[1]
+        const step = backwards ? -1 : 1
+        let index = offset
+        while (index >= 0 && index < text.length && /\s/.test(text[index])) index += step
+        if (Math.abs(index - offset) > 64) {
+            let opposite = offset - step
+            while (opposite >= 0 && opposite < text.length && /\s/.test(text[opposite])) opposite -= step
+            const start = backwards ? index + 1 : opposite + 1
+            const end = backwards ? opposite : index
+            runs.splice(low, 0, [start, end])
+        }
+        return index
+    }
 }
 
 const simpleSearch = function* (strs, query, options = {}) {
@@ -45,6 +82,7 @@ const simpleSearch = function* (strs, query, options = {}) {
     const lowerHaystack = matchCase ? haystack : haystack.toLocaleLowerCase(locales)
     const needle = matchCase ? query : query.toLocaleLowerCase(locales)
     const needleLength = needle.length
+    const whitespaceSkipper = makeWhitespaceSkipper(strs)
     let index = -1
     let strIndex = 0
     let sum = 0
@@ -67,7 +105,7 @@ const simpleSearch = function* (strs, query, options = {}) {
             }
             const endOffset = end - endSum
             const range = { startIndex, startOffset, endIndex, endOffset }
-            yield { range, excerpt: makeExcerpt(strs, range) }
+            yield { range, excerpt: makeExcerpt(strs, range, whitespaceSkipper) }
         }
     } while (index > -1)
 }
