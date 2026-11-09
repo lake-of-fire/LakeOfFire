@@ -170,6 +170,7 @@ let package = Package(
                 "LakeOfFireAdblock",
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
                 .product(name: "ExpandableText", package: "swiftui-expandable-text"),
+                .product(name: "DebouncedOnChange", package: "DebouncedOnChange"),
                 .product(name: "JapaneseLanguageTools", package: "JapaneseLanguageTools"),
                 .product(name: "LRUCache", package: "LRUCache"),
                 .product(name: "LakeImage", package: "LakeImage"),
