@@ -21,6 +21,7 @@ public enum MediaTranscriptCodecError: Error {
     case decompressionFailed(String)
     case compressionFailed(String)
     case contentTooLarge
+    case immutableIdentity
 }
 
 private extension URL {
@@ -36,6 +37,8 @@ private extension URL {
 public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadataRecordable {
     public static let currentGeneratorVersion = 1
     public static let zstdCompressionLevel: Int32 = 6
+    /// Bound uncompressed transcript bytes before compression or allocation.
+    public static let maximumWebVTTBytes = 8 * 1024 * 1024
 
     @Persisted(primaryKey: true) public var compoundKey = ""
     @Persisted public var contentURL = URL(string: "about:blank")!
@@ -97,11 +100,14 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
     }
 
     public func updateCompoundKey() {
-        compoundKey = Self.makeCompoundKey(
+        guard realm == nil else { return }
+        let key = Self.makeCompoundKey(
             contentURL: contentURL,
             stableMediaIdentity: stableMediaIdentity,
             languageCode: languageCode
         )
+        guard key != compoundKey else { return }
+        compoundKey = key
     }
 
     public func matchesReuse(
@@ -139,6 +145,14 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
         mediaFingerprint: String? = nil,
         generatorVersion: Int = MediaTranscript.currentGeneratorVersion
     ) throws {
+        let expectedKey = Self.makeCompoundKey(
+            contentURL: contentURL,
+            stableMediaIdentity: stableMediaIdentity,
+            languageCode: languageCode
+        )
+        guard realm == nil || compoundKey == expectedKey else {
+            throw MediaTranscriptCodecError.immutableIdentity
+        }
         content = try Self.encodeWebVTT(webVTT)
         format = .webvtt
         compression = .zstd
@@ -161,10 +175,16 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
 
     public static func decodeWebVTT(_ value: Data) throws -> String {
         let data = try decodeWebVTTData(value)
-        return String(decoding: data, as: UTF8.self)
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw MediaTranscriptCodecError.invalidFrame
+        }
+        return string
     }
 
     public static func encodeWebVTTData(_ data: Data) throws -> Data {
+        guard data.count <= maximumWebVTTBytes else {
+            throw MediaTranscriptCodecError.contentTooLarge
+        }
         let maxCompressedSize = ZSTD_compressBound(data.count)
         guard maxCompressedSize > 0 else {
             throw MediaTranscriptCodecError.contentTooLarge
@@ -206,7 +226,7 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
             throw MediaTranscriptCodecError.unknownFrameSize
         }
 
-        guard frameContentSize <= UInt64(Int.max) else {
+        guard frameContentSize <= UInt64(maximumWebVTTBytes) else {
             throw MediaTranscriptCodecError.contentTooLarge
         }
 
