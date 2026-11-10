@@ -10,6 +10,7 @@ enum ReaderDocumentMutationAdmission {
     static func acceptsEBookReadiness<Binding: Equatable>(
         claimedURL: URL,
         frameMainDocumentURL: URL?,
+        frameRequestURL: URL? = nil,
         currentPageURL: URL,
         selectedContentURL: URL,
         isMainFrame: Bool,
@@ -22,6 +23,7 @@ enum ReaderDocumentMutationAdmission {
         return acceptsTopLevelDocument(
             claimedURL: claimedURL,
             frameMainDocumentURL: frameMainDocumentURL,
+            frameRequestURL: frameRequestURL,
             currentPageURL: currentPageURL,
             requiresMainFrame: true,
             isMainFrame: isMainFrame
@@ -31,16 +33,21 @@ enum ReaderDocumentMutationAdmission {
     static func acceptsTopLevelDocument(
         claimedURL: URL?,
         frameMainDocumentURL: URL?,
+        frameRequestURL: URL? = nil,
         currentPageURL: URL,
         requiresMainFrame: Bool,
         isMainFrame: Bool
     ) -> Bool {
+        // WebKit can omit mainDocumentURL even for a real main-frame navigation.
+        // Only that frame's own native request can substitute for top-level
+        // provenance. A child request or a payload URL never supplies it.
+        let topLevelDocumentURL = frameMainDocumentURL ?? (isMainFrame ? frameRequestURL : nil)
         guard !requiresMainFrame || isMainFrame,
               let claimedURL,
-              let frameMainDocumentURL,
+              let topLevelDocumentURL,
               !claimedURL.isNativeReaderView,
-              urlsMatchWithoutHash(claimedURL, frameMainDocumentURL),
-              urlsMatchWithoutHash(frameMainDocumentURL, currentPageURL) else {
+              urlsMatchWithoutHash(claimedURL, topLevelDocumentURL),
+              urlsMatchWithoutHash(topLevelDocumentURL, currentPageURL) else {
             return false
         }
         return true

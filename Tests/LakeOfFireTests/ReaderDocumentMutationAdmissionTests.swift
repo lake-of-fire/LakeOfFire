@@ -44,6 +44,37 @@ final class ReaderDocumentMutationAdmissionTests: XCTestCase {
         ))
     }
 
+    func testMainFrameRequestFallbackRequiresNativeProvenanceAndAgreement() {
+        let request = URL(string: "https://example.com/article#native")!
+        XCTAssertTrue(ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+            claimedURL: current, frameMainDocumentURL: nil, frameRequestURL: request,
+            currentPageURL: current, requiresMainFrame: true, isMainFrame: true
+        ))
+        XCTAssertFalse(ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+            claimedURL: current, frameMainDocumentURL: nil, frameRequestURL: nil,
+            currentPageURL: current, requiresMainFrame: false, isMainFrame: true
+        ), "A payload URL cannot replace absent native provenance")
+        XCTAssertFalse(ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+            claimedURL: current, frameMainDocumentURL: nil, frameRequestURL: request,
+            currentPageURL: current, requiresMainFrame: false, isMainFrame: false
+        ), "Even a same-URL child request cannot supply top-level provenance")
+        XCTAssertFalse(ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+            claimedURL: current, frameMainDocumentURL: URL(string: "https://example.com/previous"),
+            frameRequestURL: request, currentPageURL: current,
+            requiresMainFrame: true, isMainFrame: true
+        ), "A supplied main-document identity cannot be bypassed by the fallback")
+        XCTAssertFalse(ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+            claimedURL: current, frameMainDocumentURL: nil,
+            frameRequestURL: URL(string: "https://example.com/previous"),
+            currentPageURL: current, requiresMainFrame: true, isMainFrame: true
+        ))
+        XCTAssertFalse(ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+            claimedURL: URL(string: "https://victim.example/article"),
+            frameMainDocumentURL: nil, frameRequestURL: request,
+            currentPageURL: current, requiresMainFrame: true, isMainFrame: true
+        ))
+    }
+
     func testFrameTargetCannotNameAnUnrelatedRecord() {
         XCTAssertTrue(ReaderDocumentMutationAdmission.acceptsFrameTarget(
             claimedFrameURL: URL(string: "https://www.youtube.com/watch?v=abcdefghijk#captions"),
@@ -73,12 +104,31 @@ private actor ReadabilityReceiptGate {
 }
 
 @MainActor
-private final class ReadabilityReceiptFrameProbe: NSObject, WKScriptMessageHandler {
+private final class ReadabilityReceiptFrameProbe: NSObject, WKScriptMessageHandler, WKURLSchemeHandler {
     let receive: (WKFrameInfo) -> Void
-    init(receive: @escaping (WKFrameInfo) -> Void) { self.receive = receive }
+    let includeChildFrame: Bool
+    init(includeChildFrame: Bool = false, receive: @escaping (WKFrameInfo) -> Void) {
+        self.includeChildFrame = includeChildFrame
+        self.receive = receive
+    }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         receive(message.frameInfo)
     }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        let url = urlSchemeTask.request.url!
+        let childHTML = includeChildFrame && url.lastPathComponent != "receipt-child"
+            ? "<iframe src='receipt-fixture://example.invalid/receipt-child'></iframe>" : ""
+        let html = "<html><body>\(childHTML)<script>window.webkit.messageHandlers.receiptFrame.postMessage('ready')</script></body></html>"
+        urlSchemeTask.didReceive(URLResponse(
+            url: url, mimeType: "text/html", expectedContentLength: html.utf8.count,
+            textEncodingName: "utf-8"
+        ))
+        urlSchemeTask.didReceive(Data(html.utf8))
+        urlSchemeTask.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
 }
 
 @MainActor
@@ -89,22 +139,37 @@ private final class ReadabilityReceiptScriptProbe {
 
 extension ReaderDocumentMutationAdmissionTests {
     @MainActor
-    private func capturedFrame(for url: URL) async throws -> (WKWebView, WKFrameInfo) {
+    private func capturedFrame(for url: URL, captureSubframe: Bool = false) async throws -> (WKWebView, WKFrameInfo) {
         let received = expectation(description: "Capture actual WebKit frame provenance")
         var captured: WKFrameInfo?
-        let probe = ReadabilityReceiptFrameProbe { frame in
-            guard captured == nil else { return }
+        let probe = ReadabilityReceiptFrameProbe(includeChildFrame: captureSubframe) { frame in
+            guard captured == nil, frame.isMainFrame != captureSubframe else { return }
             captured = frame
             received.fulfill()
         }
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(probe, name: "receiptFrame")
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(probe, forURLScheme: "receipt-fixture")
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.loadHTMLString("<html><body><script>window.webkit.messageHandlers.receiptFrame.postMessage('ready')</script></body></html>", baseURL: url)
+        // Navigate to a real locally served document and retain WebKit's actual
+        // frame. Its mainDocumentURL may be nil; the native main-frame request
+        // must still establish admission without consulting a message payload.
+        webView.load(URLRequest(url: url))
         await fulfillment(of: [received], timeout: 5)
         let frame = try XCTUnwrap(captured)
-        XCTAssertTrue(frame.isMainFrame)
-        XCTAssertEqual(frame.request.mainDocumentURL?.removingFragmentIfNeeded(), url)
+        XCTAssertEqual(frame.isMainFrame, !captureSubframe)
+        let expectedRequestURL = captureSubframe
+            ? URL(string: "receipt-fixture://example.invalid/receipt-child")! : url
+        XCTAssertEqual(frame.request.url?.removingFragmentIfNeeded(), expectedRequestURL)
+        if !captureSubframe, let mainDocumentURL = frame.request.mainDocumentURL {
+            XCTAssertEqual(mainDocumentURL.removingFragmentIfNeeded(), url)
+        }
+        XCTAssertEqual(ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+            claimedURL: url, frameMainDocumentURL: frame.request.mainDocumentURL,
+            frameRequestURL: frame.request.url, currentPageURL: url,
+            requiresMainFrame: true, isMainFrame: frame.isMainFrame
+        ), !captureSubframe, "Only the actual main frame may establish required top-level authority")
         return (webView, frame)
     }
 
@@ -159,8 +224,58 @@ extension ReaderDocumentMutationAdmissionTests {
     }
 
     @MainActor
+    func testRealSubframeRequestCannotSupplyMissingTopLevelProvenance() async throws {
+        let url = URL(string: "receipt-fixture://example.invalid/subframe-parent")!
+        let (webView, frame) = try await capturedFrame(for: url, captureSubframe: true)
+        defer { webView.configuration.userContentController.removeScriptMessageHandler(forName: "receiptFrame") }
+        XCTAssertFalse(frame.isMainFrame)
+        let childURL = try XCTUnwrap(frame.request.url)
+        XCTAssertFalse(ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+            claimedURL: childURL, frameMainDocumentURL: nil, frameRequestURL: frame.request.url,
+            currentPageURL: childURL, requiresMainFrame: false, isMainFrame: frame.isMainFrame
+        ), "A real child request cannot stand in for missing top-level provenance")
+    }
+
+    @MainActor
+    func testRealMainFrameReadabilityRejectsForgedDocumentAndStaleBinding() async throws {
+        let url = URL(string: "receipt-fixture://example.invalid/admission-control")!
+        let (webView, frame) = try await capturedFrame(for: url)
+        defer { webView.configuration.userContentController.removeScriptMessageHandler(forName: "receiptFrame") }
+        for scenario in ["forged", "staleBinding", "live"] {
+            let claimedURL = scenario == "forged"
+                ? URL(string: "receipt-fixture://victim.invalid/forged")! : url
+            let (handlers, row, probe) = try receiptFixture(url: claimedURL)
+            row.isReaderModeByDefault = false
+            let mode = handlers.readerModeViewModel
+            let originalHTML = "<html><body>Current receipt content</body></html>"
+            let outputHTML = "<html><body><div id='reader-content'>Admitted native document</div></body></html>"
+            mode.readabilityContent = originalHTML
+            mode.readerPublicationDateLoader = { _ in nil }
+            let message = WebViewMessage(
+                frameInfo: frame, uuid: UUID(), name: "readabilityParsed",
+                body: ["pageURL": claimedURL.absoluteString, "windowURL": claimedURL.absoluteString,
+                       "title": "", "byline": "", "content": "Admitted native document",
+                       "inputHTML": outputHTML, "outputHTML": outputHTML],
+                javaScriptBindingToken: handlers.scriptCaller.currentJavaScriptBindingToken
+            )
+            if scenario == "staleBinding" {
+                installReceiptBinding(on: handlers.scriptCaller, probe: probe)
+            }
+            // Bound the live case after its actual admitted JS effect, before
+            // unrelated durable content discovery, as in the receipt-await test.
+            probe.cancelAfterDispatch = true
+            let handler = try XCTUnwrap(handlers.webViewMessageHandlers.handlers["readabilityParsed"])
+            let task = Task { await handler(message) }
+            await task.value
+            XCTAssertEqual(probe.calls, scenario == "live" ? 1 : 0, scenario)
+            XCTAssertEqual(mode.readabilityContent, scenario == "live" ? outputHTML : originalHTML, scenario)
+            mode.readerPublicationDateLoader = nil
+        }
+    }
+
+    @MainActor
     func testParsedReadabilityKeepsOriginalReceiptAcrossPublicationDateAwait() async throws {
-        let url = URL(string: "https://example.invalid/readability-receipt")!
+        let url = URL(string: "receipt-fixture://example.invalid/readability-receipt")!
         let (webView, frame) = try await capturedFrame(for: url)
         defer { webView.configuration.userContentController.removeScriptMessageHandler(forName: "receiptFrame") }
         for change in ["binding", "selection", "owners", "cancelled", "live"] {
@@ -240,7 +355,7 @@ extension ReaderDocumentMutationAdmissionTests {
 
     @MainActor
     func testQueuedAvailabilityWriteRetainsOriginalHandlerOwners() async throws {
-        let url = URL(string: "https://example.invalid/queued-readability-owners")!
+        let url = URL(string: "receipt-fixture://example.invalid/queued-readability-owners")!
         let (webView, frame) = try await capturedFrame(for: url)
         defer { webView.configuration.userContentController.removeScriptMessageHandler(forName: "receiptFrame") }
         let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
@@ -355,7 +470,7 @@ extension ReaderDocumentMutationAdmissionTests {
 
     @MainActor
     func testSuspendedFramePingCannotRegisterIntoSameURLReplacementBinding() async throws {
-        let url = URL(string: "https://example.invalid/frame-ping-receipt")!
+        let url = URL(string: "receipt-fixture://example.invalid/frame-ping-receipt")!
         let (webView, frame) = try await capturedFrame(for: url)
         defer { webView.configuration.userContentController.removeScriptMessageHandler(forName: "receiptFrame") }
         var configuredRealm = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
@@ -439,7 +554,7 @@ extension ReaderDocumentMutationAdmissionTests {
 
     @MainActor
     func testUnavailableReadabilityCannotClearModeAfterSameURLBindingReplacement() async throws {
-        let url = URL(string: "https://example.invalid/unavailable-receipt")!
+        let url = URL(string: "receipt-fixture://example.invalid/unavailable-receipt")!
         let (webView, frame) = try await capturedFrame(for: url)
         defer { webView.configuration.userContentController.removeScriptMessageHandler(forName: "receiptFrame") }
         let (handlers, _, probe) = try receiptFixture(url: url)
@@ -471,7 +586,7 @@ extension ReaderDocumentMutationAdmissionTests {
 
     @MainActor
     func testAutomaticReadabilityUsesOriginalReceiptBindingAfterDelay() async throws {
-        let url = URL(string: "https://example.invalid/automatic-receipt")!
+        let url = URL(string: "receipt-fixture://example.invalid/automatic-receipt")!
         let (webView, frame) = try await capturedFrame(for: url)
         defer { webView.configuration.userContentController.removeScriptMessageHandler(forName: "receiptFrame") }
         for change in ["live", "binding", "contentOwner"] {

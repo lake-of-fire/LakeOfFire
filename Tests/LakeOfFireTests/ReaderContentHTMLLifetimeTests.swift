@@ -234,7 +234,8 @@ extension ReaderContentHTMLLifetimeTests {
         return (realm, row, reader, mode, navigator)
     }
 
-    private func render(_ mode: ReaderModeViewModel, reader: ReaderContent) async {
+    @discardableResult
+    private func render(_ mode: ReaderModeViewModel, reader: ReaderContent) async -> WebViewScriptCaller {
         let url = reader.pageURL
         let caller = WebViewScriptCaller()
         // Model the mounted host's ownership through a later Retry action.
@@ -242,6 +243,7 @@ extension ReaderContentHTMLLifetimeTests {
         addTeardownBlock { @MainActor in withExtendedLifetime(caller) {} }
         mode.showReaderView(readerContent: reader, scriptCaller: caller)
         await mode.waitForReaderModeRender(for: url)
+        return caller
     }
 
     private func prepareSnippet(_ row: HistoryRecord, in realm: Realm, reader: ReaderContent) async throws {
@@ -961,6 +963,7 @@ extension ReaderContentHTMLLifetimeTests {
         }
         try prepareFinalTransformMetadata(row, in: realm)
         mode.readabilityContent = "<html><body><div id='reader-content'>Current article.</div></body></html>"
+        let caller = WebViewScriptCaller()
         var dateLookups = 0
         mode.readerPublicationDateLoader = { _ in
             dateLookups += 1
@@ -969,10 +972,10 @@ extension ReaderContentHTMLLifetimeTests {
                 dateLookups += 1
                 return nil
             }
-            mode.showReaderView(readerContent: reader, scriptCaller: WebViewScriptCaller())
+            mode.showReaderView(readerContent: reader, scriptCaller: caller)
             return nil
         }
-        await render(mode, reader: reader)
+        mode.showReaderView(readerContent: reader, scriptCaller: caller)
         await mode.waitForReaderModeRender(for: fileURL)
 
         XCTAssertEqual(dateLookups, 1, "A live owner's duplicate request should reuse its preparation")
@@ -1530,14 +1533,14 @@ extension ReaderContentHTMLLifetimeTests {
             await MainActor.run { attempts += 1 }
             throw RequiredPreparationFailure()
         }
-        await render(mode, reader: reader)
+        let caller = await render(mode, reader: reader)
         let failure = try XCTUnwrap(mode.currentPreparationFailure())
         session.authenticated(authToken: "retry-a-new-authorization", userID: 101)
         XCTAssertNil(mode.currentPreparationFailure())
         mode.retryPreparation(failureID: failure.id)
         await mode.waitForReaderModeRender(for: fileURL)
         XCTAssertEqual(attempts, 1)
-        mode.showReaderView(readerContent: reader, scriptCaller: WebViewScriptCaller())
+        mode.showReaderView(readerContent: reader, scriptCaller: caller)
         await mode.waitForReaderModeRender(for: fileURL)
         XCTAssertEqual(attempts, 2)
         XCTAssertNotEqual(mode.currentPreparationFailure()?.id, failure.id)

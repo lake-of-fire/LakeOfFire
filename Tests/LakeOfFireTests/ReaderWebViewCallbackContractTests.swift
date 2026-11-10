@@ -34,6 +34,12 @@ private actor ReaderCallbackGate {
     }
 }
 
+@MainActor
+private final class ReaderCallbackRenderTaskOwner {
+    var renderTasks: [Task<Void, Never>] = []
+    var waiters: [Task<Void, Never>] = []
+}
+
 private enum ReaderCallbackTestError: Error {
     case commitFailed
 }
@@ -1000,7 +1006,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     }
 
     func testRenderDeduplicationUsesDocumentBindingAndDispatchesCurrentLocation() async throws {
-        for replacesBinding in [false, true] {
+        for (replacesBinding, replacesCaller) in [(false, false), (true, false), (false, true)] {
+            let expectsReplacement = replacesBinding || replacesCaller
             let fixture = makeReaderWebViewHandlerFixture()
             let renderingRealm = try makeReaderHTMLRenderingRealm()
             defer { withExtendedLifetime(renderingRealm) {} }
@@ -1021,12 +1028,13 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             mode.readerLocalHTMLLoader = { _ in record.html }
             mode.readerPublicationDateLoader = { _ in nil }
             let gate = ReaderCallbackGate()
-            var renderTasks: [Task<Void, Never>] = []
+            let renderTaskOwner = ReaderCallbackRenderTaskOwner()
             addTeardownBlock { @MainActor in
                 await gate.release()
                 mode.cancelReaderModeLoad()
-                renderTasks.forEach { $0.cancel() }
-                await self.awaitCallbackRenderTasks(renderTasks, description: "deduplication render teardown")
+                renderTaskOwner.renderTasks.forEach { $0.cancel() }
+                await self.awaitCallbackRenderTasks(renderTaskOwner.renderTasks, description: "deduplication render teardown")
+                renderTaskOwner.waiters.forEach { $0.cancel() }
                 mode.swiftReadabilityProcessor = nil
             }
             let started = expectation(description: "same-binding processing suspended")
@@ -1045,9 +1053,10 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             caller.installBinding(ownedBy: owner, asyncCaller: { _, _, _, _ in .init(nil) },
                                   unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
             defer { _ = caller.clearBinding(ownedBy: owner) }
+            let originalBinding = try XCTUnwrap(caller.currentJavaScriptBindingToken)
             mode.showReaderView(readerContent: fixture.readerContent, scriptCaller: caller)
             let predecessorTask = try XCTUnwrap(mode.readerModeRenderTaskForTesting(for: source))
-            renderTasks.append(predecessorTask)
+            renderTaskOwner.renderTasks.append(predecessorTask)
             await fulfillment(of: [started], timeout: 1)
             let generation = mode.currentRenderGenerationDescription(for: source)
             let anchor = try XCTUnwrap(URL(string: source.absoluteString + "#next%2Fpart"))
@@ -1058,28 +1067,50 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                 caller.installBinding(ownedBy: owner, asyncCaller: { _, _, _, _ in .init(nil) },
                                       unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
             }
-            mode.showReaderView(readerContent: fixture.readerContent, scriptCaller: caller)
-            if replacesBinding {
+            let requestedCaller = replacesCaller ? WebViewScriptCaller() : caller
+            let requestedOwner = UUID()
+            if replacesCaller {
+                requestedCaller.installBinding(ownedBy: requestedOwner,
+                    asyncCaller: { _, _, _, _ in .init(nil) }, unsafeCaller: nil,
+                    snapshotCapture: nil, coordinateOriginInWindow: { nil })
+                XCTAssertEqual(caller.currentJavaScriptBindingToken, originalBinding,
+                               "The old caller must remain live and current")
+                XCTAssertNotEqual(requestedCaller.currentJavaScriptBindingToken, originalBinding)
+                XCTAssertNotNil(requestedCaller.currentJavaScriptBindingToken)
+            }
+            defer {
+                if replacesCaller { _ = requestedCaller.clearBinding(ownedBy: requestedOwner) }
+            }
+            mode.showReaderView(readerContent: fixture.readerContent, scriptCaller: requestedCaller)
+            if expectsReplacement {
                 XCTAssertNotEqual(mode.currentRenderGenerationDescription(for: source), generation)
                 // Prove completion while the predecessor's gate remains closed.
                 // A deduplication regression must fail finitely, then release it.
                 let successorTask = try XCTUnwrap(mode.readerModeRenderTaskForTesting(for: source))
-                renderTasks.append(successorTask)
+                renderTaskOwner.renderTasks.append(successorTask)
                 let successorFinished = expectation(description: "replacement render finishes independently")
                 let successorObserver = Task { @MainActor in
                     await successorTask.value
                     guard !Task.isCancelled else { return }
                     successorFinished.fulfill()
                 }
-                renderTasks.append(successorObserver)
+                renderTaskOwner.waiters.append(successorObserver)
                 await fulfillment(of: [successorFinished], timeout: 5)
                 XCTAssertTrue(mode.readabilityContent?.contains("Processed document 2.") == true)
             } else {
                 XCTAssertEqual(mode.currentRenderGenerationDescription(for: source), generation)
             }
             await gate.release()
-            await awaitCallbackRenderTasks(renderTasks, description: "deduplication renders finish")
-            XCTAssertEqual(processingCalls, replacesBinding ? 2 : 1)
+            await awaitCallbackRenderTasks(renderTaskOwner.renderTasks, description: "deduplication renders finish")
+            if expectsReplacement {
+                XCTAssertTrue(mode.readabilityContent?.contains("Processed document 2.") == true,
+                              "Retired processing must not overwrite the completed successor")
+            }
+            if replacesCaller {
+                XCTAssertEqual(caller.currentJavaScriptBindingToken, originalBinding,
+                               "Replacement must not rely on invalidating the old caller")
+            }
+            XCTAssertEqual(processingCalls, expectsReplacement ? 2 : 1)
             XCTAssertEqual(fixture.handler.navigator.debugLoadSnapshot.lastDataLoadBaseURL, anchor.absoluteString)
         }
     }
@@ -2352,6 +2383,11 @@ extension ReaderWebViewCallbackContractTests {
         }
         mode.showReaderView(readerContent: reader, scriptCaller: caller)
         await mode.waitForReaderModeRender(for: url)
+        realm.refresh()
+        let mutation = try XCTUnwrap(realm.objects(BigSyncPendingMutation.self).filter(
+            "entityType == %@ AND objectIdentifier == %@", HistoryRecord.className(), row.compoundKey
+        ).first)
+        XCTAssertFalse(mutation.generation.isEmpty, "Prepared HTML persistence must retain its real sync journal entry")
         let html = try XCTUnwrap(generatedHTML)
         let document = try SwiftSoup.parse(String(decoding: html, as: UTF8.self))
         let generationText = try XCTUnwrap(document.select("html").first()).attr("data-mnb-reader-render-generation")

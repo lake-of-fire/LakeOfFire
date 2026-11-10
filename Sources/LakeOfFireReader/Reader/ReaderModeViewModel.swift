@@ -1694,6 +1694,8 @@ public class ReaderModeViewModel: ObservableObject {
         let generation: UUID
         let originatingContentIsCurrent: @MainActor () -> Bool
         let documentBindingIsCurrent: @MainActor () -> Bool
+        weak var scriptCaller: WebViewScriptCaller?
+        let documentBindingToken: WebViewScriptCaller.JavaScriptBindingToken?
         var preparationFailureRevision: UInt64
         var hasDispatchedHTML = false
         let accountSession: AccountSessionSnapshot?
@@ -2659,6 +2661,7 @@ public class ReaderModeViewModel: ObservableObject {
         for url: URL,
         originatingContentIsCurrent: @escaping @MainActor () -> Bool,
         documentBindingIsCurrent: @escaping @MainActor () -> Bool,
+        scriptCaller: WebViewScriptCaller,
         processingAccount: ReaderModeProcessingAccount?,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
@@ -2670,10 +2673,16 @@ public class ReaderModeViewModel: ObservableObject {
         // Reuse work only for its still-current owner. A replacement selection
         // at the same URL needs its own render instead of inheriting or waiting
         // for an obsolete task that will correctly discard its output.
-        if hasActiveRender(for: canonicalURL) {
-            // An admitted duplicate keeps the shared preparation's failure owner.
-            activeRendersByURL[key]?.preparationFailureRevision = preparationFailureRevision
-            return false
+        if hasActiveRender(for: canonicalURL), let active = activeRendersByURL[key] {
+            if active.scriptCaller === scriptCaller,
+               active.documentBindingToken == scriptCaller.currentJavaScriptBindingToken {
+                // An admitted duplicate keeps the shared preparation's failure owner.
+                activeRendersByURL[key]?.preparationFailureRevision = preparationFailureRevision
+                return false
+            }
+            // Current work belongs to its caller and binding. Another live caller
+            // must not inherit preparation destined for the previous document.
+            retireRender(forKey: key, ifOwnedBy: active.generation)
         }
 
         let generation = UUID()
@@ -2692,6 +2701,8 @@ public class ReaderModeViewModel: ObservableObject {
             generation: generation,
             originatingContentIsCurrent: originatingContentIsCurrent,
             documentBindingIsCurrent: documentBindingIsCurrent,
+            scriptCaller: scriptCaller,
+            documentBindingToken: scriptCaller.currentJavaScriptBindingToken,
             preparationFailureRevision: preparationFailureRevision,
             accountSession: processingAccount?.snapshot,
             accountBoundaryID: processingAccount?.access.boundaryID
@@ -2865,6 +2876,7 @@ public class ReaderModeViewModel: ObservableObject {
             // A new request cannot reuse another document's suspended work.
             // Dispatched HTML retains its existing completed-document handoff.
             documentBindingIsCurrent: { scriptCaller.currentJavaScriptBindingToken == renderBinding },
+            scriptCaller: scriptCaller,
             processingAccount: processingAccount
         ) { [weak self] generation in
             guard let self else { return }

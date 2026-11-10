@@ -428,7 +428,8 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     // task. Its immutable WebKit receipt owns this publication.
                     guard ReaderDocumentMutationAdmission.acceptsEBookReadiness(
                         claimedURL: pageURL,
-                        frameMainDocumentURL: message.mainDocumentURL ?? message.requestURL,
+                        frameMainDocumentURL: message.mainDocumentURL,
+                        frameRequestURL: message.requestURL,
                         currentPageURL: readerViewModel.state.pageURL,
                         selectedContentURL: readerContent.pageURL,
                         isMainFrame: message.isMainFrame,
@@ -682,10 +683,11 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     isMainFrame: message.frameInfo.isMainFrame
                 ), ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                     claimedURL: result.windowURL,
-                    frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                    frameMainDocumentURL: message.mainDocumentURL,
+                    frameRequestURL: message.requestURL,
                     currentPageURL: readerViewModel.state.pageURL,
                     requiresMainFrame: false,
-                    isMainFrame: message.frameInfo.isMainFrame
+                    isMainFrame: message.isMainFrame
                 ) else {
                     return
                 }
@@ -785,10 +787,11 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     isMainFrame: message.frameInfo.isMainFrame
                 ), ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                     claimedURL: result.windowURL,
-                    frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                    frameMainDocumentURL: message.mainDocumentURL,
+                    frameRequestURL: message.requestURL,
                     currentPageURL: readerViewModel.state.pageURL,
                     requiresMainFrame: false,
-                    isMainFrame: message.frameInfo.isMainFrame
+                    isMainFrame: message.isMainFrame
                 ) else {
                     return
                 }
@@ -953,10 +956,11 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     guard let windowURL = result.windowURL,
                           ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                             claimedURL: windowURL,
-                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            frameMainDocumentURL: message.mainDocumentURL,
+                            frameRequestURL: message.requestURL,
                             currentPageURL: readerViewModel.state.pageURL,
                             requiresMainFrame: true,
-                            isMainFrame: message.frameInfo.isMainFrame
+                            isMainFrame: message.isMainFrame
                           ),
                           let _ = try await contentForWindowURL(windowURL, source: "rssURLs"),
                           documentIsStillCurrent(windowURL) else { return }
@@ -990,10 +994,11 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
                     guard ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                         claimedURL: result.url,
-                        frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                        frameMainDocumentURL: message.mainDocumentURL,
+                        frameRequestURL: message.requestURL,
                         currentPageURL: readerViewModel.state.pageURL,
                         requiresMainFrame: true,
-                        isMainFrame: message.frameInfo.isMainFrame
+                        isMainFrame: message.isMainFrame
                     ), let expectedURL = result.url else { return }
                     try await readerViewModel.pageMetadataUpdated(
                         title: result.title,
@@ -1011,10 +1016,11 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     guard let url = result.mainDocumentURL,
                           ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                             claimedURL: url,
-                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            frameMainDocumentURL: message.mainDocumentURL,
+                            frameRequestURL: message.requestURL,
                             currentPageURL: readerViewModel.state.pageURL,
                             requiresMainFrame: false,
-                            isMainFrame: message.frameInfo.isMainFrame
+                            isMainFrame: message.isMainFrame
                           ) else { return }
                     let contentRefs = try await { @RealmBackgroundActor in
                         let contents = try await ReaderContentLoader.loadAll(url: url)
@@ -1152,10 +1158,11 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                           let pageURL = result.pageURL,
                           ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                             claimedURL: windowURL,
-                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                            frameMainDocumentURL: message.mainDocumentURL,
+                            frameRequestURL: message.requestURL,
                             currentPageURL: readerViewModel.state.pageURL,
                             requiresMainFrame: false,
-                            isMainFrame: message.frameInfo.isMainFrame
+                            isMainFrame: message.isMainFrame
                           ),
                           ReaderDocumentMutationAdmission.acceptsFrameTarget(
                             claimedFrameURL: pageURL,

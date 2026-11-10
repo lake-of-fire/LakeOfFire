@@ -944,7 +944,15 @@ final class SyncMutationBoundaryTests: XCTestCase {
         let configuration = makeNavigationConfiguration()
         let realm = try await Realm.open(configuration: configuration)
         let source = makeHistory(url: "https://example.com/queued-history-visit")
-        try await realm.asyncWrite { realm.add(source) }
+        // ReaderViewModel asynchronously creates and journals a missing library
+        // configuration. Seed that independent fixture prerequisite before its
+        // observer starts so it cannot race the rejected-visit journal assertion.
+        let library = LibraryConfiguration()
+        try await realm.asyncWrite {
+            realm.add(source)
+            realm.add(library)
+        }
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
         let sourceKey = source.compoundKey
         let sourceCreatedAt = source.createdAt
         let sourceURL = source.url
