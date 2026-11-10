@@ -1,5 +1,6 @@
 import Combine
 import XCTest
+import RealmSwift
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
@@ -169,10 +170,309 @@ final class ReaderContentListSnapshotTests: XCTestCase {
         )
     }
 
+    func testViewRequestIdentityIncludesFilterAndTransformPresence() {
+        let item = contentFile(path: "saved.epub")
+        func request(filtered: Bool, transformed: Bool) -> ReaderContentListLoadRequest<ContentFile> {
+            ReaderContentListLoadRequest(
+                contents: [item], sortOrder: .providedOrder,
+                hasContentFilter: filtered, hasPostSortTransform: transformed
+            )
+        }
+        XCTAssertEqual(request(filtered: false, transformed: false), request(filtered: false, transformed: false))
+        XCTAssertNotEqual(request(filtered: false, transformed: false), request(filtered: true, transformed: false))
+        XCTAssertNotEqual(request(filtered: false, transformed: false), request(filtered: false, transformed: true))
+    }
+
+    func testViewRequestIdentityRetainsContentsAndSnapshotsMutableMetadata() {
+        let first = contentFile(path: "first.epub")
+        let second = contentFile(path: "second.epub")
+        func request(_ contents: [ContentFile], sort: ReaderContentSortOrder = .title) -> ReaderContentListLoadRequest<ContentFile> {
+            ReaderContentListLoadRequest(contents: contents, sortOrder: sort, hasContentFilter: false)
+        }
+        let original = request([first, second])
+        XCTAssertNotEqual(original, request([second, first]))
+        XCTAssertNotEqual(original, request([first]))
+        XCTAssertNotEqual(original, request([first, second], sort: .publicationDate))
+
+        first.title = "Renamed without replacing its Realm reference"
+        let renamed = request([first, second])
+        XCTAssertNotEqual(original, renamed)
+        first.publicationDate = Date(timeIntervalSince1970: 123)
+        let republished = request([first, second])
+        XCTAssertNotEqual(renamed, republished)
+        first.modifiedAt = first.modifiedAt.addingTimeInterval(1)
+        XCTAssertNotEqual(republished, request([first, second]))
+
+        let replacement = ContentFile(value: first)
+        XCTAssertEqual(replacement.compoundKey, first.compoundKey)
+        XCTAssertNotEqual([first], [replacement], "Unmanaged replacements have different object identity")
+        XCTAssertNotEqual(request([first]), request([replacement]), "Do not reduce contents to compound keys")
+    }
+
+    func testManagedRequestIdentitySnapshotsMetadataBeforeMutationAndInvalidation() async throws {
+        var configuration = Realm.Configuration()
+        configuration.inMemoryIdentifier = "ReaderListRequest-\(UUID().uuidString)"
+        configuration.objectTypes = [ContentFile.self]
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let item = contentFile(path: "saved.epub")
+        try realm.write { realm.add(item) }
+        let original = ReaderContentListLoadRequest(
+            contents: [item], sortOrder: .title, hasContentFilter: false
+        )
+
+        try realm.write { item.title = "Changed on the same managed reference" }
+        let renamed = ReaderContentListLoadRequest(
+            contents: [item], sortOrder: .title, hasContentFilter: false
+        )
+        XCTAssertNotEqual(original, renamed)
+
+        try realm.write { realm.delete(item) }
+        let invalidated = ReaderContentListLoadRequest(
+            contents: [item], sortOrder: .title, hasContentFilter: false
+        )
+        XCTAssertNotEqual(renamed, invalidated, "Identity capture must not read invalidated properties")
+        withExtendedLifetime(realm) {}
+    }
+
+    func testDisappearingViewRequestSkipsAllPostLoadEffects() async {
+        let entered = expectation(description: "view-owned filter is held")
+        let gate = ReaderListLoadGate(entered)
+        let item = contentFile(path: "saved.epub")
+        let model = ReaderContentListViewModel(initialContents: [item])
+        let request = ReaderContentListLoadRequest(
+            contents: [item], sortOrder: .providedOrder, hasContentFilter: true
+        )
+        var isCurrent = true
+        var completions = 0
+        let caller = Task { @MainActor in
+            await performReaderContentListLoad(
+                viewModel: model, request: request,
+                contentFilter: { @ReaderContentListActor _, _ in
+                    await gate.wait()
+                    return false
+                },
+                isCurrent: { isCurrent }, onLoaded: { completions += 1 }
+            )
+        }
+        addTeardownBlock { @MainActor in
+            gate.release()
+            caller.cancel()
+            await caller.value
+        }
+        await fulfillment(of: [entered], timeout: 3)
+        isCurrent = false
+        caller.cancel()
+        gate.release()
+        await caller.value
+
+        XCTAssertEqual(completions, 0)
+        XCTAssertEqual(model.filteredContentIDs, [item.compoundKey])
+        XCTAssertTrue(gate.wasCancelledOnReturn)
+    }
+
+    func testRetiredRequestSkipsCompletionEvenWithoutCallerCancellation() async {
+        let entered = expectation(description: "request awaiting filter")
+        let gate = ReaderListLoadGate(entered)
+        let item = contentFile(path: "saved.epub")
+        let model = ReaderContentListViewModel(initialContents: [item])
+        let request = ReaderContentListLoadRequest(
+            contents: [item], sortOrder: .providedOrder, hasContentFilter: true
+        )
+        var isCurrent = true
+        var completions = 0
+        let caller = Task { @MainActor in
+            await performReaderContentListLoad(
+                viewModel: model, request: request,
+                contentFilter: { @ReaderContentListActor _, _ in
+                    await gate.wait()
+                    return true
+                },
+                isCurrent: { isCurrent }, onLoaded: { completions += 1 }
+            )
+        }
+        addTeardownBlock { @MainActor in
+            gate.release()
+            caller.cancel()
+            await caller.value
+        }
+        await fulfillment(of: [entered], timeout: 3)
+        isCurrent = false
+        gate.release()
+        await caller.value
+        XCTAssertEqual(completions, 0)
+        XCTAssertFalse(gate.wasCancelledOnReturn)
+    }
+
+    func testCancelledLayoutDelayDoesNotScroll() async {
+        await assertRetiredLayoutDelayDoesNotScroll(cancelCaller: true)
+    }
+
+    func testReplacedLayoutDelayDoesNotScroll() async {
+        await assertRetiredLayoutDelayDoesNotScroll(cancelCaller: false)
+    }
+
+    private func assertRetiredLayoutDelayDoesNotScroll(cancelCaller: Bool) async {
+        let entered = expectation(description: "layout delay is held")
+        let gate = ReaderListLoadGate(entered)
+        var isCurrent = true
+        var scrolls = 0
+        let caller = Task { @MainActor in
+            await performReaderContentListScroll(
+                isCurrent: { isCurrent },
+                waitForLayout: { await gate.wait() },
+                scroll: { scrolls += 1 }
+            )
+        }
+        addTeardownBlock { @MainActor in
+            gate.release()
+            caller.cancel()
+            await caller.value
+        }
+        await fulfillment(of: [entered], timeout: 3)
+        if cancelCaller {
+            caller.cancel()
+        } else {
+            isCurrent = false
+        }
+        gate.release()
+        await caller.value
+        XCTAssertEqual(scrolls, 0)
+
+        await performReaderContentListScroll(
+            isCurrent: { true }, waitForLayout: {}, scroll: { scrolls += 1 }
+        )
+        XCTAssertEqual(scrolls, 1, "The current request can still scroll")
+    }
+
+
+    func testReplacementViewLoadPublishesAndCompletesOnlyCurrentRequest() async {
+        let entered = expectation(description: "old view-owned filter is held")
+        let gate = ReaderListLoadGate(entered)
+        let oldItem = contentFile(path: "old.epub")
+        let newItem = contentFile(path: "new.epub")
+        let model = ReaderContentListViewModel(initialContents: [oldItem])
+        var currentRequest = "old"
+        var completions: [String] = []
+        let caller = Task { @MainActor in
+            await performReaderContentListLoad(
+                viewModel: model,
+                request: ReaderContentListLoadRequest(
+                    contents: [oldItem], sortOrder: .providedOrder, hasContentFilter: true
+                ),
+                contentFilter: { @ReaderContentListActor _, _ in
+                    await gate.wait()
+                    return true
+                },
+                isCurrent: { currentRequest == "old" },
+                onLoaded: { completions.append("old") }
+            )
+        }
+        addTeardownBlock { @MainActor in
+            gate.release()
+            caller.cancel()
+            await caller.value
+        }
+        await fulfillment(of: [entered], timeout: 3)
+        currentRequest = "new"
+        await performReaderContentListLoad(
+            viewModel: model,
+            request: ReaderContentListLoadRequest(
+                contents: [newItem], sortOrder: .providedOrder, hasContentFilter: false
+            ),
+            contentFilter: nil,
+            isCurrent: { currentRequest == "new" },
+            onLoaded: { completions.append("new") }
+        )
+        gate.release()
+        await caller.value
+
+        XCTAssertEqual(model.filteredContentIDs, [newItem.compoundKey])
+        XCTAssertEqual(completions, ["new"])
+        XCTAssertTrue(gate.wasCancelledOnReturn)
+    }
+
+    func testFailedViewLoadDoesNotRunCompletion() async {
+        let item = contentFile(path: "saved.epub")
+        let model = ReaderContentListViewModel(initialContents: [item])
+        var completions = 0
+        await performReaderContentListLoad(
+            viewModel: model,
+            request: ReaderContentListLoadRequest(
+                contents: [item], sortOrder: .providedOrder, hasContentFilter: true
+            ),
+            contentFilter: { @ReaderContentListActor _, _ in
+                throw ReaderListLoadFixtureError.filterFailed
+            },
+            isCurrent: { true }, onLoaded: { completions += 1 }
+        )
+        XCTAssertEqual(completions, 0)
+        XCTAssertEqual(model.filteredContentIDs, [item.compoundKey])
+    }
+
+    func testRetiredViewRequestDoesNotStartLoad() async {
+        let first = contentFile(path: "first.epub")
+        let replacement = contentFile(path: "replacement.epub")
+        let model = ReaderContentListViewModel(initialContents: [first])
+        var completions = 0
+        await performReaderContentListLoad(
+            viewModel: model,
+            request: ReaderContentListLoadRequest(
+                contents: [replacement], sortOrder: .providedOrder, hasContentFilter: false
+            ),
+            contentFilter: nil,
+            isCurrent: { false }, onLoaded: { completions += 1 }
+        )
+        XCTAssertEqual(completions, 0)
+        XCTAssertEqual(model.filteredContentIDs, [first.compoundKey])
+    }
+
     private func contentFile(path: String) -> ContentFile {
         let file = ContentFile()
         file.url = URL(string: "ebook://book/\(path)")!
         file.updateCompoundKey()
         return file
     }
+}
+
+/// Controls only the asynchronous filter collaborator. Publication, cancellation
+/// forwarding and loading state always run through the production list model.
+@MainActor
+private final class ReaderListLoadGate {
+    let entered: XCTestExpectation
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
+    private(set) var wasCancelledOnReturn = false
+    private(set) var calls = 0
+
+    init(_ entered: XCTestExpectation) {
+        self.entered = entered
+    }
+
+    func wait() async {
+        calls += 1
+        guard calls == 1 else {
+            XCTFail("This fixture expects one filter call")
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if isReleased {
+                continuation.resume()
+            } else {
+                self.continuation = continuation
+            }
+            // A test may replace/cancel the load only after registration.
+            entered.fulfill()
+        }
+        wasCancelledOnReturn = Task.isCancelled
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private enum ReaderListLoadFixtureError: Error {
+    case filterFailed
 }

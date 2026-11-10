@@ -1120,6 +1120,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @State private var internalMultiSelection = Set<String>()
     @State private var deleteEligibilityByContentKey: [String: ReaderFileDeleteEligibility] = [:]
     @State private var deleteEligibilityRefreshTask: Task<Void, Never>?
+    @State private var currentLoadRequestID: UUID?
     @State private var pendingScrollTargetID: String?
     @State private var lastScrolledTargetID: String?
 
@@ -1355,25 +1356,25 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     @MainActor
-    private func scheduleScrollToTarget(with proxy: ScrollViewProxy, reason: String) {
-        guard let targetID = normalizedScrollTargetID else { return }
-        guard viewModel.filteredContentIDs.contains(targetID) else {
-            return
-        }
-        guard pendingScrollTargetID != targetID else {
-            return
-        }
+    private func scrollToTarget(with proxy: ScrollViewProxy, requestID: UUID) async {
+        guard !Task.isCancelled, currentLoadRequestID == requestID,
+              let targetID = normalizedScrollTargetID,
+              viewModel.filteredContentIDs.contains(targetID) else { return }
         let anchorID = readerContentListSeparatedRowScrollAnchorID(targetID)
         pendingScrollTargetID = targetID
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            guard pendingScrollTargetID == targetID else {
-                return
+        await performReaderContentListScroll(
+            isCurrent: {
+                currentLoadRequestID == requestID
+                    && pendingScrollTargetID == targetID
+                    && viewModel.filteredContentIDs.contains(targetID)
+            },
+            scroll: {
+                pendingScrollTargetID = nil
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(anchorID, anchor: .center)
+                }
             }
-            pendingScrollTargetID = nil
-            withAnimation(.easeInOut(duration: 0.25)) {
-                proxy.scrollTo(anchorID, anchor: .center)
-            }
-        }
+        )
     }
 
     private var listContainer: some View {
@@ -1448,10 +1449,17 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 
     @ViewBuilder
     private func listBody(scrollProxy: ScrollViewProxy) -> some View {
+        let request = ReaderContentListLoadRequest(
+            contents: contents,
+            sortOrder: sortOrder,
+            hasContentFilter: contentFilter != nil,
+            hasPostSortTransform: postSortTransform != nil
+        )
         listContainerWithSpacing
-            .onAppear {
-            }
             .onDisappear {
+                currentLoadRequestID = nil
+                pendingScrollTargetID = nil
+                deleteEligibilityRefreshTask?.cancel()
             }
             .toolbar {
 #if os(iOS)
@@ -1479,32 +1487,31 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     entrySelection = nil
                 }
             }
-            .task { @MainActor in
-                try? await viewModel.load(
-                    contents: contents,
+            .task(id: request) { @MainActor in
+                guard !Task.isCancelled else { return }
+                let requestID = UUID()
+                currentLoadRequestID = requestID
+                pendingScrollTargetID = nil
+                deleteEligibilityRefreshTask?.cancel()
+                await performReaderContentListLoad(
+                    viewModel: viewModel,
+                    request: request,
                     contentFilter: contentFilter,
-                    sortOrder: sortOrder,
-                    postSortTransform: postSortTransform
+                    postSortTransform: postSortTransform,
+                    isCurrent: { currentLoadRequestID == requestID },
+                    onLoaded: {
+                        refreshGrouping()
+                        refreshDeleteEligibilityCache()
+                        await scrollToTarget(with: scrollProxy, requestID: requestID)
+                    }
                 )
-                refreshGrouping()
-                scheduleScrollToTarget(with: scrollProxy, reason: "taskEnd")
-            }
-            .onChange(of: contents) { contents in
-                Task { @MainActor in
-                    try? await viewModel.load(
-                        contents: contents,
-                        contentFilter: contentFilter,
-                        sortOrder: sortOrder,
-                        postSortTransform: postSortTransform
-                    )
-                    refreshGrouping()
-                    scheduleScrollToTarget(with: scrollProxy, reason: "contentsChanged")
-                }
             }
             .onChange(of: viewModel.filteredContents) { _ in
+                // Keep groups aligned with preview and final snapshots without
+                // starting another load or leaving a queued scroll behind.
+                guard currentLoadRequestID != nil else { return }
                 refreshGrouping()
                 refreshDeleteEligibilityCache()
-                scheduleScrollToTarget(with: scrollProxy, reason: "filteredContentsChanged")
             }
             .onChange(of: multiSelection) { _ in
                 refreshDeleteEligibilityCache()
