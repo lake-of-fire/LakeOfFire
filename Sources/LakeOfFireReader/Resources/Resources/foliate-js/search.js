@@ -20,26 +20,66 @@ const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => 
     return { pre, match, post }
 }
 
+// Locale casing can change UTF-16 length (for example, English İ -> i + dot).
+// Keep only the changed casing spans, rather than an offset entry per code unit.
+// Base characters stay with their combining marks so contextual Turkish and
+// Lithuanian casing can remove or add dots without shifting later DOM ranges.
+const caseFoldOffsetMap = (text, foldedText, locales) => {
+    if (text === foldedText || /^[\x00-\x7f]*$/.test(text)) return null
+    const spans = []
+    const lengths = new Map()
+    let foldedStart = 0
+    for (const { 0: segment, index: originalStart } of text.matchAll(/\P{Mark}\p{Mark}*|\p{Mark}+/gu)) {
+        let length = lengths.get(segment)
+        if (length === undefined) {
+            length = segment.toLocaleLowerCase(locales).length
+            lengths.set(segment, length)
+        }
+        const foldedEnd = foldedStart + length
+        const originalEnd = originalStart + segment.length
+        if (length !== segment.length) {
+            spans.push({ foldedStart, foldedEnd, originalStart, originalEnd,
+                deltaAfter: originalEnd - foldedEnd })
+        }
+        foldedStart = foldedEnd
+    }
+    if (!spans.length) return null
+    return (offset, end) => {
+        let low = 0, high = spans.length
+        while (low < high) {
+            const middle = (low + high) >>> 1
+            if (spans[middle].foldedStart <= offset) low = middle + 1
+            else high = middle
+        }
+        const span = spans[low - 1]
+        if (span && offset < span.foldedEnd)
+            return end ? span.originalEnd : span.originalStart
+        return offset + (span?.deltaAfter ?? 0) + (end ? 1 : 0)
+    }
+}
+
 const simpleSearch = function* (strs, query, options = {}) {
     if (!query.length) return
     const { locales = 'en', sensitivity } = options
-    const matchCase = sensitivity === 'variant'
+    const matchCase = sensitivity === 'variant' || sensitivity === 'case'
     const haystack = strs.join('')
     const lowerHaystack = matchCase ? haystack : haystack.toLocaleLowerCase(locales)
     const needle = matchCase ? query : query.toLocaleLowerCase(locales)
     const needleLength = needle.length
+    const originalOffset = matchCase ? null : caseFoldOffsetMap(haystack, lowerHaystack, locales)
     let index = -1
     let strIndex = 0
     let sum = 0
     do {
         index = lowerHaystack.indexOf(needle, index + 1)
         if (index > -1) {
-            while (sum + strs[strIndex].length <= index) {
+            const start = originalOffset ? originalOffset(index, false) : index
+            const end = originalOffset ? originalOffset(index + needleLength - 1, true) : index + needleLength
+            while (sum + strs[strIndex].length <= start) {
                 sum += strs[strIndex++].length
             }
             const startIndex = strIndex
-            const startOffset = index - sum
-            const end = index + needleLength
+            const startOffset = start - sum
             // End offsets are exclusive. Keep their cursor separate so a hit
             // at a node boundary stays in that node and overlapping matches
             // can still start before this match's final node.
@@ -130,7 +170,7 @@ const collatedGraphemeSearch = function* (strs, query, options) {
     }
 }
 
-export const search = (strs, query, options) => {
+export const search = (strs, query, options = {}) => {
     const { granularity = 'grapheme', sensitivity = 'base' } = options
     if (!Intl?.Segmenter || granularity === 'grapheme'
     && sensitivity === 'variant')
@@ -141,11 +181,12 @@ export const search = (strs, query, options) => {
 }
 
 export const searchMatcher = (textWalker, opts) => {
-    const { defalutLocale, matchCase, matchDiacritics, matchWholeWords } = opts
+    // Keep the historical misspelling as a fallback for existing package callers.
+    const { defaultLocale, defalutLocale, matchCase, matchDiacritics, matchWholeWords } = opts
     return function* (doc, query) {
         const iter = textWalker(doc, function* (strs, makeRange) {
             for (const result of search(strs, query, {
-                locales: doc.body.lang || doc.documentElement.lang || defalutLocale || 'en',
+                locales: doc.body.lang || doc.documentElement.lang || defaultLocale || defalutLocale || 'en',
                 granularity: matchWholeWords ? 'word' : 'grapheme',
                 sensitivity: matchDiacritics && matchCase ? 'variant'
                 : matchDiacritics && !matchCase ? 'accent'
@@ -160,3 +201,4 @@ export const searchMatcher = (textWalker, opts) => {
         for (const result of iter) yield result
     }
 }
+

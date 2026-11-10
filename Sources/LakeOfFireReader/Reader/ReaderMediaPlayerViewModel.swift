@@ -608,7 +608,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func seekAITTS(toProgressValue value: Double, shouldPlay: Bool) {
-        guard !ttsUtterances.isEmpty else { return }
+        guard value.isFinite, !ttsUtterances.isEmpty else { return }
         let upperBound = max(ttsProgressUpperBound, 1)
         let clamped = min(max(value, 0), upperBound)
         let endScrubEpsilon = 0.001
@@ -1054,3 +1054,4 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         )
     }
 }
+
