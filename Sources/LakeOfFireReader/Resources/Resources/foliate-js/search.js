@@ -3,9 +3,31 @@ import { getDocumentLanguage } from './content-language.js'
 // length for context in excerpts
 const CONTEXT_LENGTH = 50
 
-const normalizeWhitespace = str => str.replace(/\s+/g, ' ')
+// Read only the normalized context that can appear in the excerpt. Scanning
+// outward preserves the old trimStart/trimEnd behavior without normalizing
+// the entire text-node prefix and suffix for every match.
+const excerptContext = (text, offset, backwards, skipWhitespace) => {
+    const step = backwards ? -1 : 1
+    let index = backwards ? offset - 1 : offset
+    const inside = () => index >= 0 && index < text.length
+    const characters = []
+    while (inside() && characters.length < CONTEXT_LENGTH) {
+        const character = text[index]
+        index += step
+        if (/\s/.test(character)) {
+            if (skipWhitespace) index = skipWhitespace(index - step, backwards)
+            else while (inside() && /\s/.test(text[index])) index += step
+            // Whitespace at the outer edge was removed by trimStart/trimEnd.
+            if (!inside()) break
+            characters.push(' ')
+        } else characters.push(character)
+    }
+    const ellipsis = characters.length < CONTEXT_LENGTH ? '' : '…'
+    return backwards ? ellipsis + characters.reverse().join('')
+        : characters.join('') + ellipsis
+}
 
-const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => {
+const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }, whitespaceSkipper) => {
     const start = strs[startIndex]
     const end = strs[endIndex]
     const match = startIndex === endIndex
@@ -13,35 +35,98 @@ const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => 
         : start.slice(startOffset)
             + strs.slice(startIndex + 1, endIndex).join('')
             + end.slice(0, endOffset)
-    const trimmedStart = normalizeWhitespace(start.slice(0, startOffset)).trimStart()
-    const trimmedEnd = normalizeWhitespace(end.slice(endOffset)).trimEnd()
-    const ellipsisPre = trimmedStart.length < CONTEXT_LENGTH ? '' : '…'
-    const ellipsisPost = trimmedEnd.length < CONTEXT_LENGTH ? '' : '…'
-    const pre = `${ellipsisPre}${trimmedStart.slice(-CONTEXT_LENGTH)}`
-    const post = `${trimmedEnd.slice(0, CONTEXT_LENGTH)}${ellipsisPost}`
+    const pre = excerptContext(start, startOffset, true, whitespaceSkipper?.(startIndex))
+    const post = excerptContext(end, endOffset, false, whitespaceSkipper?.(endIndex))
     return { pre, match, post }
+}
+
+// Literal fallback hits can repeatedly enter the same long whitespace run.
+// Cache only long runs actually encountered, within this generator's lifetime;
+// do not scan or index the rest of a node for a sparse early match.
+const makeWhitespaceSkipper = strs => {
+    const nodes = new Map()
+    return nodeIndex => (offset, backwards) => {
+        const text = strs[nodeIndex]
+        let entry = nodes.get(nodeIndex)
+        if (!entry || entry.text !== text) {
+            entry = { text, runs: [] }
+            nodes.set(nodeIndex, entry)
+        }
+        const { runs } = entry
+        let low = 0, high = runs.length
+        while (low < high) {
+            const middle = (low + high) >>> 1
+            if (runs[middle][1] <= offset) low = middle + 1
+            else high = middle
+        }
+        const cached = runs[low]
+        if (cached && cached[0] <= offset)
+            return backwards ? cached[0] - 1 : cached[1]
+        const step = backwards ? -1 : 1
+        let index = offset
+        while (index >= 0 && index < text.length && /\s/.test(text[index])) index += step
+        if (Math.abs(index - offset) > 64) {
+            let opposite = offset - step
+            while (opposite >= 0 && opposite < text.length && /\s/.test(text[opposite])) opposite -= step
+            const start = backwards ? index + 1 : opposite + 1
+            const end = backwards ? opposite : index
+            runs.splice(low, 0, [start, end])
+        }
+        return index
+    }
+}
+
+// Search the whole-string lowercase value so context-sensitive spellings such
+// as Greek final sigma remain intact. Measure casing spans with their following
+// marks: Turkish dot removal and Lithuanian dot insertion need that context.
+// Length-preserving runs retain every original UTF-16 boundary; only an actual
+// expansion/contraction maps its comparison units to the complete source span.
+const lowercaseSearchText = (text, locales) => {
+    const folded = text.toLocaleLowerCase(locales)
+    const starts = [], ends = [], lengths = new Map()
+    for (const match of text.matchAll(/[^\p{Mark}]\p{Mark}*|\p{Mark}+/gu)) {
+        const original = match[0]
+        let length = lengths.get(original)
+        if (length === undefined) {
+            length = original.toLocaleLowerCase(locales).length
+            lengths.set(original, length)
+        }
+        const unchangedLength = length === original.length
+        for (let i = 0; i < length; i++) {
+            starts.push(match.index + (unchangedLength ? i : 0))
+            ends.push(match.index + (unchangedLength ? i + 1 : original.length))
+        }
+    }
+    return { text: folded, starts, ends }
 }
 
 const simpleSearch = function* (strs, query, options = {}) {
     if (!query.length) return
     const { locales = 'en', sensitivity } = options
-    const matchCase = sensitivity === 'variant'
+    const matchCase = sensitivity === 'variant' || sensitivity === 'case'
     const haystack = strs.join('')
-    const lowerHaystack = matchCase ? haystack : haystack.toLocaleLowerCase(locales)
+    const mapped = matchCase ? null : lowercaseSearchText(haystack, locales)
+    const lowerHaystack = mapped?.text ?? haystack
     const needle = matchCase ? query : query.toLocaleLowerCase(locales)
     const needleLength = needle.length
+    const whitespaceSkipper = makeWhitespaceSkipper(strs)
     let index = -1
     let strIndex = 0
     let sum = 0
+    let previousStart, previousEnd
     do {
         index = lowerHaystack.indexOf(needle, index + 1)
         if (index > -1) {
-            while (sum + strs[strIndex].length <= index) {
+            const start = mapped ? mapped.starts[index] : index
+            const end = mapped ? mapped.ends[index + needleLength - 1] : index + needleLength
+            if (start === previousStart && end === previousEnd) continue
+            previousStart = start
+            previousEnd = end
+            while (sum + strs[strIndex].length <= start) {
                 sum += strs[strIndex++].length
             }
             const startIndex = strIndex
-            const startOffset = index - sum
-            const end = index + needleLength
+            const startOffset = start - sum
             // End offsets are exclusive. Keep their cursor separate so a hit
             // at a node boundary stays in that node and overlapping matches
             // can still start before this match's final node.
@@ -52,7 +137,7 @@ const simpleSearch = function* (strs, query, options = {}) {
             }
             const endOffset = end - endSum
             const range = { startIndex, startOffset, endIndex, endOffset }
-            yield { range, excerpt: makeExcerpt(strs, range) }
+            yield { range, excerpt: makeExcerpt(strs, range, whitespaceSkipper) }
         }
     } while (index > -1)
 }
@@ -158,7 +243,11 @@ const collatedRanges = function* (text, query, options = {}) {
         graphemes = new Intl.Segmenter('en', { granularity: 'grapheme' })
         collator = new Intl.Collator('en', { sensitivity })
     }
-    const normalized = mapSearchText(text, graphemes, normalizeSearchSegment, true)
+    // Printable ASCII has single-code-unit graphemes and no format tokens.
+    // With no whitespace run, normalization and its offset map are identities.
+    const identityOffsets = /^[\x20-\x7e]*$/.test(text) && !text.includes('  ')
+    const normalized = identityOffsets ? { text }
+        : mapSearchText(text, graphemes, normalizeSearchSegment, true)
     const needle = mapSearchText(query, graphemes, normalizeSearchSegment, true).text
     if (!normalized.text || !needle) return
     const segments = Array.from(segmenter.segment(normalized.text))
@@ -176,7 +265,8 @@ const collatedRanges = function* (text, query, options = {}) {
             Array.from(words.segment(normalized.text)), Array.from(words.segment(needle)).length, collator))
     }
     for (const { start, end } of candidates) {
-        yield { startOffset: normalized.starts[start], endOffset: normalized.ends[end - 1] }
+        yield { startOffset: identityOffsets ? start : normalized.starts[start],
+            endOffset: identityOffsets ? end : normalized.ends[end - 1] }
     }
 }
 
