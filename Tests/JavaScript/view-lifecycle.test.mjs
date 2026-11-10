@@ -751,3 +751,197 @@ test('a replacement search waits for prior annotation cleanup before publishing'
     ])
     view.close()
 })
+
+
+const makePartitionedSearchDocument = (parts, boundary = 'inline') => {
+    const doc = makeSearchDocument('')
+    doc.body.localName = 'body'
+    doc.body.lang = ''
+    doc.documentElement.lang = ''
+    const first = { localName: 'p', parentElement: doc.body }
+    const second = boundary === 'block' ? { localName: 'p', parentElement: doc.body } : first
+    const nodes = parts.map((nodeValue, index) => ({ nodeType: 3, nodeValue,
+        parentElement: index === 0 ? first : second }))
+    doc.searchTextNodes = [...nodes]
+    if (boundary === 'line' || boundary === 'empty') nodes.splice(1, 0, { nodeType: 1,
+        localName: boundary === 'line' ? 'br' : 'div', parentElement: first })
+    doc.createTreeWalker = (_root, _mask, { acceptNode }) => {
+        let index = 0
+        return { nextNode() {
+            while (index < nodes.length) {
+                const node = nodes[index++]
+                if (acceptNode(node) === NodeFilter.FILTER_ACCEPT) return node
+            }
+            return null
+        } }
+    }
+    return doc
+}
+
+for (const [boundary, query, expected, expectedRange] of [
+    ['inline', 'reading', ['reading'], [0, 0, 1, 3]],
+    ['inline', 'read', []],
+    ['block', 'read', ['read'], [0, 0, 0, 4]],
+    ['block', 'reading', []],
+    ['line', 'read', ['read'], [0, 0, 0, 4]],
+    ['line', 'reading', []],
+    ['empty', 'reading', []],
+    ['empty', 'read', ['read'], [0, 0, 0, 4]],
+    ['empty', 'read ing', ['read\ning'], [0, 0, 1, 3]],
+    ['block', 'read ing', ['read\ning'], [0, 0, 1, 3]],
+    ['line', 'read ing', ['read\ning'], [0, 0, 1, 3]],
+    ['block', ' ing', ['\ning'], [0, 4, 1, 3]],
+    ['line', 'read ', ['read\n'], [0, 0, 1, 0]],
+]) {
+    test(`View whole-word search respects ${boundary} boundaries for ${query}`, async () => {
+        globalThis.__viewRendererFactory = () => new FakeRenderer()
+        const view = new View()
+        const book = makeBook()
+        const doc = makePartitionedSearchDocument(['read', 'ing'], boundary)
+        book.sections = [{ createDocument: async () => doc }]
+        view.getCFI = (_index, range) => {
+            assert.ok(expectedRange)
+            const [startIndex, startOffset, endIndex, endOffset] = expectedRange
+            assert.equal(range.startNode, doc.searchTextNodes[startIndex])
+            assert.equal(range.startOffset, startOffset)
+            assert.equal(range.endNode, doc.searchTextNodes[endIndex])
+            assert.equal(range.endOffset, endOffset)
+            return 'matched'
+        }
+        view.addAnnotation = async () => {}
+        try {
+            await view.open(book)
+            const results = await collectAsync(view.search({ query, index: 0, matchWholeWords: true }))
+            assert.deepEqual(results.filter(x => x?.excerpt).map(x => x.excerpt.match), expected)
+        } finally { view.close() }
+    })
+}
+
+for (const [chapterLanguage, query] of [['', 'ı'], ['en', 'i']]) {
+    test(`View search uses book language only when chapter language is absent (${chapterLanguage || 'none'})`, async () => {
+        globalThis.__viewRendererFactory = () => new FakeRenderer()
+        const view = new View()
+        const doc = makeSearchDocument('I rest')
+        doc.body.lang = chapterLanguage
+        doc.documentElement.lang = chapterLanguage
+        const book = makeBook()
+        book.metadata.language = 'tr'
+        book.sections = [{ createDocument: async () => doc }]
+        view.getCFI = () => 'matched'
+        view.addAnnotation = async () => {}
+        try {
+            await view.open(book)
+            const results = await collectAsync(view.search({ query, index: 0, matchDiacritics: true }))
+            assert.deepEqual(results.filter(x => x?.excerpt).map(x => x.excerpt.match), ['I'])
+        } finally { view.close() }
+    })
+}
+
+for (const scope of ['section', 'book']) {
+    test(`closing View retires a rejected real EPUB ${scope} search read`, async () => {
+        const originalDOMParser = globalThis.DOMParser
+        let parseCount = 0
+        globalThis.DOMParser = class { parseFromString() { parseCount++; throw new Error('retired content parsed') } }
+        const { EPUB } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/epub.js')
+        let release
+        let started
+        const reading = new Promise(resolve => { started = resolve })
+        const source = new EPUB({ loadText: () => {
+            started()
+            return new Promise(resolve => { release = resolve })
+        }, loadBlob: async () => null, getSize: () => 0 })
+        globalThis.__viewRendererFactory = () => new FakeRenderer()
+        const view = new View()
+        const book = makeBook()
+        book.destroy = () => source.destroy()
+        book.sections = [{ createDocument: () => source.loadDocument({ href: 'chapter.xhtml', mediaType: 'application/xhtml+xml' }) }]
+        const annotations = []
+        view.addAnnotation = async value => { annotations.push(value) }
+        try {
+            await view.open(book)
+            const pending = collectAsync(view.search({ query: 'alpha', ...(scope === 'section' ? { index: 0 } : {}) }))
+            await reading
+            view.close()
+            release('<html/>')
+            assert.deepEqual(await pending, [])
+            assert.deepEqual(annotations, [])
+            assert.equal(parseCount, 0)
+        } finally {
+            release?.('<html/>')
+            view.close()
+            source.destroy()
+            globalThis.DOMParser = originalDOMParser
+        }
+    })
+
+    test(`a current ${scope} search still reports its document-load failure`, async () => {
+        globalThis.__viewRendererFactory = () => new FakeRenderer()
+        const view = new View()
+        const failure = new Error('current document read failed')
+        const book = makeBook()
+        book.sections = [{ createDocument: async () => { throw failure } }]
+        try {
+            await view.open(book)
+            await assert.rejects(collectAsync(view.search({ query: 'alpha', ...(scope === 'section' ? { index: 0 } : {}) })), error => error === failure)
+        } finally { view.close() }
+    })
+}
+
+
+const makeLanguageElement = ({lang, xmlLang, serializedXMLLang} = {}) => {
+    let htmlLanguage = lang
+    return {
+        get lang() { return htmlLanguage ?? '' },
+        set lang(value) { htmlLanguage = value },
+        dir: '',
+        getAttribute(name) {
+            return name === 'lang' ? htmlLanguage ?? null
+                : name === 'xml:lang' ? serializedXMLLang ?? xmlLang ?? null : null
+        },
+        getAttributeNS(namespace, name) {
+            return namespace === 'http://www.w3.org/XML/1998/namespace' && name === 'lang'
+                ? xmlLang ?? null : null
+        },
+    }
+}
+
+for (const [name, body, html, bookLanguage, expectedQuery, expectedRootLanguage, expectedDirection] of [
+    ['XML root', {}, {xmlLang:'en'}, 'tr', 'i', null, 'ltr'],
+    ['XML body before HTML root', {xmlLang:'en'}, {lang:'tr'}, 'tr', 'i', 'tr', 'ltr'],
+    ['XML wins on the same element', {}, {xmlLang:'en',lang:'tr'}, 'tr', 'i', 'tr', 'ltr'],
+    ['explicit unknown XML root', {}, {xmlLang:''}, 'tr', 'i', null, ''],
+    ['explicit unknown XML body', {xmlLang:''}, {lang:'tr'}, 'tr', 'i', 'tr', ''],
+    ['HTML body before XML root', {lang:'en'}, {xmlLang:'tr'}, 'tr', 'i', null, 'ltr'],
+    ['HTML-serialized XML declaration', {}, {serializedXMLLang:'en'}, 'tr', 'i', null, 'ltr'],
+    ['package fallback', {}, {}, 'tr', 'ı', 'tr', 'ltr'],
+    ['XML Arabic direction', {}, {xmlLang:'ar'}, 'en', 'i', null, 'rtl'],
+]) {
+    test(`View preserves chapter language and derived direction: ${name}`, async () => {
+        const renderer = new FakeRenderer()
+        globalThis.__viewRendererFactory = () => renderer
+        const view = new View()
+        const doc = makeSearchDocument('I')
+        doc.body = makeLanguageElement(body)
+        doc.documentElement = makeLanguageElement(html)
+        const book = makeBook()
+        book.metadata.language = bookLanguage
+        book.sections = [{createDocument:async () => doc}]
+        view.getCFI = (_index, range) => {
+            assert.equal(range.startOffset, 0)
+            assert.equal(range.endOffset, 1)
+            return 'language-match'
+        }
+        view.addAnnotation = async () => {}
+        try {
+            await view.open(book)
+            for (const query of ['i','ı']) {
+                const results = await collectAsync(view.search({query,index:0,matchDiacritics:true}))
+                assert.deepEqual(results.filter(x => x?.excerpt).map(x => x.excerpt.match),
+                    query === expectedQuery ? ['I'] : [], query)
+            }
+            renderer.dispatchEvent(new CustomEvent('load', {detail:{doc,index:0}}))
+            assert.equal(doc.documentElement.getAttribute('lang'), expectedRootLanguage)
+            assert.equal(doc.documentElement.dir, expectedDirection)
+        } finally { view.close() }
+    })
+}
