@@ -723,6 +723,7 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
           <outline text="User Scripts" isUserScriptList="true">
             <outline text="Legacy script" uuid="\(script.id.uuidString)" script="window.legacy = true;"/>
           </outline>
+          <outline text="Script without identity" script="window.unidentified = true;"/>
         </body></opml>
         """
         let fileURL = FileManager.default.temporaryDirectory
@@ -734,6 +735,9 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(script.isArchived)
         XCTAssertEqual(script.script, "window.legacy = true;")
         XCTAssertEqual(Array(library.userScriptIDs), [script.id])
+        XCTAssertEqual(realm.objects(UserScript.self).count, 1)
+        XCTAssertTrue(realm.objects(FeedCategory.self).isEmpty)
+        XCTAssertTrue(realm.objects(Feed.self).isEmpty)
         let generations = Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
             .map { ($0.recordName, $0.generation) })
         XCTAssertNotNil(generations["UserScript.\(script.id)"])

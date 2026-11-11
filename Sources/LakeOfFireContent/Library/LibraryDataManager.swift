@@ -1332,7 +1332,9 @@ public class LibraryDataManager: NSObject {
         )
 
         if download == nil, standardImportAllowed,
-           opmlEntry.attributeStringValue("uuid") == nil {
+           opmlEntry.attributeStringValue("uuid") == nil,
+           opmlEntry.attributeStringValue("script") == nil,
+           !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
             let node = try await Self.importStandardOPMLNode(
                 opmlEntry, opml: opml, category: category, directory: directory,
                 ordinal: ordinal, in: realm

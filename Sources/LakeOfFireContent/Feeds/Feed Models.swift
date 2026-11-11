@@ -876,6 +876,13 @@ fileprivate actor FeedEntryActor {
 }
 
 public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, ChangeMetadataRecordable {
+    /// Historical local UI bytes, separate from the current no-op protocol API.
+    @Persisted public var retainedLegacyReaderModeOfferHidden = false
+
+    public override class func propertiesMapping() -> [String: String] {
+        ["retainedLegacyReaderModeOfferHidden": "isReaderModeOfferHidden"]
+    }
+
     @Persisted(primaryKey: true) public var compoundKey = ""
     public var keyPrefix: String? {
         return feedID?.uuidString
@@ -2496,4 +2503,10 @@ fileprivate func cleanRssData(_ rssData: Data) -> Data {
     guard let rssString = String(data: rssData, encoding: .utf8) else { return rssData }
     let cleanedString = rssString.replacingOccurrences(of: "<前編>", with: "&lt;前編&gt;")
     return cleanedString.data(using: .utf8) ?? rssData
+}
+
+extension FeedEntry: SyncSkippablePropertiesModel {
+    public func skipSyncingProperties() -> Set<String>? {
+        ["retainedLegacyReaderModeOfferHidden"]
+    }
 }

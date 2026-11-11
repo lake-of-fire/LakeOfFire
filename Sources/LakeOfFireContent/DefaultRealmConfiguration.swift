@@ -2,7 +2,8 @@ import Foundation
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 73
+    // 74 retains the original local hidden-offer flag and repairs historical links.
+    public static let schemaVersion: UInt64 = 74
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -32,6 +33,7 @@ public enum DefaultRealmConfiguration {
     }
 
     public static func migrationBlock(migration: Migration, oldSchemaVersion: UInt64) {
+        preserveHistoricalRelationships(in: migration)
         if oldSchemaVersion < 32 {
             migration.deleteData(forType: FeedEntry.className())
         }
@@ -125,6 +127,18 @@ public enum DefaultRealmConfiguration {
         }
     }
 
+    private static func preserveHistoricalRelationships(in migration: Migration) {
+        // Lake50→51 omitted these copies. The app composes this schema into
+        // Shared, whose version numbers are unrelated to standalone Lake's.
+        LegacyRealmRelationshipMigration.preserve([
+            .init("Feed", "category", "categoryID", target: "FeedCategory", key: "id", type: .UUID),
+            .init("FeedEntry", "feed", "feedID", target: "Feed", key: "id", type: .UUID),
+            .init("LibraryConfiguration", "categories", "categoryIDs", target: "FeedCategory", key: "id", type: .UUID, list: true),
+            .init("LibraryConfiguration", "userScripts", "userScriptIDs", target: "UserScript", key: "id", type: .UUID, list: true),
+            .init("UserScript", "allowedDomains", "allowedDomainIDs", target: "UserScriptAllowedDomain", key: "id", type: .UUID, list: true),
+        ], in: migration)
+    }
+
     private static func migrateMediaTranscript_schemaVersionLessThan54(migration: Migration) {
         migration.enumerateObjects(ofType: MediaTranscript.className()) { oldObject, newObject in
             guard let newObject else { return }
@@ -173,5 +187,83 @@ public enum DefaultRealmConfiguration {
             return nil
         }
         return object[key] as? String
+    }
+}
+
+/// Copies historical object references to their primitive identities without
+/// consulting current-account state. Shared embeds Lake's models with a
+/// different version space, so the original stored shapes select the repair.
+public enum LegacyRealmRelationshipMigration {
+    public struct Link {
+        let table: String
+        let source: String
+        let destination: String
+        let target: String
+        let key: String
+        let keyType: PropertyType
+        let isList: Bool
+
+        public init(_ table: String, _ source: String, _ destination: String,
+                    target: String, key: String, type: PropertyType, list: Bool = false) {
+            self.table = table
+            self.source = source
+            self.destination = destination
+            self.target = target
+            self.key = key
+            self.keyType = type
+            self.isList = list
+        }
+    }
+
+    public static func preserve(_ links: [Link], in migration: Migration) {
+        for link in links {
+            guard let oldTable = migration.oldSchema[link.table],
+                  let old = oldTable.properties.first(where: { $0.name == link.source }) else { continue }
+            // An already-stored ID is original data. Never replace it from an
+            // old parallel link; the independent preservation gate checks both.
+            guard !oldTable.properties.contains(where: { $0.name == link.destination }) else { continue }
+            guard let new = migration.newSchema[link.table]?.properties.first(where: {
+                $0.name == link.destination
+            }), let targetKey = migration.oldSchema[link.target]?.primaryKeyProperty else {
+                preconditionFailure("Missing historical relationship destination: \(link.table).\(link.destination)")
+            }
+            precondition(old.type == .object && old.objectClassName == link.target
+                && old.isArray == link.isList && !old.isSet && !old.isMap
+                && old.isOptional == !link.isList
+                && targetKey.name == link.key && targetKey.type == link.keyType
+                && !targetKey.isOptional && !targetKey.isArray && !targetKey.isSet && !targetKey.isMap
+                && new.type == link.keyType && new.isArray == link.isList
+                && !new.isSet && !new.isMap && new.isOptional == !link.isList,
+                "Unsupported historical relationship shape: \(link.table).\(link.source)")
+            migration.enumerateObjects(ofType: link.table) { oldObject, newObject in
+                guard let oldObject, let newObject else { return }
+                if link.isList {
+                    guard let originals = oldObject[link.source] as? List<MigrationObject> else {
+                        preconditionFailure("Invalid historical relationship list: \(link.table).\(link.source)")
+                    }
+                    // All historical relationship lists in this contract use UUID
+                    // identity. map keeps order/duplicates and never drops a key.
+                    precondition(link.keyType == .UUID)
+                    let identifiers = originals.map { original -> UUID in
+                        guard let id = original[link.key] as? UUID else {
+                            preconditionFailure("Invalid historical relationship identity: \(link.target).\(link.key)")
+                        }
+                        return id
+                    }
+                    let list = List<UUID>()
+                    list.append(objectsIn: identifiers)
+                    newObject[link.destination] = list
+                } else if let value = oldObject[link.source] {
+                    guard let original = value as? MigrationObject else {
+                        preconditionFailure("Invalid historical relationship: \(link.table).\(link.source)")
+                    }
+                    // Realm validates the primitive against the destination type;
+                    // zero IDs, foreign owners and tombstoned endpoints are data.
+                    newObject[link.destination] = original[link.key]
+                } else {
+                    newObject[link.destination] = nil
+                }
+            }
+        }
     }
 }
