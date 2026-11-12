@@ -68,7 +68,7 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-syntax", exact: "603.0.1"),
         .package(path: "../SwiftUtilities"),
         .package(url: "https://github.com/lake-of-fire/LakeImage.git", branch: "main"),
-        .package(url: "https://github.com/aehlke/realm-swift.git", revision: "c595af8988ec630960d33ce51cd0671c2263086a"),
+        .package(url: "https://github.com/aehlke/realm-swift.git", revision: "5d5058bf4cddd45ba4777b18e669523fab9ee7e2"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
         .package(url: "https://github.com/Tunous/DebouncedOnChange.git", branch: "main"),
