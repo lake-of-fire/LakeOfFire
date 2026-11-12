@@ -8,8 +8,11 @@ private func sharedReaderFontLog(
     _ = metadata
 }
 
-public struct SharedReaderFontAsset: Equatable, Sendable {
-    public let localFileURL: URL
+public struct SharedReaderFontAsset: Hashable, Sendable {
+    public let localFileURL: URL?
+    public let systemFontNames: [String: String]
+    public let horizontalFamilyName: String?
+    public let verticalFamilyName: String?
     public let mimeType: String
     public let format: String
     public let supportedFamilyNames: [String]
@@ -22,6 +25,9 @@ public struct SharedReaderFontAsset: Equatable, Sendable {
         supportedFamilyNames: [String],
         publicFilenameBase: String = "YuKyokasho"
     ) {
+        self.systemFontNames = [:]
+        self.horizontalFamilyName = nil
+        self.verticalFamilyName = nil
         self.localFileURL = localFileURL
         self.mimeType = mimeType
         self.format = format
@@ -29,8 +35,24 @@ public struct SharedReaderFontAsset: Equatable, Sendable {
         self.publicFilenameBase = publicFilenameBase
     }
 
+    /// System-managed faces are referenced by name; their files are never served.
+    public init(
+        systemFontNames: [String: String],
+        horizontalFamilyName: String,
+        verticalFamilyName: String
+    ) {
+        self.localFileURL = nil
+        self.systemFontNames = systemFontNames
+        self.horizontalFamilyName = horizontalFamilyName
+        self.verticalFamilyName = verticalFamilyName
+        self.supportedFamilyNames = Array(Set([horizontalFamilyName, verticalFamilyName])).sorted()
+        self.mimeType = "text/css"
+        self.format = ""
+        self.publicFilenameBase = "system-font"
+    }
+
     public var publicFilename: String {
-        let fileExtension = localFileURL.pathExtension
+        let fileExtension = localFileURL?.pathExtension ?? ""
         if fileExtension.isEmpty {
             return publicFilenameBase
         }
@@ -197,6 +219,14 @@ private func sharedReaderFontHTTPResponse(
     )
 }
 
+private func sharedReaderFontCSSString(_ value: String) -> String {
+    value.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "'", with: "\\'")
+        .replacingOccurrences(of: "\n", with: "\\a ")
+        .replacingOccurrences(of: "\r", with: "\\d ")
+        .replacingOccurrences(of: "\u{000C}", with: "\\c ")
+}
+
 public func sharedReaderFontResponse(
     for requestURL: URL,
     asset: SharedReaderFontAsset?
@@ -247,6 +277,42 @@ public func sharedReaderFontResponse(
 
     switch route {
     case .stylesheet(let familyName):
+        if asset.localFileURL == nil {
+            guard asset.supportsFamily(familyName),
+                  let horizontal = asset.horizontalFamilyName,
+                  let vertical = asset.verticalFamilyName,
+                  asset.supportedFamilyNames.allSatisfy({ asset.systemFontNames[$0]?.isEmpty == false }) else {
+                return SharedReaderFontServedResponse(
+                    response: sharedReaderFontHTTPResponse(url: requestURL, statusCode: 404, contentType: "text/plain"),
+                    data: Data()
+                )
+            }
+            let faces = asset.supportedFamilyNames.map { family in
+                "@font-face { font-family: '\(sharedReaderFontCSSString(family))'; font-weight: 400 700; font-style: normal; src: local('\(sharedReaderFontCSSString(asset.systemFontNames[family]!))'); font-display: swap; }"
+            }.joined(separator: "\n")
+            let css = """
+            \(faces)
+            :root {
+              --mnb-content-font: '\(sharedReaderFontCSSString(horizontal))', system-ui;
+              --mnb-content-vertical-font: '\(sharedReaderFontCSSString(vertical))', system-ui;
+            }
+            html, body,
+            body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
+              font-family: var(--mnb-content-font), system-ui !important;
+            }
+            body.reader-vertical-writing,
+            body.reader-vertical-writing *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
+              font-family: var(--mnb-content-vertical-font), system-ui !important;
+            }
+            rt {
+              font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', system-ui, sans-serif !important;
+            }
+            """
+            return SharedReaderFontServedResponse(
+                response: sharedReaderFontHTTPResponse(url: requestURL, statusCode: 200, contentType: "text/css", textEncodingName: "utf-8"),
+                data: Data(css.utf8)
+            )
+        }
         let supportsFamily = asset.supportsFamily(familyName)
         let fontURL = sharedReaderFontFontURL(for: requestURL, asset: asset)
         guard supportsFamily,
@@ -319,7 +385,8 @@ public func sharedReaderFontResponse(
         return SharedReaderFontServedResponse(response: response, data: data)
 
     case .font:
-        guard let data = try? Data(contentsOf: asset.localFileURL) else {
+        guard let fileURL = asset.localFileURL,
+              let data = try? Data(contentsOf: fileURL) else {
             let response = sharedReaderFontHTTPResponse(
                 url: requestURL,
                 statusCode: 404,
@@ -332,7 +399,7 @@ public func sharedReaderFontResponse(
                     [
                         "status": "404",
                         "reason": "fontFileReadFailed",
-                        "assetLocalPath": asset.localFileURL.path,
+                        "assetLocalPath": asset.localFileURL?.path ?? "nil",
                         "byteCount": "0",
                     ],
                     uniquingKeysWith: { _, new in new }
@@ -352,7 +419,7 @@ public func sharedReaderFontResponse(
                 [
                     "status": "200",
                     "reason": "ok",
-                    "assetLocalPath": asset.localFileURL.path,
+                    "assetLocalPath": asset.localFileURL?.path ?? "nil",
                     "byteCount": String(data.count),
                 ],
                 uniquingKeysWith: { _, new in new }

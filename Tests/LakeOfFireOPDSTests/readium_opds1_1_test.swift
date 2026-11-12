@@ -16,10 +16,26 @@ final class readium_opds1_1_test: XCTestCase {
     private var feed: Feed!
 
     override func setUpWithError() throws {
-        let fileURL = try XCTUnwrap(Bundle.module.url(forResource: "Samples/wiki_1_1", withExtension: "opds"))
+        #if SWIFT_PACKAGE
+        let bundle = Bundle.module
+        #else
+        let bundle = Bundle(for: readium_opds1_1_test.self)
+        #endif
+        let fileURL = try XCTUnwrap(bundle.url(forResource: "Samples/wiki_1_1", withExtension: "opds"))
         let data = try Data(contentsOf: fileURL)
         let response = try XCTUnwrap(HTTPURLResponse(url: URL(string: "http://test.com")!, statusCode: 200, httpVersion: nil, headerFields: nil))
         feed = try XCTUnwrap(try OPDS1Parser.parse(xmlData: data, url: URL(string: "http://test.com")!, response: response).feed)
+    }
+
+    func testXHTMLTitleRetainsAllDescendantText() throws {
+        let url = URL(string: "https://example.com/catalog")!
+        let response = URLResponse(url: url, mimeType: "application/atom+xml", expectedContentLength: -1, textEncodingName: "utf-8")
+        let xml = """
+        <feed xmlns="http://www.w3.org/2005/Atom"><id>urn:catalog</id><updated>2026-09-07T00:00:00Z</updated><title>Catalog</title><author><name>Author</name></author><entry><id>urn:book</id><updated>2026-09-07T00:00:00Z</updated><title type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">A <b>Book</b> Title</div></title><link rel="http://opds-spec.org/acquisition" href="book.epub"/></entry></feed>
+        """
+        let result = try OPDS1Parser.parse(xmlData: Data(xml.utf8), url: url, response: response)
+        XCTAssertEqual(result.feed?.publications.first?.metadata.title, "A Book Title")
+        XCTAssertEqual(result.feed?.publications.count, 1)
     }
 
     func testMetadata() {
@@ -51,5 +67,36 @@ final class readium_opds1_1_test: XCTestCase {
         XCTAssertEqual("2019-03-12".dateFromISO8601?.timeIntervalSince1970, 1_552_348_800)
         XCTAssertEqual("2019-03-12T07:58:31".dateFromISO8601?.timeIntervalSince1970, 1_552_377_511)
         XCTAssertEqual("2019-03-12T07:58:31Z".dateFromISO8601?.timeIntervalSince1970, 1_552_377_511)
+    }
+
+    func testRelativeLinksUseFinalResponseURLAfterRedirect() throws {
+        let xml = """
+        <feed>
+          <title>Redirected Catalog</title>
+          <link rel="next" href="next.atom"/>
+          <entry>
+            <title>Book</title>
+            <link rel="http://opds-spec.org/acquisition" href="books/book.epub"/>
+          </entry>
+        </feed>
+        """
+        let requestedURL = URL(string: "https://catalog.example.com/feed.xml")!
+        let finalURL = URL(string: "https://cdn.example.net/opds/catalog/feed.xml")!
+        let response = try XCTUnwrap(
+            HTTPURLResponse(url: finalURL, statusCode: 200, httpVersion: nil, headerFields: nil)
+        )
+
+        let parseData = try OPDS1Parser.parse(
+            xmlData: Data(xml.utf8),
+            url: requestedURL,
+            response: response
+        )
+        let feed = try XCTUnwrap(parseData.feed)
+
+        XCTAssertEqual(feed.links.first?.href, "https://cdn.example.net/opds/catalog/next.atom")
+        XCTAssertEqual(
+            feed.publications.first?.links.first?.href,
+            "https://cdn.example.net/opds/catalog/books/book.epub"
+        )
     }
 }

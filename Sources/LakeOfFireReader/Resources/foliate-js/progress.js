@@ -29,7 +29,13 @@ export class TOCProgress {
         const map = new Map()
         for (const [i, id] of ids.entries()) {
             if (grouped.has(id)) map.set(id, grouped.get(id))
-            else map.set(id, map.get(ids[i - 1]))
+            else {
+                // Fragment IDs belong to their content document. Unlisted
+                // sections inherit only the final preceding navigation item.
+                const previous = map.get(ids[i - 1])
+                const item = previous?.items?.at(-1)?.item ?? previous?.prev
+                map.set(id, item ? { prev: item } : undefined)
+            }
         }
         this.ids = ids
         this.map = map

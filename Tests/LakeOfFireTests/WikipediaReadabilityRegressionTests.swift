@@ -31,12 +31,21 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
     ]
 
     private func loadFixtureHTML() throws -> String {
+        #if SWIFT_PACKAGE
+        let bundle = Bundle.module
+        #else
+        let bundle = Bundle(for: WikipediaReadabilityRegressionTests.self)
+        #endif
         let fixtureURL = try XCTUnwrap(
-            Bundle.module.url(
+            bundle.url(
                 forResource: "mozilla-wikipedia-minerva",
                 withExtension: "html",
                 subdirectory: "Fixtures/Readability"
-            ) ?? Bundle.module.url(
+            ) ?? bundle.url(
+                forResource: "mozilla-wikipedia-minerva",
+                withExtension: "html",
+                subdirectory: "Readability"
+            ) ?? bundle.url(
                 forResource: "mozilla-wikipedia-minerva",
                 withExtension: "html"
             )

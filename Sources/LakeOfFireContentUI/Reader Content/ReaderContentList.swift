@@ -74,7 +74,7 @@ public enum ReaderContentListDeleteDialog: @preconcurrency Identifiable {
     public var id: String {
         switch self {
         case .confirm(let items, let title, let message, let actionTitle):
-            let itemIDs = items.map { $0.compoundKey }.joined(separator: "|")
+            let itemIDs = items.map { $0.isInvalidated ? "<invalidated>" : $0.compoundKey }.joined(separator: "|")
             return "confirm:\(title)|\(message)|\(actionTitle)|\(itemIDs)"
         case .error(let title, let message):
             return "error:\(title)|\(message)"
@@ -83,103 +83,177 @@ public enum ReaderContentListDeleteDialog: @preconcurrency Identifiable {
 }
 
 @MainActor
-public class ReaderContentListModalsModel: ObservableObject {
-    @Published var deleteDialog: ReaderContentListDeleteDialog?
+struct ReaderContentListDeletePresentation: @preconcurrency Identifiable {
+    let id: UUID
+    let dialog: ReaderContentListDeleteDialog
+    let confirm: (@MainActor () -> Task<Void, Never>?)?
+    let dismiss: @MainActor () -> Void
+}
 
-    public init() { }
+@MainActor
+public class ReaderContentListModalsModel: ObservableObject {
+    typealias DeleteEligibilityReader = @MainActor @Sendable (URL) async -> ReaderFileDeleteEligibility
+    typealias DeleteItem = @MainActor @Sendable (any DeletableReaderContent) async throws -> Void
+
+    @MainActor
+    private struct DeleteTarget {
+        // Keep the physical accessor: a new row with equal values must not
+        // inherit a command accepted for the deleted original.
+        let item: any DeletableReaderContent
+        let key: String
+        let url: URL
+        let createdAt: Date
+        let backingURL: URL?
+
+        init?(_ item: any DeletableReaderContent) {
+            guard !item.isInvalidated, !item.isDeleted else { return nil }
+            let url = item.url
+            self.item = item
+            key = item.compoundKey
+            self.url = url
+            createdAt = item.createdAt
+            backingURL = item is ContentFile
+                ? ReaderFileManager.shared.canonicalReaderBackingURL(for: url)
+                : nil
+        }
+
+        var isCurrent: Bool {
+            guard !item.isInvalidated, !item.isDeleted else { return false }
+            return item.compoundKey == key && item.url == url && item.createdAt == createdAt
+        }
+    }
+
+    @Published var deleteDialog: ReaderContentListDeleteDialog?
+    private(set) var deleteDialogGeneration = UUID()
+    private var confirmedDeleteGeneration: UUID?
+    private let readDeleteEligibility: DeleteEligibilityReader
+    private let deleteItem: DeleteItem
+
+    public init() {
+        readDeleteEligibility = { await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: $0) }
+        deleteItem = { try await $0.delete() }
+    }
+
+    init(readDeleteEligibility: @escaping DeleteEligibilityReader,
+         deleteItem: @escaping DeleteItem = { try await $0.delete() }) {
+        self.readDeleteEligibility = readDeleteEligibility
+        self.deleteItem = deleteItem
+    }
 
     func presentDeleteConfirmation(for items: [any DeletableReaderContent]) {
-        guard let first = items.first else {
-            deleteDialog = nil
-            return
-        }
-        deleteDialog = .confirm(
-            items: items,
-            title: first.deletionConfirmationTitle,
-            message: first.deletionConfirmationMessage,
-            actionTitle: first.deletionConfirmationActionTitle
-        )
+        deleteDialogGeneration = UUID()
+        confirmedDeleteGeneration = nil
+        let items = items.filter { !$0.isInvalidated && !$0.isDeleted }
+        guard let first = items.first else { deleteDialog = nil; return }
+        deleteDialog = .confirm(items: items, title: first.deletionConfirmationTitle,
+            message: first.deletionConfirmationMessage, actionTitle: first.deletionConfirmationActionTitle)
     }
 
     func presentDeleteError(for error: Error) {
+        deleteDialogGeneration = UUID()
+        confirmedDeleteGeneration = nil
         let alert = ReaderFileOperationMessageMapper.deleteAlert(for: error)
             ?? ("Delete Failed", error.localizedDescription)
         deleteDialog = .error(title: alert.title, message: alert.message)
     }
 
-    func clearDeleteDialog() {
+    func clearDeleteDialog(generation: UUID? = nil) {
+        guard generation == nil || generation == deleteDialogGeneration else { return }
+        deleteDialogGeneration = UUID()
+        confirmedDeleteGeneration = nil
         deleteDialog = nil
+    }
+
+    func deleteDialogBinding(isActive: Binding<Bool>) -> Binding<ReaderContentListDeletePresentation?> {
+        let generation = deleteDialogGeneration
+        return Binding(get: { [weak self] in
+            guard isActive.wrappedValue, let self,
+                  self.deleteDialogGeneration == generation, let dialog = self.deleteDialog else { return nil }
+            let confirm: (@MainActor () -> Task<Void, Never>?)?
+            if case .confirm(let items, _, _, _) = dialog {
+                confirm = { [weak self] in self?.confirmDelete(items, generation: generation) }
+            } else { confirm = nil }
+            return ReaderContentListDeletePresentation(id: generation, dialog: dialog, confirm: confirm,
+                dismiss: { [weak self] in self?.clearDeleteDialog(generation: generation) })
+        }, set: { [weak self] value in
+            guard isActive.wrappedValue, value == nil, let self,
+                  self.deleteDialogGeneration == generation else { return }
+            // Native alert dismissal can precede its destructive button callback.
+            // Withdraw the projection without lending authority to a newer dialog.
+            self.deleteDialog = nil
+        })
+    }
+
+    private func confirmDelete(_ items: [any DeletableReaderContent], generation: UUID) -> Task<Void, Never>? {
+        guard !Task.isCancelled, generation == deleteDialogGeneration,
+              confirmedDeleteGeneration != generation else { return nil }
+        let targets = items.compactMap { DeleteTarget($0) }
+        confirmedDeleteGeneration = generation
+        return Task { @MainActor in await deleteConfirmedTargets(targets, generation: generation) }
+    }
+
+    func deleteConfirmedItems(_ items: [any DeletableReaderContent], generation: UUID? = nil) async {
+        await deleteConfirmedTargets(items.compactMap { DeleteTarget($0) },
+            generation: generation ?? deleteDialogGeneration)
+    }
+
+    private func deleteConfirmedTargets(_ targets: [DeleteTarget], generation: UUID) async {
+        await performDeleteAction(generation: generation, clearOnSuccess: true) {
+            guard try await self.preflightDeleteBatch(targets) else { return }
+            for target in targets {
+                guard !Task.isCancelled else { return }
+                guard target.isCurrent else { continue }
+                try await self.deleteItem(target.item)
+            }
+        }
+    }
+
+    private func preflightDeleteBatch(_ targets: [DeleteTarget]) async throws -> Bool {
+        for target in targets {
+            guard !Task.isCancelled else { return false }
+            guard target.isCurrent, let url = target.backingURL else { continue }
+            let eligibility = await readDeleteEligibility(url)
+            guard !Task.isCancelled else { return false }
+            guard target.isCurrent else { continue }
+            switch eligibility {
+            case .allowed: continue
+            case .blockedCloudOnly: throw ReaderFileDeleteError.blockedCloudOnly
+            case .blockedLoadingStatus: throw ReaderFileDeleteError.blockedLoadingStatus
+            }
+        }
+        return !Task.isCancelled
+    }
+
+    func performDeleteAction(generation: UUID? = nil, clearOnSuccess: Bool = false,
+        _ operation: @MainActor () async throws -> Void) async {
+        let generation = generation ?? deleteDialogGeneration
+        guard !Task.isCancelled else { return }
+        do {
+            try await operation()
+            guard !Task.isCancelled else { return }
+            if clearOnSuccess { clearDeleteDialog(generation: generation) }
+        } catch {
+            if !Task.isCancelled, generation == deleteDialogGeneration { presentDeleteError(for: error) }
+        }
     }
 }
 
 struct ReaderContentListSheetsModifier: ViewModifier {
     @Binding var isActive: Bool
     let origin: String
-
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
 
     func body(content: Content) -> some View {
-        content
-            .alert(item: Binding<ReaderContentListDeleteDialog?>(
-                get: {
-                    guard isActive else { return nil }
-                    return readerContentListModalsModel.deleteDialog
-                },
-                set: { newValue in
-                    if isActive {
-                        readerContentListModalsModel.deleteDialog = newValue
-                    }
-                }
-            )) { dialog in
-                switch dialog {
-                case .confirm(let items, let title, let message, let actionTitle):
-                    return Alert(
-                        title: Text(title),
-                        message: Text(message),
-                        primaryButton: .destructive(Text(actionTitle)) {
-                            Task { @MainActor in
-                                do {
-                                    try await preflightDeleteBatch(items)
-                                    for item in items {
-                                        try await item.delete()
-                                    }
-                                    readerContentListModalsModel.clearDeleteDialog()
-                                } catch {
-                                    readerContentListModalsModel.presentDeleteError(for: error)
-                                }
-                            }
-                        },
-                        secondaryButton: .cancel {
-                            readerContentListModalsModel.clearDeleteDialog()
-                        }
-                    )
-                case .error(let title, let message):
-                    return Alert(
-                        title: Text(title),
-                        message: Text(message),
-                        dismissButton: .default(Text("OK")) {
-                            readerContentListModalsModel.clearDeleteDialog()
-                        }
-                    )
-                }
+        content.alert(item: readerContentListModalsModel.deleteDialogBinding(isActive: $isActive)) { presentation in
+            switch presentation.dialog {
+            case .confirm(_, let title, let message, let actionTitle):
+                return Alert(title: Text(title), message: Text(message),
+                    primaryButton: .destructive(Text(actionTitle)) { _ = presentation.confirm?() },
+                    secondaryButton: .cancel { presentation.dismiss() })
+            case .error(let title, let message):
+                return Alert(title: Text(title), message: Text(message),
+                    dismissButton: .default(Text("OK")) { presentation.dismiss() })
             }
-    }
-}
-
-@MainActor
-private func preflightDeleteBatch(_ items: [any DeletableReaderContent]) async throws {
-    for case let contentFile as ContentFile in items {
-        guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url) else {
-            continue
-        }
-        let eligibility = await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: readerBackingURL)
-        switch eligibility {
-        case .allowed:
-            continue
-        case .blockedCloudOnly:
-            throw ReaderFileDeleteError.blockedCloudOnly
-        case .blockedLoadingStatus:
-            throw ReaderFileDeleteError.blockedLoadingStatus
         }
     }
 }
@@ -433,7 +507,7 @@ struct ListItemToggleStyle: ToggleStyle {
     }
 }
 
-public enum ReaderContentSortOrder: Sendable {
+public enum ReaderContentSortOrder: Equatable, Sendable {
     case providedOrder
     case publicationDate
     case createdAt
@@ -453,8 +527,13 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         filteredContentSnapshot = FilteredContentSnapshot(contents: [], ids: [])
     }
 
-    public init(initialContents contents: [C], sortOrder: ReaderContentSortOrder? = nil) {
-        let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
+    public init(
+        initialContents contents: [C],
+        sortOrder: ReaderContentSortOrder? = nil,
+        hasContentFilter: Bool = false
+    ) {
+        // An asynchronous filter must approve rows before their first display.
+        let initialContents = hasContentFilter ? [] : Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
         filteredContentSnapshot = FilteredContentSnapshot(
             contents: initialContents,
             ids: initialContents.map(\.compoundKey)
@@ -549,6 +628,12 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         sortOrder: ReaderContentSortOrder? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
+        // A cancelled caller cannot revoke an admitted load or publish a fast path.
+        try Task.checkCancellation()
+        loadContentsTask?.cancel()
+        let loadID = UUID()
+        currentLoadID = loadID
+        loadContentsTask = nil
         let contentIDs = contents.map(\.compoundKey)
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
@@ -562,6 +647,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         if !hasLoadedBefore,
            filteredContents.isEmpty,
            !contents.isEmpty,
+           contentFilter == nil,
            postSortTransform == nil {
             let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
             applyFilteredContents(initialContents, ids: initialContents.map(\.compoundKey))
@@ -569,9 +655,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         
         let realmConfig = contents.first?.realm?.configuration
         self.realmConfiguration = realmConfig
-        loadContentsTask?.cancel()
-        let loadID = UUID()
-        currentLoadID = loadID
         let task = Task { @ReaderContentListActor in
             var filtered: [C] = []
 
@@ -652,13 +735,13 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             try await { @MainActor [weak self] in
                 try Task.checkCancellation()
                 guard let self = self else { return }
-                guard self.currentLoadID == loadID else { return }
+                guard !Task.isCancelled, self.currentLoadID == loadID else { return }
 
                 let resolvedContents: [C]
                 let resolvedIDs: [String]
                 if let realmConfig {
                     let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
-                    guard self.currentLoadID == loadID else { return }
+                    guard !Task.isCancelled, self.currentLoadID == loadID else { return }
                     let resolvedItems = ids.compactMap { id in
                         realm.object(ofType: C.self, forPrimaryKey: id).map { content in
                             (id: id, content: content)
@@ -675,10 +758,31 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         }
         loadContentsTask = task
 
-        try? await task.value
+        try? await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            // Cancel only this caller's producer, never a replacement handle.
+            task.cancel()
+        }
         guard currentLoadID == loadID else { return }
         loadContentsTask = nil
     }
+}
+
+/// The view task can begin after its retained Realm row has been retired.
+/// Keep the callback and any following file-status work on the same live task.
+@MainActor
+func performReaderContentAppearance<C: ReaderContentProtocol>(
+    _ content: C,
+    onContentAppear: (@MainActor @Sendable (C) -> Void)?,
+    refreshFileStatus: @MainActor (ContentFile) async -> Void
+) async {
+    guard !Task.isCancelled, !content.isInvalidated else { return }
+    onContentAppear?(content)
+    // A synchronous host callback can itself cancel the task or delete the row.
+    guard !Task.isCancelled, !content.isInvalidated,
+          let file = content as? ContentFile else { return }
+    await refreshFileStatus(file)
 }
 
 fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
@@ -690,7 +794,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     let isLast: Bool
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
-    let onContentAppear: ((C) -> Void)?
+    let onContentAppear: (@MainActor @Sendable (C) -> Void)?
     
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
@@ -858,9 +962,11 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
         }
         .environmentObject(cloudDriveSyncStatusModel)
-        .task { @MainActor in
-            onContentAppear?(content)
-            if let item = content as? ContentFile {
+        .task { @MainActor @Sendable in
+            await performReaderContentAppearance(
+                content,
+                onContentAppear: onContentAppear
+            ) { item in
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
             }
         }
@@ -885,7 +991,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
-    let onContentAppear: ((C) -> Void)?
+    let onContentAppear: (@MainActor @Sendable (C) -> Void)?
     
     var body: some View {
         let contents = viewModel.filteredContents
@@ -921,7 +1027,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         viewModel: ReaderContentListViewModel<C>,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
-        onContentAppear: ((C) -> Void)? = nil
+        onContentAppear: (@MainActor @Sendable (C) -> Void)? = nil
     ) {
         _entrySelection = entrySelection
         self.includeSource = includeSource
@@ -937,6 +1043,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
 public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections: View, Header: View, EmptyState: View>: View {
     let contents: [C]
     var contentFilter: (@Sendable (Int, C) async throws -> Bool)? = nil
+    let contentFilterRevision: AnyHashable?
     var sortOrder = ReaderContentSortOrder.publicationDate
     let postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])?
     let includeSource: Bool
@@ -959,17 +1066,16 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @ViewBuilder let emptyStateView: () -> EmptyState
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
-    let onContentAppear: ((C) -> Void)?
+    let onContentAppear: (@MainActor @Sendable (C) -> Void)?
     let scrollTargetID: String?
     
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
-    @StateObject private var viewModel = ReaderContentListViewModel<C>()
+    @StateObject private var viewModel: ReaderContentListViewModel<C>
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     @State private var groupedSections: [ReaderContentGroupingSection<C>] = []
     @State private var sectionExpanded: [String: Bool] = [:]
-    @State private var deleteEligibilityByContentKey: [String: ReaderFileDeleteEligibility] = [:]
-    @State private var deleteEligibilityRefreshTask: Task<Void, Never>?
+    @StateObject private var deleteEligibilityModel = ReaderContentDeleteEligibilityModel()
 
     // Navigation/env for selection syncing when using custom grouping
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
@@ -982,6 +1088,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @State private var multiSelection = Set<String>()
     @State private var pendingScrollTargetID: String?
     @State private var lastScrolledTargetID: String?
+    @State private var currentLoadRequestID: UUID?
     
     private var showEmptyState: Bool {
         return !viewModel.showLoadingIndicator && viewModel.filteredContents.isEmpty
@@ -999,22 +1106,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
     
     private var isDeletionToolbarButtonDisabled: Bool {
-        guard !multiSelection.isEmpty else {
-            return true
-        }
-        let selectedContentFiles = viewModel.filteredContents.compactMap { content -> ContentFile? in
-            guard multiSelection.contains(content.compoundKey) else { return nil }
-            return content as? ContentFile
-        }
-        guard !selectedContentFiles.isEmpty else {
-            return false
-        }
-        guard selectedContentFiles.allSatisfy({ deleteEligibilityByContentKey[$0.compoundKey] != nil }) else {
-            return true
-        }
-        return selectedContentFiles.contains {
-            deleteEligibilityByContentKey[$0.compoundKey] != .allowed
-        }
+        deleteEligibilityModel.isDeletionDisabled(
+            contents: viewModel.filteredContents,
+            selectedKeys: multiSelection
+        )
     }
 
     private var showsHeaderSection: Bool {
@@ -1122,29 +1217,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     private func refreshDeleteEligibilityCache() {
-        deleteEligibilityRefreshTask?.cancel()
-        let selectedContentFiles = viewModel.filteredContents.compactMap { content -> ContentFile? in
-            guard multiSelection.contains(content.compoundKey) else { return nil }
-            return content as? ContentFile
-        }
-        guard !selectedContentFiles.isEmpty else {
-            deleteEligibilityByContentKey = [:]
-            return
-        }
-        deleteEligibilityRefreshTask = Task { @MainActor in
-            var nextEligibility = [String: ReaderFileDeleteEligibility]()
-            for contentFile in selectedContentFiles {
-                guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url) else {
-                    continue
-                }
-                let eligibility = await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: readerBackingURL)
-                if Task.isCancelled {
-                    return
-                }
-                nextEligibility[contentFile.compoundKey] = eligibility
-            }
-            deleteEligibilityByContentKey = nextEligibility
-        }
+        deleteEligibilityModel.refresh(
+            contents: viewModel.filteredContents,
+            selectedKeys: multiSelection
+        )
     }
     
     private var listContainer: some View {
@@ -1170,23 +1246,25 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     @MainActor
-    private func scheduleScrollToTarget(with proxy: ScrollViewProxy, reason: String) {
-        guard let targetID = normalizedScrollTargetID else { return }
-        guard viewModel.filteredContentIDs.contains(targetID) else {
-            return
-        }
-        guard pendingScrollTargetID != targetID else {
-            return
-        }
+    private func scrollToTarget(with proxy: ScrollViewProxy, requestID: UUID) async {
+        guard !Task.isCancelled, currentLoadRequestID == requestID,
+              let targetID = normalizedScrollTargetID,
+              viewModel.filteredContentIDs.contains(targetID) else { return }
         let anchorID = readerContentListSeparatedRowScrollAnchorID(targetID)
         pendingScrollTargetID = targetID
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            guard pendingScrollTargetID == targetID else { return }
-            pendingScrollTargetID = nil
-            withAnimation(.easeInOut(duration: 0.25)) {
-                proxy.scrollTo(anchorID, anchor: .center)
+        await performReaderContentListScroll(
+            isCurrent: {
+                currentLoadRequestID == requestID
+                    && pendingScrollTargetID == targetID
+                    && viewModel.filteredContentIDs.contains(targetID)
+            },
+            scroll: {
+                pendingScrollTargetID = nil
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(anchorID, anchor: .center)
+                }
             }
-        }
+        )
     }
 
 #if os(iOS)
@@ -1227,6 +1305,13 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 
     @ViewBuilder
     private func listBody(scrollProxy: ScrollViewProxy) -> some View {
+        let request = ReaderContentListLoadRequest(
+            contents: contents,
+            contentFilterRevision: contentFilterRevision,
+            sortOrder: sortOrder,
+            hasContentFilter: contentFilter != nil,
+            hasPostSortTransform: postSortTransform != nil
+        )
         listContainerWithSpacing
                 .toolbar {
                     //#if os(iOS)
@@ -1259,34 +1344,35 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     }
                     refreshDeleteEligibilityCache()
                 }
-            .task { @MainActor in
-                    try? await viewModel.load(
-                        contents: contents,
+                .task(id: request) { @MainActor in
+                    guard !Task.isCancelled else { return }
+                    let requestID = UUID()
+                    currentLoadRequestID = requestID
+                    pendingScrollTargetID = nil
+                    deleteEligibilityRefreshTask?.cancel()
+                    await performReaderContentListLoad(
+                        viewModel: viewModel,
+                        request: request,
                         contentFilter: contentFilter,
-                        sortOrder: sortOrder,
-                        postSortTransform: postSortTransform
+                        postSortTransform: postSortTransform,
+                        isCurrent: { currentLoadRequestID == requestID },
+                        onLoaded: {
+                            refreshGrouping()
+                            refreshDeleteEligibilityCache()
+                            await scrollToTarget(with: scrollProxy, requestID: requestID)
+                        }
                     )
-                    refreshGrouping()
-                    refreshDeleteEligibilityCache()
-                    scheduleScrollToTarget(with: scrollProxy, reason: "taskEnd")
-                }
-                .onChange(of: contents) { contents in
-                    Task { @MainActor in
-                        try? await viewModel.load(
-                            contents: contents,
-                            contentFilter: contentFilter,
-                            sortOrder: sortOrder,
-                            postSortTransform: postSortTransform
-                        )
-                        refreshGrouping()
-                        refreshDeleteEligibilityCache()
-                        scheduleScrollToTarget(with: scrollProxy, reason: "contentsChanged")
-                    }
                 }
                 .onChange(of: viewModel.filteredContents) { _ in
+                    // Group the displayed snapshot immediately, including the
+                    // existing no-filter preview, without starting more work.
+                    guard currentLoadRequestID != nil else { return }
                     refreshGrouping()
-                    refreshDeleteEligibilityCache()
-                    scheduleScrollToTarget(with: scrollProxy, reason: "filteredContentsChanged")
+                }
+                .onDisappear {
+                    currentLoadRequestID = nil
+                    pendingScrollTargetID = nil
+                    deleteEligibilityRefreshTask?.cancel()
                 }
     }
 
@@ -1300,13 +1386,20 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             enabled: true,
             onSelection: onContentSelected
         )
+        .onDisappear {
+            deleteEligibilityModel.cancelRefresh()
+        }
     }
     
     @ViewBuilder
     private var deletionToolbarButtonView: some View {
         if showDeletionToolbarButton {
             Button(role: .destructive) {
-                let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
+                guard !isDeletionToolbarButtonDisabled else { return }
+                let selected = readerContentSelectedForDeletion(
+                    contents: viewModel.filteredContents,
+                    selectedKeys: multiSelection
+                )
                 if let onDelete {
                     Task { @MainActor in
                         do {
@@ -1499,9 +1592,13 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         }
     }
     
+    /// Change contentFilterRevision when state captured by contentFilter changes,
+    /// including filter preferences and progress notifications. It restarts only
+    /// the list's load task and does not recreate the list or its selection state.
     public init(
         contents: [C],
         contentFilter: (@Sendable (Int, C) async throws -> Bool)? = nil,
+        contentFilterRevision: AnyHashable? = nil,
         sortOrder: ReaderContentSortOrder,
         includeSource: Bool,
         entrySelection: Binding<String?>,
@@ -1519,7 +1616,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
-        onContentAppear: ((C) -> Void)? = nil,
+        onContentAppear: (@MainActor @Sendable (C) -> Void)? = nil,
         scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])? = nil,
         @ViewBuilder supplementarySections: @escaping () -> SupplementarySections,
@@ -1528,6 +1625,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     ) {
         self.contents = contents
         self.contentFilter = contentFilter
+        self.contentFilterRevision = contentFilterRevision
         self.sortOrder = sortOrder
         self.postSortTransform = postSortTransform
         self.includeSource = includeSource
@@ -1551,7 +1649,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.onContentSelected = onContentSelected
         self.onContentAppear = onContentAppear
         self.scrollTargetID = scrollTargetID
-        _viewModel = StateObject(wrappedValue: ReaderContentListViewModel(initialContents: contents, sortOrder: sortOrder))
+        _viewModel = StateObject(wrappedValue: ReaderContentListViewModel(
+            initialContents: contents,
+            sortOrder: sortOrder,
+            hasContentFilter: contentFilter != nil
+        ))
     }
 }
 
@@ -1559,6 +1661,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
     init(
         contents: [C],
         contentFilter: (@Sendable (Int, C) async throws -> Bool)? = nil,
+        contentFilterRevision: AnyHashable? = nil,
         sortOrder: ReaderContentSortOrder,
         includeSource: Bool,
         entrySelection: Binding<String?>,
@@ -1576,7 +1679,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
-        onContentAppear: ((C) -> Void)? = nil,
+        onContentAppear: (@MainActor @Sendable (C) -> Void)? = nil,
         scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
@@ -1585,6 +1688,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         self.init(
             contents: contents,
             contentFilter: contentFilter,
+            contentFilterRevision: contentFilterRevision,
             sortOrder: sortOrder,
             includeSource: includeSource,
             entrySelection: entrySelection,
@@ -1621,7 +1725,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
-    let onContentAppear: ((C) -> Void)?
+    let onContentAppear: (@MainActor @Sendable (C) -> Void)?
     
     public var body: some View {
         ReaderContentInnerListItems(
@@ -1655,7 +1759,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
-        onContentAppear: ((C) -> Void)? = nil,
+        onContentAppear: (@MainActor @Sendable (C) -> Void)? = nil,
         showSeparators: Bool = false,
         useCardBackground: Bool = false,
         clearRowBackground: Bool = false,

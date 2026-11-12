@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import CoreFoundation
 import Foundation
 import SwiftSoup
@@ -8,24 +9,439 @@ public enum ReaderCompactSegmentSidecarSchema {
     public static let currentVersion = 10
 }
 
+public enum EbookReaderProcessingCompletion: UInt8, Sendable {
+    case incomplete = 0
+    case completed = 1
+}
+
 public struct EbookProcessedSectionPayload: Sendable {
     public let documentHTML: Data
     public let segmentSidecar: Data
-    public let isAuthoritativelyProcessed: Bool
+    public let processingCompletion: EbookReaderProcessingCompletion
 
     public init(
         documentHTML: Data,
+        segmentSidecar: Data
+    ) {
+        self.init(
+            documentHTML: documentHTML,
+            segmentSidecar: segmentSidecar,
+            processingCompletion: .incomplete
+        )
+    }
+
+    fileprivate init(
+        documentHTML: Data,
         segmentSidecar: Data,
-        isAuthoritativelyProcessed: Bool = true
+        processingCompletion: EbookReaderProcessingCompletion
     ) {
         self.documentHTML = documentHTML
         self.segmentSidecar = segmentSidecar
-        self.isAuthoritativelyProcessed = isAuthoritativelyProcessed
+        self.processingCompletion = processingCompletion
     }
+
+    public var isAuthoritativelyProcessed: Bool { processingCompletion == .completed }
 
     public var combinedByteCount: Int {
         documentHTML.count + segmentSidecar.count
     }
+
+    @_spi(TestSupport)
+    public static func readerProcessingFixture(
+        sourceDocumentHTML: Data,
+        documentHTML: Data,
+        segmentSidecar: Data
+    ) -> EbookProcessedSectionPayload {
+        EbookReaderProcessingCompletionProof.forTesting(
+            sourceHTML: String(decoding: sourceDocumentHTML, as: UTF8.self)
+        ).complete(
+            documentHTML: documentHTML,
+            segmentSidecar: segmentSidecar
+        )
+    }
+}
+
+/// A LakeOfFire-owned, per-processing-invocation capability. It binds the
+/// producer's final bytes to the source text extracted for that invocation and
+/// can authorize at most one result.
+public final class EbookReaderProcessingCompletionProof: @unchecked Sendable {
+    private let lock = NSLock()
+    private let sourceVisibleTextDigest: String
+    private var wasConsumed = false
+
+    init?(sourceDocument: SwiftSoup.Document) {
+        guard let digest = readerVisibleSourceTextDigest(sourceDocument) else { return nil }
+        sourceVisibleTextDigest = digest
+    }
+
+    public func complete(
+        documentHTML: Data,
+        segmentSidecar: Data
+    ) -> EbookProcessedSectionPayload {
+        lock.lock()
+        guard !wasConsumed else {
+            lock.unlock()
+            return EbookProcessedSectionPayload(
+                documentHTML: documentHTML,
+                segmentSidecar: segmentSidecar
+            )
+        }
+        wasConsumed = true
+        lock.unlock()
+
+        guard let markedDocumentHTML = readerDocumentHTMLByInstallingFinalAuthorityMarker(
+            documentHTML,
+            segmentSidecar: segmentSidecar,
+            expectedSourceVisibleTextDigest: sourceVisibleTextDigest
+        ) else {
+            return EbookProcessedSectionPayload(
+                documentHTML: documentHTML,
+                segmentSidecar: segmentSidecar
+            )
+        }
+        return EbookProcessedSectionPayload(
+            documentHTML: markedDocumentHTML,
+            segmentSidecar: segmentSidecar,
+            processingCompletion: .completed
+        )
+    }
+
+    static func forTesting(sourceHTML: String) -> EbookReaderProcessingCompletionProof {
+        let document = try! SwiftSoup.parse(sourceHTML)
+        return EbookReaderProcessingCompletionProof(sourceDocument: document)!
+    }
+}
+
+private enum ReaderFinalProcessingAuthorityContract {
+    static let markerName = "mnb-reader-processing-authority"
+    static let version = "1"
+    static let coverageDigestAttribute = "data-mnb-reader-coverage-digest"
+    static let sidecarDigestAttribute = "data-mnb-reader-sidecar-digest"
+}
+
+private let readerCoverageExcludedElementNames: Set<String> = [
+    "script", "style", "rt", "rp", "noscript",
+]
+
+private func readerDocumentHTMLByInstallingFinalAuthorityMarker(
+    _ documentHTML: Data,
+    segmentSidecar: Data,
+    expectedSourceVisibleTextDigest: String
+) -> Data? {
+    guard let html = String(data: documentHTML, encoding: .utf8),
+          let document = try? SwiftSoup.parse(html),
+          readerFinalProcessingAuthorityMarkers(in: document).isEmpty,
+          readerDocumentHasCompleteJapaneseCoverage(document),
+          readerVisibleSourceTextDigest(document) == expectedSourceVisibleTextDigest,
+          let coverageDigest = readerVisibleContentCoverageDigest(document),
+          let insertionIndex = readerAuthorityMarkerInsertionIndex(in: documentHTML) else {
+        return nil
+    }
+    let sidecarDigest = SHA256.hash(data: segmentSidecar)
+        .map { String(format: "%02x", $0) }.joined()
+    let marker = Data("""
+    <meta name="\(ReaderFinalProcessingAuthorityContract.markerName)" data-mnb-reader-authority-version="\(ReaderFinalProcessingAuthorityContract.version)" \(ReaderFinalProcessingAuthorityContract.coverageDigestAttribute)="\(coverageDigest)" \(ReaderFinalProcessingAuthorityContract.sidecarDigestAttribute)="\(sidecarDigest)" />
+    """.utf8)
+    var result = Data()
+    result.reserveCapacity(documentHTML.count + marker.count)
+    result.append(documentHTML[..<insertionIndex])
+    result.append(marker)
+    result.append(documentHTML[insertionIndex...])
+    guard let markedHTML = String(data: result, encoding: .utf8),
+          let markedDocument = try? SwiftSoup.parse(markedHTML),
+          readerFinalProcessingAuthorityMarkerIsValid(
+              document: markedDocument,
+              segmentSidecar: segmentSidecar
+          ) else {
+        return nil
+    }
+    return result
+}
+
+private func readerFinalProcessingAuthorityMarkerIsValid(
+    document: SwiftSoup.Document,
+    segmentSidecar: Data
+) -> Bool {
+    let markers = readerFinalProcessingAuthorityMarkers(in: document)
+    guard markers.count == 1, let marker = markers.first,
+          (try? marker.attr("data-mnb-reader-authority-version"))
+            == ReaderFinalProcessingAuthorityContract.version,
+          let coverageDigest = readerVisibleContentCoverageDigest(document),
+          (try? marker.attr(ReaderFinalProcessingAuthorityContract.coverageDigestAttribute))
+            == coverageDigest else {
+        return false
+    }
+    let sidecarDigest = SHA256.hash(data: segmentSidecar)
+        .map { String(format: "%02x", $0) }.joined()
+    return (try? marker.attr(ReaderFinalProcessingAuthorityContract.sidecarDigestAttribute))
+        == sidecarDigest
+}
+
+private func readerFinalProcessingAuthorityMarkers(
+    in document: SwiftSoup.Document
+) -> [Element] {
+    ((try? Elements(try readerDocumentElements(in: document, matching: "meta")).array()) ?? []).filter {
+        (try? $0.attr("name")) == ReaderFinalProcessingAuthorityContract.markerName
+    }
+}
+
+private func readerDocumentHasCompleteJapaneseCoverage(
+    _ document: SwiftSoup.Document
+) -> Bool {
+    guard let body = document.body() else { return false }
+    return readerNodeHasCompleteJapaneseCoverage(body, ownedSentenceIdentifier: nil)
+}
+
+private func readerNodeHasCompleteJapaneseCoverage(
+    _ node: Node,
+    ownedSentenceIdentifier: String?
+) -> Bool {
+    var sentenceIdentifier = ownedSentenceIdentifier
+    if let element = node as? Element {
+        let tagName = element.tagName().lowercased()
+        if ReaderDocumentTree.isInertHTMLTemplate(element)
+            || readerCoverageExcludedElementNames.contains(tagName) { return true }
+        if tagName == "m-s" {
+            guard (try? element.attr("o")) == "true",
+                  let identifier = try? element.attr("sid"),
+                  !identifier.isEmpty else { return false }
+            sentenceIdentifier = identifier
+        }
+    }
+    if let text = node as? TextNode,
+       readerTextContainsJapaneseLanguageScalar(text.getWholeText()),
+       sentenceIdentifier == nil {
+        return false
+    }
+    for index in 0..<node.childNodeSize() where !readerNodeHasCompleteJapaneseCoverage(
+        node.childNode(index),
+        ownedSentenceIdentifier: sentenceIdentifier
+    ) {
+        return false
+    }
+    return true
+}
+
+private func readerVisibleContentCoverageDigest(
+    _ document: SwiftSoup.Document
+) -> String? {
+    guard let body = document.body() else { return nil }
+    var bytes = Data()
+    readerAppendVisibleCoverageBytes(body, ownedSentenceIdentifier: nil, to: &bytes)
+    return SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+}
+
+private func readerAppendVisibleCoverageBytes(
+    _ node: Node,
+    ownedSentenceIdentifier: String?,
+    to bytes: inout Data
+) {
+    var sentenceIdentifier = ownedSentenceIdentifier
+    if let element = node as? Element {
+        let tagName = element.tagName().lowercased()
+        if ReaderDocumentTree.isInertHTMLTemplate(element)
+            || readerElementIsFinalAuthorityMarker(element) { return }
+        if tagName == "m-s" {
+            sentenceIdentifier = (try? element.attr("sid")) ?? ""
+        }
+        readerAppendCoverageField("<\(tagName)>", to: &bytes)
+    }
+    if let text = node as? TextNode {
+        readerAppendCoverageField(sentenceIdentifier ?? "-", to: &bytes)
+        readerAppendCoverageField(text.getWholeText(), to: &bytes)
+    } else if let data = node as? DataNode {
+        readerAppendCoverageField("#data", to: &bytes)
+        readerAppendCoverageField(data.getWholeData(), to: &bytes)
+    } else if let comment = node as? Comment {
+        readerAppendCoverageField("#comment", to: &bytes)
+        readerAppendCoverageField(comment.getData(), to: &bytes)
+    }
+    for index in 0..<node.childNodeSize() {
+        readerAppendVisibleCoverageBytes(
+            node.childNode(index),
+            ownedSentenceIdentifier: sentenceIdentifier,
+            to: &bytes
+        )
+    }
+    if let element = node as? Element,
+       !readerElementIsFinalAuthorityMarker(element) {
+        readerAppendCoverageField("</\(element.tagName().lowercased())>", to: &bytes)
+    }
+}
+
+private func readerElementIsFinalAuthorityMarker(_ element: Element) -> Bool {
+    element.tagName().lowercased() == "meta"
+        && (try? element.attr("name")) == ReaderFinalProcessingAuthorityContract.markerName
+}
+
+func readerVisibleSourceTextDigest(_ document: SwiftSoup.Document) -> String? {
+    guard let body = document.body() else { return nil }
+    var bytes = Data()
+    do {
+        try readerAppendVisibleSourceTextBytes(body, to: &bytes)
+    } catch {
+        return nil
+    }
+    return SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+}
+
+private func readerAppendVisibleSourceTextBytes(_ node: Node, to bytes: inout Data) throws {
+    if let element = node as? Element,
+       ReaderDocumentTree.isInertHTMLTemplate(element)
+        || readerCoverageExcludedElementNames.contains(element.tagName().lowercased()) {
+        return
+    }
+    // Fresh native EPUB fragments are retained as raw markup until transport
+    // serialization. Read the same visible text as the parsed cache-hit path;
+    // ignoring DataNodes binds the completion proof to an empty source instead.
+    if let rawMarkup = node as? DataNode {
+        let fragments = try SwiftSoup.Parser.parseFragment(
+            rawMarkup.getWholeDataUTF8(),
+            rawMarkup.parent() as? Element,
+            rawMarkup.getBaseUriUTF8()
+        )
+        for fragment in fragments {
+            try readerAppendVisibleSourceTextBytes(fragment, to: &bytes)
+        }
+        return
+    }
+    if let ruby = node as? Element,
+       ruby.tagName().lowercased() == "ruby",
+       !readerRubyIsGenerated(ruby) {
+        readerAppendCoverageField("#source-ruby", to: &bytes)
+        readerAppendCoverageField(
+            readerSourceTextExcludingRubyAnnotations(ruby),
+            to: &bytes
+        )
+        readerAppendSourceRubyAnnotationBytes(ruby, to: &bytes)
+    }
+    if let text = node as? TextNode {
+        bytes.append(contentsOf: text.getWholeText().utf8)
+    }
+    for index in 0..<node.childNodeSize() {
+        try readerAppendVisibleSourceTextBytes(node.childNode(index), to: &bytes)
+    }
+}
+
+private func readerRubyIsGenerated(_ ruby: Element) -> Bool {
+    (try? ruby.hasClass("mnb-gen")) == true
+        || (try? ruby.attr("data-mnb-generated")) == "true"
+}
+
+private func readerAppendSourceRubyAnnotationBytes(
+    _ node: Node,
+    to bytes: inout Data
+) {
+    if let element = node as? Element {
+        let tagName = element.tagName().lowercased()
+        if tagName == "rt" || tagName == "rp" {
+            readerAppendCoverageField(tagName, to: &bytes)
+            readerAppendCoverageField(
+                readerRubyAnnotationText(element),
+                to: &bytes
+            )
+            return
+        }
+    }
+    for index in 0..<node.childNodeSize() {
+        readerAppendSourceRubyAnnotationBytes(node.childNode(index), to: &bytes)
+    }
+}
+
+private func readerRubyAnnotationText(_ node: Node) -> String {
+    if let text = node as? TextNode {
+        return text.getWholeText()
+    }
+    var result = ""
+    for index in 0..<node.childNodeSize() {
+        result += readerRubyAnnotationText(node.childNode(index))
+    }
+    return result
+}
+
+private func readerAppendCoverageField(_ value: String, to bytes: inout Data) {
+    let field = Data(value.utf8)
+    var length = UInt64(field.count).littleEndian
+    withUnsafeBytes(of: &length) { bytes.append(contentsOf: $0) }
+    bytes.append(field)
+}
+
+private func readerTextContainsJapaneseLanguageScalar(_ text: String) -> Bool {
+    text.unicodeScalars.contains { scalar in
+        switch scalar.value {
+        case 0x3005...0x3007, 0x3031...0x3035, 0x303B,
+             0x3040...0x30FF, 0x31F0...0x31FF,
+             0x3400...0x4DBF, 0x4E00...0x9FFF,
+             0xF900...0xFAFF, 0xFF66...0xFF9F,
+             0x1AFF0...0x1AFFF, 0x1B000...0x1B12F,
+             0x20000...0x3134F:
+            true
+        default:
+            false
+        }
+    }
+}
+
+private func readerAuthorityMarkerInsertionIndex(in html: Data) -> Data.Index? {
+    for tagName in ["head", "body", "html"] {
+        if let index = readerOpeningElementTagEnd(named: tagName, in: html) { return index }
+    }
+    return html.startIndex
+}
+
+private func readerOpeningElementTagEnd(
+    named expectedName: String,
+    in html: Data
+) -> Data.Index? {
+    let bytes = [UInt8](html)
+    let expected = Array(expectedName.utf8)
+    var cursor = 0
+    while cursor < bytes.count {
+        guard bytes[cursor] == UInt8(ascii: "<") else {
+            cursor += 1
+            continue
+        }
+        let nameStart = cursor + 1
+        let nameEnd = nameStart + expected.count
+        guard nameEnd < bytes.count,
+              zip(bytes[nameStart..<nameEnd], expected).allSatisfy({ byte, expected in
+                  let lowered = (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte)
+                    ? byte + 32 : byte
+                  return lowered == expected
+              }),
+              htmlIsTagNameBoundary(bytes[nameEnd]) else {
+            cursor += 1
+            continue
+        }
+        var quote: UInt8?
+        var index = nameEnd
+        while index < bytes.count {
+            let byte = bytes[index]
+            if let activeQuote = quote {
+                if byte == activeQuote { quote = nil }
+            } else if byte == UInt8(ascii: "\"") || byte == UInt8(ascii: "'") {
+                quote = byte
+            } else if byte == UInt8(ascii: ">") {
+                return html.index(html.startIndex, offsetBy: index + 1)
+            }
+            index += 1
+        }
+        return nil
+    }
+    return nil
+}
+
+@_spi(ReaderProcessing)
+public func revalidatedReaderProcessingPayload(
+    documentHTML: Data,
+    segmentSidecar: Data
+) -> EbookProcessedSectionPayload? {
+    let payload = EbookProcessedSectionPayload(
+        documentHTML: documentHTML,
+        segmentSidecar: segmentSidecar,
+        processingCompletion: .completed
+    )
+    return ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload) ? payload : nil
 }
 
 public func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
@@ -37,16 +453,28 @@ public func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
           let documentSegmentIdentifiers = generatedReaderSegmentIdentifiers(in: document) else {
         return false
     }
+    guard readerDocumentHasCompleteJapaneseCoverage(document),
+          readerFinalProcessingAuthorityMarkerIsValid(
+              document: document,
+              segmentSidecar: payload.segmentSidecar
+          ) else {
+        return false
+    }
 
-    let canonicalSidecars = (try? document.select("script#mnb-segment-metadata").array()) ?? []
-    let transportMarkers = (try? document.getElementsByTag("meta").array().filter {
+    let canonicalSidecars = (try? Elements(try readerDocumentElements(in: document, matching: "script#mnb-segment-metadata")).array()) ?? []
+    let transportMarkers = (try? Elements(try readerDocumentElements(in: document, matching: "meta")).array().filter {
         try $0.attr("name") == ReaderPretransformedEbookSidecarContract.transportMarkerName
     }) ?? []
     guard canonicalSidecars.isEmpty else { return false }
-    guard !payload.segmentSidecar.isEmpty else {
-        return documentSegmentIdentifiers.isEmpty && transportMarkers.isEmpty
+    if documentSegmentIdentifiers.isEmpty {
+        guard transportMarkers.isEmpty else { return false }
+        if payload.segmentSidecar.isEmpty { return true }
+        return validatedReaderSegmentSidecarIdentityProjections(
+            payload.segmentSidecar,
+            generatedSegmentIdentifiers: []
+        )?.isEmpty == true
     }
-    guard documentSegmentIdentifiers.count > 0,
+    guard !payload.segmentSidecar.isEmpty,
           transportMarkers.count == 1,
           let marker = transportMarkers.first,
           readerPretransformedEbookTransportMarkerIsValid(
@@ -58,6 +486,19 @@ public func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
         return false
     }
     return true
+}
+
+func ebookProcessedSectionPayloadByValidatingCompletion(
+    _ payload: EbookProcessedSectionPayload
+) -> EbookProcessedSectionPayload {
+    guard payload.isAuthoritativelyProcessed,
+          !ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload) else {
+        return payload
+    }
+    return EbookProcessedSectionPayload(
+        documentHTML: payload.documentHTML,
+        segmentSidecar: payload.segmentSidecar
+    )
 }
 
 private enum ReaderPretransformedEbookSidecarContract {
@@ -100,9 +541,9 @@ private func readerPretransformedEbookTransportMarkerIsValid(
         return false
     }
 
-    guard let sentenceElements = try? document.getElementsByTag("m-s"),
+    guard let sentenceElements = try? Elements(try readerDocumentElements(in: document, matching: "m-s")),
           sentenceElements.size() == sentenceCount,
-          let segmentElements = try? document.getElementsByTag("m-m") else {
+          let segmentElements = try? Elements(try readerDocumentElements(in: document, matching: "m-m")) else {
         return false
     }
     var sentenceIdentifiers = Set<String>()
@@ -128,6 +569,7 @@ private func readerPretransformedEbookTransportMarkerIsValid(
               let surfaceText = projection.surfaceText,
               !surfaceText.isEmpty,
               let segment = segmentElementsByIdentifier[projection.runtimeIdentifier],
+              canonicalReaderSegmentSurfaceText(segment) == surfaceText,
               let sentence = nearestReaderAncestor(named: "m-s", from: segment),
               let paragraph = nearestReaderAncestor(named: "m-c", from: segment),
               (try? sentence.attr("sid")) == projection.sentenceIdentifier,
@@ -137,6 +579,25 @@ private func readerPretransformedEbookTransportMarkerIsValid(
         }
     }
     return true
+}
+
+private func canonicalReaderSegmentSurfaceText(_ segment: Element) -> String? {
+    return readerSourceTextExcludingRubyAnnotations(segment)
+}
+
+private func readerSourceTextExcludingRubyAnnotations(_ node: Node) -> String {
+    if let element = node as? Element,
+       element.tagName() == "rt" || element.tagName() == "rp" {
+        return ""
+    }
+    if let text = node as? TextNode {
+        return text.getWholeText()
+    }
+    var result = ""
+    for index in 0..<node.childNodeSize() {
+        result += readerSourceTextExcludingRubyAnnotations(node.childNode(index))
+    }
+    return result
 }
 
 private func nearestReaderAncestor(named tagName: String, from element: Element) -> Element? {
@@ -406,7 +867,7 @@ private func generatedReaderSegmentIdentifiers(in documentHTML: Data) -> [String
 }
 
 private func generatedReaderSegmentIdentifiers(in document: SwiftSoup.Document) -> [String]? {
-    guard let segmentElements = try? document.getElementsByTag("m-m") else { return nil }
+    guard let segmentElements = try? Elements(try readerDocumentElements(in: document, matching: "m-m")) else { return nil }
     var identifiers = [String]()
     identifiers.reserveCapacity(segmentElements.size())
     for segmentElement in segmentElements {
@@ -424,6 +885,7 @@ struct ReaderExternalSegmentSidecarEntry: Sendable {
 
 final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
     static let shared = ReaderExternalSegmentSidecarStore()
+    static let maximumSidecarByteCount = 256 * 1024 * 1024
 
     private static let lowercaseHexDigits = Array("0123456789abcdef".utf8)
     private static let lowNibbleMask: UInt8 = 0x0F
@@ -433,20 +895,54 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
     private let lock = NSLock()
     private let totalByteLimit: Int
     private let countLimit: Int
+    private let diskByteLimit: Int
+    private let maximumEntryByteCount: Int
+    private let diskCountLimit: Int
+    private let maximumDiskAge: TimeInterval
+    private let descriptorLeaseDuration: TimeInterval
+    private let now: @Sendable () -> Date
     private let directoryURL: URL
+    private let leaseDirectoryURL: URL
+    private let diskAdmissionURL: URL
+    // Observes candidate discovery before the final filesystem admission.
+    var beforeDiskPruneAdmission: (() -> Void)?
+    // Called with directory admission still held, immediately before unlink.
+    var beforeDiskEntryRemoval: ((String) -> Void)?
+    private let leaseOwnerIdentifier: String
     private var entries = [String: ReaderExternalSegmentSidecarEntry]()
     private var tokensInAccessOrder = [String]()
+    private var leasedTokensUntil = [String: Date]()
+    private var currentLeaseURLs = [String: URL]()
     private var totalBytes = 0
 
     init(
         directoryURL: URL = ReaderExternalSegmentSidecarStore.defaultDirectoryURL,
         totalByteLimit: Int = 24 * 1024 * 1024,
-        countLimit: Int = 32
+        countLimit: Int = 32,
+        diskByteLimit: Int = 256 * 1024 * 1024,
+        maximumEntryByteCount: Int = ReaderExternalSegmentSidecarStore.maximumSidecarByteCount,
+        diskCountLimit: Int = 1_024,
+        maximumDiskAge: TimeInterval = 90 * 24 * 60 * 60,
+        descriptorLeaseDuration: TimeInterval = 15 * 60,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.directoryURL = directoryURL
+        self.leaseDirectoryURL = directoryURL.appendingPathComponent(".leases", isDirectory: true)
+        self.diskAdmissionURL = directoryURL.appendingPathComponent(".store-admission", isDirectory: false)
+        self.leaseOwnerIdentifier = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         self.totalByteLimit = max(totalByteLimit, 1)
         self.countLimit = max(countLimit, 1)
+        self.diskByteLimit = max(diskByteLimit, 1)
+        self.maximumEntryByteCount = min(
+            max(maximumEntryByteCount, 1),
+            Self.maximumSidecarByteCount
+        )
+        self.diskCountLimit = max(diskCountLimit, 1)
+        self.maximumDiskAge = max(maximumDiskAge, 0)
+        self.descriptorLeaseDuration = max(descriptorLeaseDuration, 0)
+        self.now = now
         try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: leaseDirectoryURL, withIntermediateDirectories: true)
         var resourceURL = directoryURL
         var resourceValues = URLResourceValues()
         resourceValues.isExcludedFromBackup = true
@@ -454,50 +950,118 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
     }
 
     func insert(_ data: Data) -> (token: String, signature: String)? {
+        guard !data.isEmpty, data.count <= maximumEntryByteCount else { return nil }
         let token = Self.contentToken(for: data)
         let signature = "sha256:\(data.count):\(token)"
         let entry = ReaderExternalSegmentSidecarEntry(data: data, signature: signature)
-        guard persistIfNeeded(data, token: token) else { return nil }
-
         lock.lock()
+        defer { lock.unlock() }
+        guard withDiskAdmission({
+            // Persistence and lease publication are one admitted operation. A
+            // failure never revokes an earlier successfully published lease.
+            guard lease(token) else { return false }
+            return persistIfNeeded(data, token: token)
+        }) else { return nil }
         insertIntoMemory(entry, token: token)
-        lock.unlock()
+        pruneDiskEntriesIfNeeded(protecting: token)
         return (token, signature)
+    }
+
+    /// The descriptor producer advances this opaque fence whenever it emits the same
+    /// content-addressed object again. Consumers may use it to retry a failed fetch, but
+    /// the canonical endpoint and signature remain the authority.
+    func nextDescriptorRetryToken() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
 
     func entry(for token: String) -> ReaderExternalSegmentSidecarEntry? {
         guard Self.isValidToken(token) else { return nil }
         lock.lock()
-        if let entry = entries[token] {
-            touch(token)
-            lock.unlock()
-            return entry
-        }
-        lock.unlock()
-
-        let fileURL = directoryURL.appendingPathComponent(token, isDirectory: false)
-        guard let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]),
-              Self.contentToken(for: data) == token else {
-            return nil
-        }
-        let entry = ReaderExternalSegmentSidecarEntry(
-            data: data,
-            signature: "sha256:\(data.count):\(token)"
-        )
-        lock.lock()
+        defer { lock.unlock() }
+        var resolved: ReaderExternalSegmentSidecarEntry?
+        guard withDiskAdmission({
+            let fileURL = directoryURL.appendingPathComponent(token, isDirectory: false)
+            let entry: ReaderExternalSegmentSidecarEntry
+            let needsPersistence: Bool
+            if let cached = entries[token] {
+                // A different store may have evicted an expired disk object
+                // while this instance still retained its verified bytes.
+                let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                needsPersistence = values?.isRegularFile != true || values?.fileSize != cached.data.count
+                entry = cached
+            } else {
+                guard let data = boundedStoredData(at: fileURL),
+                      Self.contentToken(for: data) == token else { return false }
+                entry = ReaderExternalSegmentSidecarEntry(
+                    data: data,
+                    signature: "sha256:\(data.count):\(token)"
+                )
+                needsPersistence = false
+            }
+            guard lease(token) else { return false }
+            if needsPersistence, !persistIfNeeded(entry.data, token: token) { return false }
+            touchDiskEntry(token)
+            resolved = entry
+            return true
+        }), let entry = resolved else { return nil }
         insertIntoMemory(entry, token: token)
-        lock.unlock()
+        pruneDiskEntriesIfNeeded(protecting: token)
         return entry
+    }
+
+    /// Cooperating stores lock the same persistent file in this directory.
+    /// Never unlink it: different inodes would permit overlapping admissions.
+    /// Acquire the instance lock first, then admit the synchronous disk operation.
+    private func withDiskAdmission(_ operation: () -> Bool) -> Bool {
+        let descriptor = diskAdmissionURL.withUnsafeFileSystemRepresentation { fileSystemPath in
+            guard let fileSystemPath else { return Int32(-1) }
+            return Darwin.open(fileSystemPath, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+                               mode_t(S_IRUSR | S_IWUSR))
+        }
+        guard descriptor >= 0 else { return false }
+        defer { _ = Darwin.close(descriptor) }
+        var status: Int32
+        repeat {
+            status = Darwin.flock(descriptor, LOCK_EX)
+        } while status != 0 && errno == EINTR
+        guard status == 0 else { return false }
+        defer { _ = Darwin.flock(descriptor, LOCK_UN) }
+        return operation()
+    }
+
+    /// Apply the same byte ceiling to persisted entries as to new insertions.
+    /// Read in bounded chunks rather than mapping a legacy or replaced file
+    /// before checking its size. The content-address check remains at each caller.
+    private func boundedStoredData(at fileURL: URL) -> Data? {
+        guard let stream = InputStream(url: fileURL) else { return nil }
+        stream.open()
+        defer { stream.close() }
+        let chunkSize = 64 * 1024
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: chunkSize)
+        defer { buffer.deallocate() }
+        var data = Data()
+        while true {
+            let remaining = maximumEntryByteCount - data.count
+            let count = stream.read(buffer, maxLength: min(chunkSize, remaining + 1))
+            guard count >= 0 else { return nil }
+            if count == 0 {
+                guard stream.streamStatus != .error, !data.isEmpty else { return nil }
+                return data
+            }
+            guard count <= remaining else { return nil }
+            data.append(buffer, count: count)
+        }
     }
 
     private func persistIfNeeded(_ data: Data, token: String) -> Bool {
         let fileURL = directoryURL.appendingPathComponent(token, isDirectory: false)
-        if let storedData = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]),
+        if let storedData = boundedStoredData(at: fileURL),
            Self.contentToken(for: storedData) == token {
             return true
         }
         do {
             try data.write(to: fileURL, options: [.atomic])
+            try? FileManager.default.setAttributes([.modificationDate: now()], ofItemAtPath: fileURL.path)
             return true
         } catch {
             return false
@@ -538,6 +1102,148 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         }
     }
 
+    /// Disk retention is producer-owned. A descriptor is only emitted after the exact
+    /// content-addressed object is atomically durable; this bounded cleanup never treats a
+    /// legacy alias as a live sidecar and does not evict entries leased by this or another
+    /// active producer process.
+    private func pruneDiskEntriesIfNeeded(protecting protectedToken: String) {
+        let fileManager = FileManager.default
+        guard let enumeratedURLs = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        beforeDiskPruneAdmission?()
+        _ = withDiskAdmission {
+            struct DiskEntry {
+                let url: URL
+                let token: String
+                let byteCount: Int
+                let modifiedAt: Date
+            }
+            let currentDate = now()
+            let cutoff = currentDate.addingTimeInterval(-maximumDiskAge)
+            // Discovery is only a candidate list. Read lease state again under
+            // the same admission that protects every renewal, and retain it
+            // through unlink. An unreadable lease directory never means empty.
+            guard let diskLeasedTokens = activeDiskLeaseTokens(at: currentDate) else { return false }
+            leasedTokensUntil = leasedTokensUntil.filter { $0.value > currentDate }
+            var retained = [DiskEntry]()
+            for candidateURL in enumeratedURLs {
+                var url = candidateURL
+                url.removeAllCachedResourceValues()
+                let token = url.lastPathComponent
+                let values = try? url.resourceValues(forKeys: [
+                    .isRegularFileKey, .fileSizeKey, .contentModificationDateKey,
+                ])
+                let isProtected = token == protectedToken
+                    || hasLiveLease(for: token, at: currentDate)
+                    || diskLeasedTokens.contains(token)
+                guard Self.isValidToken(token),
+                      values?.isRegularFile == true,
+                      let byteCount = values?.fileSize,
+                      let modifiedAt = values?.contentModificationDate else {
+                    // Unreadable metadata cannot revoke a known live lease.
+                    if !isProtected { try? fileManager.removeItem(at: url) }
+                    continue
+                }
+                let entry = DiskEntry(url: url, token: token, byteCount: byteCount, modifiedAt: modifiedAt)
+                if modifiedAt < cutoff, !isProtected {
+                    beforeDiskEntryRemoval?(token)
+                    try? fileManager.removeItem(at: url)
+                } else {
+                    retained.append(entry)
+                }
+            }
+            var retainedBytes = retained.reduce(0) { total, entry in
+                let (sum, overflow) = total.addingReportingOverflow(entry.byteCount)
+                return overflow ? Int.max : sum
+            }
+            for entry in retained.sorted(by: { $0.modifiedAt < $1.modifiedAt }) {
+                guard retained.count > diskCountLimit || retainedBytes > diskByteLimit else { break }
+                guard entry.token != protectedToken,
+                      !hasLiveLease(for: entry.token, at: currentDate),
+                      !diskLeasedTokens.contains(entry.token) else { continue }
+                beforeDiskEntryRemoval?(entry.token)
+                if (try? fileManager.removeItem(at: entry.url)) != nil {
+                    retainedBytes -= entry.byteCount
+                    retained.removeAll { $0.token == entry.token }
+                }
+            }
+            return true
+        }
+    }
+
+    private func touchDiskEntry(_ token: String) {
+        let fileURL = directoryURL.appendingPathComponent(token, isDirectory: false)
+        try? FileManager.default.setAttributes([.modificationDate: now()], ofItemAtPath: fileURL.path)
+    }
+
+    /// Caller holds both the instance lock and the directory admission.
+    private func lease(_ token: String) -> Bool {
+        guard descriptorLeaseDuration > 0 else { return true }
+        let expiration = now().addingTimeInterval(descriptorLeaseDuration)
+        guard expiration.timeIntervalSince1970.isFinite else { return false }
+        do {
+            try FileManager.default.createDirectory(at: leaseDirectoryURL, withIntermediateDirectories: true)
+            let leaseURL = leaseDirectoryURL.appendingPathComponent(
+                "\(token).\(leaseOwnerIdentifier).\(Self.newLeaseIdentifier())", isDirectory: false
+            )
+            // Persist the owner's expiry. A store configured without its own
+            // lease must still honor a different store's longer-lived lease.
+            try Data(String(expiration.timeIntervalSince1970).utf8).write(to: leaseURL, options: [.atomic])
+            let previousLeaseURL = currentLeaseURLs.updateValue(leaseURL, forKey: token)
+            leasedTokensUntil[token] = expiration
+            if let previousLeaseURL, previousLeaseURL != leaseURL {
+                try? FileManager.default.removeItem(at: previousLeaseURL)
+            }
+            return true
+        } catch {
+            // Retain the prior lease file. Failed renewal cannot retire the
+            // previous protection or authorize a new descriptor publication.
+            return false
+        }
+    }
+
+    private func hasLiveLease(for token: String, at currentDate: Date) -> Bool {
+        guard let expiration = leasedTokensUntil[token] else { return false }
+        return expiration > currentDate
+    }
+
+    /// Caller retains directory admission until any resulting unlink completes.
+    /// Unknown/unreadable lease state suppresses the entire eviction pass.
+    private func activeDiskLeaseTokens(at currentDate: Date) -> Set<String>? {
+        guard let leaseURLs = try? FileManager.default.contentsOfDirectory(
+            at: leaseDirectoryURL, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        var activeTokens = Set<String>()
+        for leaseURL in leaseURLs {
+            let components = leaseURL.lastPathComponent.split(separator: ".", omittingEmptySubsequences: false)
+            guard (components.count == 2 || components.count == 3),
+                  Self.isValidToken(String(components[0])),
+                  Self.isValidLeaseOwnerIdentifier(String(components[1])),
+                  (components.count == 2 || Self.isValidLeaseIdentifier(String(components[2]))),
+                  (try? leaseURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                  let expiration = diskLeaseExpiration(at: leaseURL) else { return nil }
+            if expiration > currentDate {
+                activeTokens.insert(String(components[0]))
+            } else {
+                try? FileManager.default.removeItem(at: leaseURL)
+            }
+        }
+        return activeTokens
+    }
+
+    private func diskLeaseExpiration(at url: URL) -> Date? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 65), data.count <= 64,
+              let text = String(data: data, encoding: .utf8),
+              let interval = Double(text), interval.isFinite else { return nil }
+        return Date(timeIntervalSince1970: interval)
+    }
+
     private static func contentToken(for data: Data) -> String {
         let digest = SHA256.hash(data: data)
         var tokenBytes = [UInt8]()
@@ -556,7 +1262,27 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
             }
     }
 
+    private static func isValidLeaseOwnerIdentifier(_ identifier: String) -> Bool {
+        identifier.utf8.count == 32
+            && identifier.utf8.allSatisfy {
+                decimalDigitBytes.contains($0) || lowercaseHexLetterBytes.contains($0)
+            }
+    }
+
+    private static func isValidLeaseIdentifier(_ identifier: String) -> Bool {
+        isValidLeaseOwnerIdentifier(identifier)
+    }
+
+    private static func newLeaseIdentifier() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+
     private static var defaultDirectoryURL: URL {
+        // Deliberately app-container-local. A descriptor is an ephemeral
+        // capability served by the current reader's custom scheme handler;
+        // extensions do not open reader documents or consume these endpoints.
+        // A shared app-group directory would broaden authority without adding
+        // a valid cross-process consumer.
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return root.appendingPathComponent("ManabiReaderSegmentSidecars-v1", isDirectory: true)
@@ -645,9 +1371,9 @@ struct ReaderPublishedSegmentSidecar: Sendable {
     let endpointURL: String?
 }
 
-// Version 5 invalidates detached payloads that predate exact producer-contract
-// validation across the sidecar, transport marker, and generated DOM hierarchy.
-private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC5".utf8)
+// Version 6 serializes explicit Reader processing completion in addition to
+// detached sidecar identity, so decoding can never promote a fallback payload.
+private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC6".utf8)
 private let readerProcessedSegmentSidecarEnvelopeLengthByteCount = MemoryLayout<UInt64>.size
 
 func splitCanonicalReaderSegmentSidecar(
@@ -667,7 +1393,23 @@ func splitCanonicalReaderSegmentSidecar(
     documentHTML.reserveCapacity(htmlData.count - ranges.element.count)
     documentHTML.append(htmlData[..<ranges.element.lowerBound])
     documentHTML.append(htmlData[ranges.element.upperBound...])
-    return EbookProcessedSectionPayload(documentHTML: documentHTML, segmentSidecar: sidecar)
+    return EbookProcessedSectionPayload(
+        documentHTML: documentHTML,
+        segmentSidecar: sidecar
+    )
+}
+
+func splitCanonicalReaderSegmentSidecar(
+    from htmlData: Data,
+    completionProof: EbookReaderProcessingCompletionProof
+) -> EbookProcessedSectionPayload? {
+    guard let split = splitCanonicalReaderSegmentSidecar(from: htmlData) else {
+        return nil
+    }
+    return completionProof.complete(
+        documentHTML: split.documentHTML,
+        segmentSidecar: split.segmentSidecar
+    )
 }
 
 public func encodedEbookProcessedSectionCacheValue(
@@ -677,8 +1419,10 @@ public func encodedEbookProcessedSectionCacheValue(
     bytes.reserveCapacity(
         bytes.count
             + (readerProcessedSegmentSidecarEnvelopeLengthByteCount * 2)
+            + 1
             + payload.combinedByteCount
     )
+    bytes.append(payload.processingCompletion.rawValue)
     appendLittleEndianUInt64(UInt64(payload.documentHTML.count), to: &bytes)
     appendLittleEndianUInt64(UInt64(payload.segmentSidecar.count), to: &bytes)
     bytes.append(contentsOf: payload.documentHTML)
@@ -690,12 +1434,17 @@ public func decodedEbookProcessedSectionCacheValue(
     _ bytes: [UInt8]
 ) -> EbookProcessedSectionPayload? {
     let headerByteCount = readerProcessedSegmentSidecarEnvelopePrefix.count
+        + 1
         + (readerProcessedSegmentSidecarEnvelopeLengthByteCount * 2)
     guard bytes.count >= headerByteCount,
           bytes.starts(with: readerProcessedSegmentSidecarEnvelopePrefix) else {
         return nil
     }
     var cursor = readerProcessedSegmentSidecarEnvelopePrefix.count
+    guard let completion = EbookReaderProcessingCompletion(rawValue: bytes[cursor]) else {
+        return nil
+    }
+    cursor += 1
     guard let documentLength = readLittleEndianUInt64(from: bytes, cursor: &cursor),
           let sidecarLength = readLittleEndianUInt64(from: bytes, cursor: &cursor),
           documentLength <= UInt64(Int.max),
@@ -709,9 +1458,17 @@ public func decodedEbookProcessedSectionCacheValue(
         return nil
     }
     let documentEnd = cursor + documentByteCount
+    let documentHTML = Data(bytes[cursor..<documentEnd])
+    let segmentSidecar = Data(bytes[documentEnd...])
+    if completion == .completed {
+        return revalidatedReaderProcessingPayload(
+            documentHTML: documentHTML,
+            segmentSidecar: segmentSidecar
+        )
+    }
     return EbookProcessedSectionPayload(
-        documentHTML: Data(bytes[cursor..<documentEnd]),
-        segmentSidecar: Data(bytes[documentEnd...])
+        documentHTML: documentHTML,
+        segmentSidecar: segmentSidecar
     )
 }
 
@@ -739,10 +1496,10 @@ func publishingCanonicalReaderSegmentSidecar(
         )
     }
     let endpointURL = scheme.endpointURL(token: stored.token)
-    let descriptor = Data(
-        "<meta name=\"mnb-segment-sidecar\" content=\"\(endpointURL)\" "
-            .appending("data-mnb-segment-sidecar-signature=\"\(stored.signature)\">")
-            .utf8
+    let descriptor = externalReaderSegmentSidecarDescriptor(
+        endpointURL: endpointURL,
+        signature: stored.signature,
+        retryToken: store.nextDescriptorRetryToken()
     )
     return ReaderPublishedSegmentSidecar(
         documentHTML: payload.documentHTML,
@@ -750,6 +1507,29 @@ func publishingCanonicalReaderSegmentSidecar(
         canonicalSidecarByteCount: payload.segmentSidecar.count,
         signature: stored.signature,
         endpointURL: endpointURL
+    )
+}
+
+/// The final dictionary/runtime admission must occur immediately before this
+/// producer creates a sidecar capability. A completed processing result can
+/// become stale while the caller awaits presentation configuration or cache
+/// publication; in that case, do not persist or describe its sidecar.
+func publishingCanonicalReaderSegmentSidecar(
+    _ payload: EbookProcessedSectionPayload,
+    scheme: ReaderExternalSegmentSidecarScheme,
+    store: ReaderExternalSegmentSidecarStore = .shared,
+    admission: EbookProcessedPayloadAdmission?
+) async -> ReaderPublishedSegmentSidecar? {
+    guard ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload) else {
+        return nil
+    }
+    if let admission, !(await admission(payload)) {
+        return nil
+    }
+    return publishingCanonicalReaderSegmentSidecar(
+        payload,
+        scheme: scheme,
+        store: store
     )
 }
 
@@ -881,9 +1661,11 @@ func externalizingReaderSegmentSidecar(
         )
     }
     let endpointURL = scheme.endpointURL(token: stored.token)
-    let descriptorHTML = "<meta name=\"mnb-segment-sidecar\" content=\"\(endpointURL)\" "
-        + "data-mnb-segment-sidecar-signature=\"\(stored.signature)\">"
-    let descriptor = Data(descriptorHTML.utf8)
+    let descriptor = externalReaderSegmentSidecarDescriptor(
+        endpointURL: endpointURL,
+        signature: stored.signature,
+        retryToken: store.nextDescriptorRetryToken()
+    )
     return ReaderExternalizedSegmentSidecarHTML(
         documentHTML: ebookHTMLDataReplacingHeadMetaElement(
             named: "mnb-segment-sidecar",
@@ -923,6 +1705,19 @@ private func inlineCanonicalReaderSegmentSidecar(_ sidecar: Data) -> Data {
     return element
 }
 
+private func externalReaderSegmentSidecarDescriptor(
+    endpointURL: String,
+    signature: String,
+    retryToken: String
+) -> Data {
+    Data(
+        "<meta name=\"mnb-segment-sidecar\" content=\"\(endpointURL)\" "
+            .appending("data-mnb-segment-sidecar-signature=\"\(signature)\" ")
+            .appending("data-mnb-segment-sidecar-retry=\"\(retryToken)\">")
+            .utf8
+    )
+}
+
 private func scriptSafeJSON(_ data: Data) -> Data {
     var escaped = Data()
     escaped.reserveCapacity(data.count)
@@ -951,7 +1746,7 @@ private func externalReaderSegmentSidecarDescriptor(
           let document = try? SwiftSoup.parse(html) else {
         return nil
     }
-    guard let metadataElements = try? document.getElementsByTag("meta") else { return nil }
+    guard let metadataElements = try? Elements(try readerDocumentElements(in: document, matching: "meta")) else { return nil }
     let descriptors = metadataElements.array().filter { element in
         (try? element.attr("name").lowercased()) == "mnb-segment-sidecar"
     }
@@ -974,7 +1769,7 @@ private func htmlDataContainsExternalReaderSegmentSidecarDescriptor(_ htmlData: 
           let document = try? SwiftSoup.parse(html) else {
         return false
     }
-    guard let metadataElements = try? document.getElementsByTag("meta") else { return false }
+    guard let metadataElements = try? Elements(try readerDocumentElements(in: document, matching: "meta")) else { return false }
     return metadataElements.array().contains { element in
         (try? element.attr("name").lowercased()) == "mnb-segment-sidecar"
     }

@@ -1,14 +1,20 @@
 import XCTest
 @preconcurrency import WebKit
+import SwiftCloudDrive
+import ZIPFoundation
+@testable import LakeOfFireContent
 @testable import LakeOfFireFiles
 @testable import LakeOfFireReader
 
 private final class TestURLSchemeTask: NSObject, WKURLSchemeTask {
     let request: URLRequest
     private(set) var responses = [URLResponse]()
-    private(set) var receivedData = [Data]()
+    private(set) var data = [Data]()
     private(set) var finishCount = 0
-    private(set) var failures = [Error]()
+    private(set) var failures = [any Swift.Error]()
+    var onResponse: (() -> Void)?
+    var onData: (() -> Void)?
+    var onTerminal: (() -> Void)?
 
     init(request: URLRequest) {
         self.request = request
@@ -16,18 +22,22 @@ private final class TestURLSchemeTask: NSObject, WKURLSchemeTask {
 
     func didReceive(_ response: URLResponse) {
         responses.append(response)
+        onResponse?()
     }
 
     func didReceive(_ data: Data) {
-        receivedData.append(data)
+        self.data.append(data)
+        onData?()
     }
 
     func didFinish() {
         finishCount += 1
+        onTerminal?()
     }
 
-    func didFailWithError(_ error: Error) {
+    func didFailWithError(_ error: any Swift.Error) {
         failures.append(error)
+        onTerminal?()
     }
 }
 
@@ -55,13 +65,205 @@ private func requestWithoutURL() -> URLRequest {
 }
 
 final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
+    private func makeDeliveryFontAsset() -> SharedReaderFontAsset {
+        SharedReaderFontAsset(
+            systemFontNames: ["ReaderTest": "ReaderTest"],
+            horizontalFamilyName: "ReaderTest",
+            verticalFamilyName: "ReaderTest"
+        )
+    }
+
+    @MainActor
+    private func assertFontDeliveryStops(
+        handler: any WKURLSchemeHandler,
+        url: URL,
+        afterResponse: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let webView = WKWebView()
+        let task = TestURLSchemeTask(request: URLRequest(url: url))
+        let stopped = expectation(description: "Stopped during font delivery")
+        let stop = {
+            handler.webView(webView, stop: task)
+            stopped.fulfill()
+        }
+        if afterResponse {
+            task.onResponse = stop
+        } else {
+            task.onData = stop
+        }
+
+        handler.webView(webView, start: task)
+        await fulfillment(of: [stopped], timeout: 5)
+        // Delivery runs synchronously on the main actor with no suspension
+        // between its callbacks. Resuming here observes that delivery's end.
+        XCTAssertEqual(task.responses.count, 1, file: file, line: line)
+        XCTAssertEqual((task.responses.first as? HTTPURLResponse)?.statusCode, 200, file: file, line: line)
+        XCTAssertEqual(task.data.count, afterResponse ? 0 : 1, file: file, line: line)
+        if !afterResponse {
+            XCTAssertFalse(task.data.first?.isEmpty ?? true, file: file, line: line)
+        }
+        XCTAssertEqual(task.finishCount, 0, file: file, line: line)
+        XCTAssertTrue(task.failures.isEmpty, file: file, line: line)
+        task.onResponse = nil
+        task.onData = nil
+    }
+
+    @MainActor
+    func testReaderFileHandlerStopsAfterResponseCallback() async throws {
+        let handler = ReaderFileURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "reader-file://file/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: true
+        )
+    }
+
+    @MainActor
+    func testReaderFileHandlerStopsAfterDataCallback() async throws {
+        let handler = ReaderFileURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "reader-file://file/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: false
+        )
+    }
+
+    @MainActor
+    func testEbookHandlerStopsAfterResponseCallback() async throws {
+        let handler = EbookURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "ebook://ebook/load/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: true
+        )
+    }
+
+    @MainActor
+    func testEbookHandlerStopsAfterDataCallback() async throws {
+        let handler = EbookURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "ebook://ebook/load/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: false
+        )
+    }
+
+    @MainActor
+    func testInternalHandlerStopsAfterResponseCallback() async throws {
+        let handler = InternalURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "internal://local/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: true
+        )
+    }
+
+    @MainActor
+    func testInternalHandlerStopsAfterDataCallback() async throws {
+        let handler = InternalURLSchemeHandler()
+        handler.sharedReaderFontAsset = makeDeliveryFontAsset()
+        try await assertFontDeliveryStops(
+            handler: handler,
+            url: XCTUnwrap(URL(string: "internal://local/manabi-fonts.css?family=ReaderTest")),
+            afterResponse: false
+        )
+    }
+
+    @MainActor
+    func testInternalReaderLoaderRejectsMalformedOrAmbiguousSource() throws {
+        let handler = InternalURLSchemeHandler()
+        let webView = WKWebView()
+        for string in [
+            "internal://local/load/reader?reader-url=javascript%3Aalert%281%29",
+            "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.org&other=1",
+            "internal://local/load/reader-extra?reader-url=https%3A%2F%2Fexample.org",
+            "internal://user@local/snippet?key=some-key",
+            "internal://local:8080/snippet?key=some-key",
+        ] {
+            let task = TestURLSchemeTask(request: URLRequest(url: try XCTUnwrap(URL(string: string))))
+            handler.webView(webView, start: task)
+            XCTAssertEqual(task.failures.count, 1, string)
+            XCTAssertEqual(task.finishCount, 0, string)
+            XCTAssertTrue(task.responses.isEmpty, string)
+        }
+    }
+
+    @MainActor
+    func testInternalReaderLoaderAcceptsValidatedSource() throws {
+        let handler = InternalURLSchemeHandler()
+        let webView = WKWebView()
+        let url = try XCTUnwrap(URL(
+            string: "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.org%2Farticle"
+        ))
+        let task = TestURLSchemeTask(request: URLRequest(url: url))
+
+        handler.webView(webView, start: task)
+
+        XCTAssertTrue(task.failures.isEmpty)
+        XCTAssertEqual(task.finishCount, 1)
+        XCTAssertEqual(task.responses.count, 1)
+        XCTAssertEqual(task.responses.first?.mimeType, "text/html")
+    }
+
+    @MainActor
+    func testInternalReaderLoaderHostIsCaseInsensitive() throws {
+        let handler = InternalURLSchemeHandler()
+        let webView = WKWebView()
+        let url = try XCTUnwrap(URL(
+            string: "internal://LOCAL/load/reader?reader-url=https%3A%2F%2Fexample.org%2Farticle"
+        ))
+        let task = TestURLSchemeTask(request: URLRequest(url: url))
+
+        handler.webView(webView, start: task)
+
+        XCTAssertTrue(task.failures.isEmpty)
+        XCTAssertEqual(task.finishCount, 1)
+        XCTAssertEqual(task.responses.first?.mimeType, "text/html")
+    }
+
+    @MainActor
+    func testInternalDocumentHandlerOnlyServesKnownBootstrapRoutes() throws {
+        let handler = InternalURLSchemeHandler()
+        let webView = WKWebView()
+        let snippet = TestURLSchemeTask(request: URLRequest(url: try XCTUnwrap(
+            URL(string: "internal://local/snippet?key=valid-key")
+        )))
+        handler.webView(webView, start: snippet)
+        XCTAssertEqual(snippet.finishCount, 1)
+        XCTAssertTrue(snippet.failures.isEmpty)
+        XCTAssertEqual(snippet.responses.first?.mimeType, "text/html")
+
+        for value in [
+            "internal://LOCAL/load/other",
+            "internal://local/load/reader-other?reader-url=https%3A%2F%2Fexample.org",
+            "internal://local/snippet-other?key=valid-key",
+            "internal://local/snippet?key=valid-key&other=1",
+            "internal://local/unknown",
+        ] {
+            let task = TestURLSchemeTask(request: URLRequest(url: try XCTUnwrap(URL(string: value))))
+            handler.webView(webView, start: task)
+            XCTAssertEqual(task.failures.count, 1, value)
+            XCTAssertEqual(task.finishCount, 0, value)
+            XCTAssertTrue(task.responses.isEmpty, value)
+        }
+    }
+
     func testCancellationRejectsLaterCompletion() {
         let ownership = URLSchemeTaskCompletionOwnership()
         let task = NSObject()
 
         ownership.begin(task)
+        XCTAssertTrue(ownership.isActive(task))
 
         XCTAssertTrue(ownership.cancel(task))
+        XCTAssertFalse(ownership.isActive(task))
         XCTAssertFalse(ownership.claimCompletion(task))
     }
 
@@ -72,6 +274,7 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
         ownership.begin(task)
 
         XCTAssertTrue(ownership.claimCompletion(task))
+        XCTAssertFalse(ownership.isActive(task))
         XCTAssertFalse(ownership.claimCompletion(task))
         XCTAssertFalse(ownership.cancel(task))
     }
@@ -151,6 +354,53 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
         XCTAssertEqual(task.failures.count, 1)
         XCTAssertEqual(task.finishCount, 0)
         XCTAssertTrue(task.responses.isEmpty)
+    }
+
+    @MainActor
+    func testReaderFileHandlerRespondsWithPackageEntryMIMEAndEncoding() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reader-package-response-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let drive = try await CloudDrive(storage: .localDirectory(rootURL: root))
+        let archiveURL = drive.rootDirectory.appendingPathComponent("book.epub")
+        let archive = try Archive(url: archiveURL, accessMode: .create)
+        let entries: [(String, Data, String, String?)] = [
+            ("cover.jpg", Data([0xFF, 0xD8, 0xFF]), "image/jpeg", nil),
+            ("diagram.svg", Data("<svg/>".utf8), "image/svg+xml", "utf-8"),
+            ("opaque.unknown-manabi-format", Data([0x01, 0x02]), "application/octet-stream", nil),
+        ]
+        for (path, data, _, _) in entries {
+            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) { position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        }
+
+        let manager = ReaderFileManager()
+        manager.localDrive = drive
+        let handler = ReaderFileURLSchemeHandler()
+        await { @ReaderFileURLSchemeActor in
+            handler.readerFileManager = manager
+        }()
+        let webView = WKWebView()
+
+        for (path, data, expectedMIME, expectedEncoding) in entries {
+            var components = URLComponents(string: "reader-file://file/load/local/book.epub")!
+            components.queryItems = [URLQueryItem(name: "subpath", value: path)]
+            let task = TestURLSchemeTask(request: URLRequest(url: try XCTUnwrap(components.url)))
+            let terminal = expectation(description: "Package response for \(path)")
+            task.onTerminal = { terminal.fulfill() }
+
+            handler.webView(webView, start: task)
+            await fulfillment(of: [terminal], timeout: 5)
+
+            XCTAssertTrue(task.failures.isEmpty, path)
+            XCTAssertEqual(task.finishCount, 1, path)
+            XCTAssertEqual(task.responses.first?.mimeType, expectedMIME, path)
+            XCTAssertEqual(task.responses.first?.textEncodingName, expectedEncoding, path)
+            XCTAssertEqual(task.data.first, data, path)
+        }
     }
 
     @MainActor

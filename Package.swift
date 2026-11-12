@@ -68,11 +68,11 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-syntax", exact: "603.0.1"),
         .package(path: "../SwiftUtilities"),
         .package(url: "https://github.com/lake-of-fire/LakeImage.git", branch: "main"),
-        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5"),
+        .package(url: "https://github.com/aehlke/realm-swift.git", revision: "c595af8988ec630960d33ce51cd0671c2263086a"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
         .package(url: "https://github.com/Tunous/DebouncedOnChange.git", branch: "main"),
-        .package(url: "https://github.com/apple/swift-collections.git", branch: "main"),
+        .package(url: "https://github.com/apple/swift-collections.git", exact: "1.6.0"),
         .package(url: "https://github.com/lake-of-fire/swift-opml.git", branch: "main"),
         .package(url: "https://github.com/nmdias/FeedKit.git", from: "9.1.2"),
         .package(url: "https://github.com/objecthub/swift-markdownkit.git", branch: "master"),
@@ -283,6 +283,8 @@ let package = Package(
         .testTarget(
             name: "LakeOfFireTests",
             dependencies: [
+                "LakeOfFireLibrary",
+                .product(name: "OPML", package: "swift-opml"),
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
@@ -300,6 +302,7 @@ let package = Package(
             path: "Tests/LakeOfFireTests",
             resources: [
                 .copy("Fixtures/Asahi"),
+                .copy("Fixtures/BEPAL"),
                 .copy("Fixtures/Readability/mozilla-wikipedia-minerva.html"),
             ]
         ),

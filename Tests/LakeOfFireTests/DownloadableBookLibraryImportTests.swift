@@ -1,4 +1,6 @@
 import XCTest
+import CryptoKit
+import SwiftUI
 import RealmSwift
 import SwiftCloudDrive
 import SwiftUIDownloads
@@ -43,7 +45,8 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             at: localDestination.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try Data("epub fixture".utf8).write(to: localDestination)
+        let fixtureBytes = Data("epub fixture".utf8)
+        try fixtureBytes.write(to: localDestination)
         addTeardownBlock {
             try? FileManager.default.removeItem(at: baseURL)
         }
@@ -70,8 +73,10 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
         let downloadable = Downloadable(
             url: URL(string: "https://example.com/editor-picks/regression.epub")!,
             name: "Regression Book",
-            localDestination: localDestination
+            localDestination: localDestination,
+            localDestinationChecksum: Insecure.SHA1.hash(data: fixtureBytes).map { String(format: "%02x", $0) }.joined()
         )
+        try downloadable.ensureVerifiedLocalDestinationChecksum()
         return try await operation(Fixture(
             manager: manager,
             downloadable: downloadable,
@@ -108,20 +113,29 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
-    func testRefreshDownloadedEditorsPicksPublishesExistingLibraryDownload() async throws {
+    func testRefreshDownloadedEditorsPicksRejectsUnverifiedLibraryBytes() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
             await BookLibraryViewModel.refreshDownloadedEditorsPicks(
-                publications: [Publication(
-                    title: fixture.downloadable.name,
-                    downloadURL: fixture.downloadable.url
-                )],
+                publications: [Publication(title: fixture.downloadable.name, downloadURL: fixture.downloadable.url)],
                 readerFileManager: fixture.manager
             )
+            // The catalog's checksum-less descriptor has no successful-install receipt.
+            XCTAssertNil(fixture.manager.files(ofTypes: [.epub, .epubZip]))
+            let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+            XCTAssertTrue(realm.objects(ContentFile.self).isEmpty)
+        }
+    }
 
-            XCTAssertEqual(
-                fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url),
-                [fixture.expectedReaderURL]
-            )
+    @MainActor
+    func testEnsureImportedRejectsFailedVerifiedArtifactWithoutIndexing() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            fixture.downloadable.isFailed = true
+            let imported = try await fixture.manager.ensureImported(downloadable: fixture.downloadable)
+            XCTAssertNil(imported)
+            XCTAssertNil(fixture.manager.files)
+            let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+            XCTAssertTrue(realm.objects(ContentFile.self).isEmpty)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.downloadable.localDestination.path))
         }
     }
 

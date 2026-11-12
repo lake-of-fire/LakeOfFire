@@ -115,4 +115,75 @@ final class SharedReaderFontTests: XCTestCase {
         XCTAssertEqual(missingAssetResponse.response.statusCode, 404)
     }
 
+
+    private func makeSystemAsset(verticalName: String = "Vertical-PS") -> SharedReaderFontAsset {
+        SharedReaderFontAsset(
+            systemFontNames: ["Horizontal": "Horizontal-PS", "Vertical": verticalName],
+            horizontalFamilyName: "Horizontal",
+            verticalFamilyName: "Vertical"
+        )
+    }
+
+    func testSystemFontStylesheetsServeBothDirectionsWithoutFontURLs() throws {
+        let asset = makeSystemAsset()
+        XCTAssertNil(asset.localFileURL)
+        for root in ["ebook://ebook/load", "internal://local", "reader-file://file"] {
+            for family in ["Horizontal", "Vertical"] {
+                let served = try XCTUnwrap(sharedReaderFontResponse(
+                    for: URL(string: "\(root)/manabi-fonts.css?family=\(family)")!, asset: asset
+                ))
+                XCTAssertEqual(served.response.statusCode, 200)
+                XCTAssertEqual(served.response.value(forHTTPHeaderField: "Content-Type"), "text/css")
+                let css = String(decoding: served.data, as: UTF8.self)
+                XCTAssertTrue(css.contains("local('Horizontal-PS')"))
+                XCTAssertTrue(css.contains("local('Vertical-PS')"))
+                XCTAssertTrue(css.contains("--mnb-content-font: 'Horizontal', system-ui"))
+                XCTAssertTrue(css.contains("--mnb-content-vertical-font: 'Vertical', system-ui"))
+                XCTAssertTrue(css.contains("body.reader-vertical-writing"))
+                XCTAssertFalse(css.contains("url("))
+                XCTAssertFalse(css.contains("base64"))
+            }
+            let bytes = try XCTUnwrap(sharedReaderFontResponse(
+                for: URL(string: "\(root)/manabi-fonts/system-font")!, asset: asset
+            ))
+            XCTAssertEqual(bytes.response.statusCode, 404)
+            XCTAssertTrue(bytes.data.isEmpty)
+        }
+    }
+
+    func testSystemFontRejectsUnknownOrIncompleteMapping() throws {
+        let incomplete = SharedReaderFontAsset(
+            systemFontNames: ["Horizontal": "Horizontal-PS"],
+            horizontalFamilyName: "Horizontal", verticalFamilyName: "Vertical"
+        )
+        for (asset, family) in [(makeSystemAsset(), "Unknown"), (incomplete, "Horizontal")] {
+            let served = try XCTUnwrap(sharedReaderFontResponse(
+                for: URL(string: "internal://local/manabi-fonts.css?family=\(family)")!, asset: asset
+            ))
+            XCTAssertEqual(served.response.statusCode, 404)
+            XCTAssertTrue(served.data.isEmpty)
+        }
+    }
+
+    func testSystemFontIdentityIncludesMappingAndDirections() {
+        let initial = makeSystemAsset()
+        XCTAssertEqual(initial, makeSystemAsset())
+        XCTAssertNotEqual(initial, makeSystemAsset(verticalName: "Replacement-PS"))
+        let reversed = SharedReaderFontAsset(
+            systemFontNames: initial.systemFontNames,
+            horizontalFamilyName: "Vertical", verticalFamilyName: "Horizontal"
+        )
+        XCTAssertNotEqual(initial, reversed)
+        XCTAssertEqual(Set([initial, makeSystemAsset(), reversed]).count, 2)
+    }
+
+    func testSystemFontCSSQuotesPostScriptNames() throws {
+        let asset = makeSystemAsset(verticalName: "Vertical'Face\\Name\n")
+        let served = try XCTUnwrap(sharedReaderFontResponse(
+            for: URL(string: "internal://local/manabi-fonts.css?family=Vertical")!, asset: asset
+        ))
+        XCTAssertEqual(served.response.statusCode, 200)
+        XCTAssertTrue(String(decoding: served.data, as: UTF8.self)
+            .contains("local('Vertical\\'Face\\\\Name\\a ')"))
+    }
 }
