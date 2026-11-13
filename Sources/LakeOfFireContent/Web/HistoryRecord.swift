@@ -270,8 +270,9 @@ public extension HistoryRecord {
                   !record.isDeleted, record.isDemoted != false || !skipPreviouslyDemoted else { return }
             let bookmarked = admittedBookmarks.objects(Bookmark.self)
                 .filter(NSPredicate(format: "isDeleted == false AND url == %@", record.url.absoluteString)).first != nil
-            let demoted = isGoogleSearchURL(record.url) || !(record.isReaderModeByDefault || record.isReaderModeAvailable
-                || record.rssContainsFullContent || record.isFromClipboard || record.isPhysicalMedia || bookmarked)
+            let demoted = record.url.googleSearchQuery != nil
+                || !(record.isReaderModeByDefault || record.isReaderModeAvailable
+                    || record.rssContainsFullContent || record.isFromClipboard || record.isPhysicalMedia || bookmarked)
             guard demoted != record.isDemoted else { return }
             record.isDemoted = demoted
             record.refreshChangeMetadata(explicitlyModified: true)

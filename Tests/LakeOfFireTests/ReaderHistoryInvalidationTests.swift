@@ -55,6 +55,36 @@ final class ReaderHistoryInvalidationTests: XCTestCase {
     }
 
     @RealmBackgroundActor
+    func testGoogleQueryDemotionUsesSharedHostPathAndEncodingRules() async throws {
+        let realm = try await Realm(
+            configuration: makeConfiguration(), actor: RealmBackgroundActor.shared
+        )
+        let cases: [(String, Bool)] = [
+            ("https://www.google.com/search?%71=C%2B%2B+%E6%97%A5%E6%9C%AC%E8%AA%9E&q=second", true),
+            ("https://google.co.jp/search?q&q=second", true),
+            ("https://www.google.com/?q=first", true),
+            ("https://www.google.com/search?query=ignored", false),
+            ("https://example.com/search?q=ignored", false),
+            ("https://images.google.com/search?q=ignored", false),
+        ]
+        for (index, entry) in cases.enumerated() {
+            let (urlString, shouldDemote) = entry
+            let record = HistoryRecord()
+            record.url = try XCTUnwrap(URL(string: urlString))
+            record.isReaderModeAvailable = true
+            record.updateCompoundKey()
+            // Seed unjournaled fixture state; the actual demotion owns its write.
+            try realm.write { realm.add(record) }
+
+            try await record.refreshDemotedStatus(bookmarkRealmConfiguration: realm.configuration)
+
+            XCTAssertEqual(record.isDemoted, shouldDemote, urlString)
+            XCTAssertNotNil(record.explicitlyModifiedAt, urlString)
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, index + 1, urlString)
+        }
+    }
+
+    @RealmBackgroundActor
     func testDemotionPreservesDeletedHistoryTombstone() async throws {
         let realm = try await Realm(
             configuration: makeConfiguration(), actor: RealmBackgroundActor.shared
