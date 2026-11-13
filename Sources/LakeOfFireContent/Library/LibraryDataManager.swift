@@ -567,8 +567,12 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         
         for entry in opml.entries {
             try Task.checkCancellation()
-            let (importedCategories, importedDirectories, importedFeeds, importedScripts) = try await importOPMLEntry(entry, opml: opml, download: download, realmConfiguration: realmConfiguration,
-                recordAdditiveCategory: { additiveCategoryIDs.insert($0) })
+            let (importedCategories, importedDirectories, importedFeeds, importedScripts) = try await importOPMLEntry(
+                entry,
+                opml: opml,
+                download: download,
+                realmConfiguration: realmConfiguration
+            )
             allImportedCategories.formUnion(importedCategories)
             allImportedDirectories.formUnion(importedDirectories)
             allImportedFeeds.formUnion(importedFeeds)
@@ -1023,7 +1027,15 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             } else if category != nil, !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
                 if let uuid, let existingDirectory = realm.object(ofType: FeedDirectory.self, forPrimaryKey: uuid) {
                     directory = existingDirectory
-                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, directory: existingDirectory, categoryID: categoryID, parentDirectoryID: directoryID, ordinal: ordinal, downloadURL: downloadURL) {
+                    if Self.hasChanges(
+                        opml: opml,
+                        opmlEntry: opmlEntry,
+                        directory: existingDirectory,
+                        categoryID: categoryID,
+                        parentDirectoryID: directoryID,
+                        ordinal: ordinal,
+                        downloadURL: download?.url
+                    ) {
                         try await realm.asyncWrite {
                             try Self.applyAttributes(
                                 opml: opml,
