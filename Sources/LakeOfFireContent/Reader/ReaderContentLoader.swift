@@ -190,9 +190,34 @@ public struct ReaderContentLoader {
         }
     }
     
-    public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
-    public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
-    public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    // Routing is read synchronously by both UI and Realm actors. Only copied
+    // configurations escape this lock; no Realm access or callback runs under it.
+    private final class RealmConfigurationStorage: @unchecked Sendable {
+        private let lock = NSLock()
+        private var configuration: Realm.Configuration = .defaultConfiguration
+
+        var value: Realm.Configuration {
+            get { lock.withLock { configuration } }
+            set { lock.withLock { configuration = newValue } }
+        }
+    }
+
+    private static let bookmarkConfigurationStorage = RealmConfigurationStorage()
+    private static let historyConfigurationStorage = RealmConfigurationStorage()
+    private static let feedEntryConfigurationStorage = RealmConfigurationStorage()
+
+    public static var bookmarkRealmConfiguration: Realm.Configuration {
+        get { bookmarkConfigurationStorage.value }
+        set { bookmarkConfigurationStorage.value = newValue }
+    }
+    public static var historyRealmConfiguration: Realm.Configuration {
+        get { historyConfigurationStorage.value }
+        set { historyConfigurationStorage.value = newValue }
+    }
+    public static var feedEntryRealmConfiguration: Realm.Configuration {
+        get { feedEntryConfigurationStorage.value }
+        set { feedEntryConfigurationStorage.value = newValue }
+    }
 
     /// Immutable storage routing and optional originating Session. Capture this
     /// before media acquisition; callbacks cannot replace either after an await.
