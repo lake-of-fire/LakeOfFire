@@ -21,6 +21,10 @@ public enum Version {
 /// An intermediate structure return when the generic helper method public static
 /// func parseURL(url: URL, completion: (ParseData?, Error?) -> Void) from OPDSParser class is called.
 public struct ParseData {
+    /// The resource base actually supplied by the transport, including a
+    /// final HTTP response URL. No intermediate redirect history is implied.
+    public var documentURL: URL { response.url ?? url }
+
     /// The ressource URL
     var url: URL
 

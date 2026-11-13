@@ -201,7 +201,7 @@ fileprivate struct DownloadableBookListRow: View {
     private func performButtonPress(
         selection: BookLibraryViewModel.OpenSelection
     ) async {
-            let wasAlreadyDownloaded = await downloadable.existsLocally()
+            let wasAlreadyDownloaded = await ReaderFileManager.isDownloadReadyForImport(downloadable)
             guard selectionOwner.isCurrentOpenSelection(selection) else {
                 return
             }
@@ -230,7 +230,7 @@ fileprivate struct DownloadableBookListRow: View {
 
     @MainActor
     private func refreshDownloadable() async {
-        if await downloadable.existsLocally() && !wasDownloaded {
+        if await ReaderFileManager.isDownloadReadyForImport(downloadable) && !wasDownloaded {
             let importOutcome = await BookDownloadImportAttempt.perform(
                 importing: downloadable.localDestination
             ) {
@@ -247,7 +247,7 @@ fileprivate struct DownloadableBookListRow: View {
 
     private func topTap() {
         selectionOwner.startOpenSelection { selection in
-            let alreadyDownloaded = await downloadable.existsLocally()
+            let alreadyDownloaded = await ReaderFileManager.isDownloadReadyForImport(downloadable)
             guard selectionOwner.isCurrentOpenSelection(selection) else {
                 return
             }

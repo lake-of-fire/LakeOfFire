@@ -112,10 +112,27 @@ final class ReaderWebViewHandler {
         self.navigator = navigator
     }
     
-    func handleNavigationCommitted(state: WebViewState, selectionIntent: WebViewURLTransitionIntent? = nil) async throws {
+    // Receipt-time document identity survives semantic deferral. The manager's
+    // document generation discards provisional URL callbacks emitted by commits;
+    // this token also prevents deferred URL work from adopting another binding.
+    struct URLChangeContext: Sendable {
+        let binding: WebViewScriptCaller.JavaScriptBindingToken?
+    }
+
+    private func requireCurrentURLChange(_ context: URLChangeContext) throws {
+        try Task.checkCancellation()
+        guard context.binding != nil || !scriptCaller.canEvaluateJavaScript,
+              scriptCaller.currentJavaScriptBindingToken == context.binding else {
+            throw CancellationError()
+        }
+    }
+
+    func handleNavigationCommitted(state: WebViewState, selectionIntent: WebViewURLTransitionIntent? = nil,
+                                   urlChangeContext: URLChangeContext? = nil) async throws {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
         try Task.checkCancellation()
+        if let urlChangeContext { try requireCurrentURLChange(urlChangeContext) }
         let navigationBinding = scriptCaller.currentJavaScriptBindingToken
         var loadedSelectionIsCurrent: (() -> Bool)?
         if !readerModeViewModel.expectsSyntheticReaderLoaderCommit(
@@ -166,12 +183,18 @@ final class ReaderWebViewHandler {
             )
             try Task.checkCancellation()
             guard ownsLoadedSelection() else { throw CancellationError() }
-            try await readerModeViewModel.onNavigationCommitted(
-                readerContent: readerContent,
-                newState: state,
-                scriptCaller: scriptCaller,
-                navigator: navigator
-            )
+            if let urlChangeContext {
+                try requireCurrentURLChange(urlChangeContext)
+                try await readerModeViewModel.onSameDocumentURLChanged(
+                    readerContent: readerContent, newState: state,
+                    scriptCaller: scriptCaller, navigator: navigator
+                )
+            } else {
+                try await readerModeViewModel.onNavigationCommitted(
+                    readerContent: readerContent, newState: state,
+                    scriptCaller: scriptCaller, navigator: navigator
+                )
+            }
             try Task.checkCancellation()
             guard ownsLoadedSelection(),
                   let currentContent = readerContent.validCachedContent,
@@ -242,11 +265,13 @@ final class ReaderWebViewHandler {
         )
     }
 
-    func handleURLChanged(state: WebViewState) async throws {
-        try await handleNavigationCommitted(state: state, selectionIntent: state.urlTransitionIntent)
-        try Task.checkCancellation()
+    func handleURLChanged(state: WebViewState, context: URLChangeContext? = nil) async throws {
+        let context = context ?? URLChangeContext(binding: scriptCaller.currentJavaScriptBindingToken)
+        try await handleNavigationCommitted(state: state, selectionIntent: state.urlTransitionIntent,
+                                             urlChangeContext: context)
+        try requireCurrentURLChange(context)
         await handleNavigationFinished(state: state)
-        try Task.checkCancellation()
+        try requireCurrentURLChange(context)
     }
 
     func onNavigationCommitted(state: WebViewState) {
@@ -271,8 +296,10 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationFinished(state: WebViewState) {
-        navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
-            guard let self else { return }
+        // The admitted finish belongs to this handler even if SwiftUI replaces
+        // the callback relay while semantic commit work is suspended. The task
+        // manager still fences cancellation and replacement document generations.
+        navigationTaskManager.startOnNavigationFinished { @MainActor [self] in
             await self.handleNavigationFinished(state: state)
             guard !Task.isCancelled else { return }
             self.onNavigationFinished?(state)
@@ -284,16 +311,18 @@ final class ReaderWebViewHandler {
         disposition: WebViewNavigationFailureDisposition
     ) {
         let preservesCommittedDocument = disposition == .preservedCommittedDocument
-        if !preservesCommittedDocument { readerContent.withdrawSelectionIntent() }
+        if !preservesCommittedDocument {
+            readerContent.withdrawSelectionIntent()
+            // Settle the admitted failure before a later same-URL preparation
+            // can begin. Deferred public observers do not own render cleanup.
+            if readerContent.pageURL.matchesReaderURL(state.pageURL) {
+                readerContent.isRenderingReaderHTML = false
+            }
+            readerModeViewModel.onNavigationFailed(newState: state)
+        }
         navigationTaskManager.startOnNavigationFailed(
             preservingCommittedDocument: preservesCommittedDocument
         ) { @MainActor in
-            if !preservesCommittedDocument {
-                if self.readerContent.pageURL.matchesReaderURL(state.pageURL) {
-                    self.readerContent.isRenderingReaderHTML = false
-                }
-                self.readerModeViewModel.onNavigationFailed(newState: state)
-            }
             self.onNavigationFailed?(state)
         }
     }
@@ -306,19 +335,33 @@ final class ReaderWebViewHandler {
         // asynchronous work that still belongs to the previous document.
         readerContent.withdrawSelectionIntent()
         navigationTaskManager.cancelNavigationWork()
+        // HTML preparation has its own task. Retire it with the physical
+        // document, except for the final processed-HTML commit it just issued.
+        let isExpectedReaderCommit = reason == .navigationCommitted
+            && readerModeViewModel.expectsSyntheticReaderLoaderCommit(for: state.pageURL)
+        if !isExpectedReaderCommit {
+            readerContent.isRenderingReaderHTML = false
+            readerModeViewModel.cancelReaderModeLoad()
+        }
         if reason == .webContentProcessTerminated {
-            if readerContent.pageURL.matchesReaderURL(state.pageURL) {
-                readerContent.isRenderingReaderHTML = false
-            }
-            readerModeViewModel.onNavigationFailed(newState: state)
             onNavigationFailed?(state)
         }
         onDocumentContextInvalidated?(state, reason)
     }
 
     func onURLChanged(state: WebViewState) {
+        // Classify the prepared document's URL publication before the task
+        // manager reserves a successor selection or queues work behind finish.
+        // By then semantic commit may already have consumed the expectation.
+        if readerModeViewModel.isPreparedReaderDocumentURLAnnouncement(
+            for: state.pageURL, intent: state.urlTransitionIntent
+        ) {
+            return
+        }
+        // Preserve the physical document captured at native URL receipt.
+        let context = URLChangeContext(binding: scriptCaller.currentJavaScriptBindingToken)
         navigationTaskManager.startOnURLChanged(state: state, readerContent: readerContent) { @MainActor in
-            try await self.handleURLChanged(state: state)
+            try await self.handleURLChanged(state: state, context: context)
             do {
                 try await self.onURLChanged?(state)
             } catch is CancellationError {
@@ -549,6 +592,7 @@ fileprivate struct ReaderWebViewInternal: View {
     let callbackRelay: ReaderWebViewCallbackRelay
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
+    @State private var transcriptURLSchemeHandler = TranscriptURLSchemeHandler()
 #if os(iOS)
     @StateObject private var webViewPrewarmer = WebViewPrewarmer(
         warmUpCount: 1,
@@ -559,6 +603,9 @@ fileprivate struct ReaderWebViewInternal: View {
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.readerWebViewConfigurationTransform) private var readerWebViewConfigurationTransform
+    @Environment(\.readerWebViewMessageHandlersTransform) private var readerWebViewMessageHandlersTransform
+    @Environment(\.webViewMessageHandlers) private var webViewMessageHandlers
 
     private var readerThemeBackgroundColor: Color {
         switch colorScheme {
@@ -611,7 +658,7 @@ fileprivate struct ReaderWebViewInternal: View {
             )
         )
         WebView(
-            config: WebViewConfig(
+            config: readerWebViewConfigurationTransform(WebViewConfig(
                 dataDetectorsEnabled: false,
                 backgroundColor: readerThemeBackgroundColor,
                 usesSampledPageTopColorForUnderPageBackground: true,
@@ -619,7 +666,7 @@ fileprivate struct ReaderWebViewInternal: View {
                 adjustsScrollViewContentInsetsForSafeArea: false,
                 hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
                 nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
-                userScripts: userScripts),
+                userScripts: userScripts)),
             navigator: navigator,
             state: $state,
             scriptCaller: scriptCaller,
@@ -628,6 +675,7 @@ fileprivate struct ReaderWebViewInternal: View {
             bounces: bounces,
             schemeHandlers: [
                 (internalURLSchemeHandler, "internal"),
+                (transcriptURLSchemeHandler, TranscriptReaderProtocol.urlScheme),
                 (readerFileURLSchemeHandler, "reader-file"),
                 (ebookURLSchemeHandler, "ebook"),
             ] + schemeHandlers,
@@ -660,10 +708,7 @@ fileprivate struct ReaderWebViewInternal: View {
             textSelection: $textSelection,
             webViewPrewarmer: webViewPrewarmer
         )
-        .onAppear {
-        }
-        .onDisappear {
-        }
+        .environment(\.webViewMessageHandlers, readerWebViewMessageHandlersTransform(webViewMessageHandlers, scriptCaller))
         .task(id: sharedReaderFontAsset) { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
         }

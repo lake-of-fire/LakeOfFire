@@ -1,4 +1,12 @@
 import AVFoundation
+import JapaneseLanguageTools
+
+@MainActor
+protocol ReaderReadAloudAudioSessionLease: AnyObject {
+    func release() throws
+}
+
+extension ManabiSpokenAudioSessionLease: ReaderReadAloudAudioSessionLease {}
 
 @MainActor
 protocol ReaderSpeechSynthesizing: AnyObject {

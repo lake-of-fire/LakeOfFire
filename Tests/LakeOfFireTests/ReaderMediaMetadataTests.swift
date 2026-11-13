@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+@testable import LakeOfFireCore
 import Combine
 import RealmSwift
 import RealmSwiftGaps
@@ -44,6 +45,62 @@ private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
 }
 
 final class ReaderMediaMetadataTests: XCTestCase {
+    @MainActor
+    func testNonfiniteReadAloudSeeksPreserveQueuePreparationAndPlayback() throws {
+        for value in [Double.nan, .infinity, -.infinity] {
+            for shouldPlay in [false, true] {
+                let synthesizer = FakeReaderSpeechSynthesizer()
+                let model = ReaderMediaPlayerViewModel(
+                    readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+                    readAloudVoiceResolver: { _, _ in nil }
+                )
+                XCTAssertTrue(model.presentAITTS(utterances: [
+                    ReaderTTSUtterance(sentenceIdentifier: "finite-s1", text: "One."),
+                    ReaderTTSUtterance(sentenceIdentifier: "finite-s2", text: "Two."),
+                    ReaderTTSUtterance(sentenceIdentifier: "finite-s3", text: "Three."),
+                ], preferredLanguage: "en-US", autoplay: false))
+                model.seekAITTS(toProgressValue: 1, shouldPlay: false)
+                let preparation = try XCTUnwrap(model.beginReadAloudPreparation())
+                let queueGeneration = model.ttsQueueGeneration
+                let completionGeneration = model.ttsPlaybackCompletionGeneration
+
+                model.seekAITTS(toProgressValue: value, shouldPlay: shouldPlay)
+
+                XCTAssertEqual(model.ttsProgressValue, 1)
+                XCTAssertEqual(model.ttsCurrentSentenceIdentifier, "finite-s2")
+                XCTAssertEqual(model.ttsQueueGeneration, queueGeneration)
+                XCTAssertEqual(model.ttsPlaybackCompletionGeneration, completionGeneration)
+                XCTAssertTrue(model.isCurrentReadAloudPreparation(preparation))
+                XCTAssertEqual(model.readAloudPreparationState, .preparing)
+                XCTAssertTrue(model.hasPreparedAITTS)
+                XCTAssertFalse(model.isPlaying)
+                XCTAssertTrue(synthesizer.spokenUtterances.isEmpty)
+                XCTAssertFalse(synthesizer.isSpeaking)
+                model.cancelReadAloudPreparation()
+            }
+        }
+    }
+
+    @MainActor
+    func testFiniteReadAloudSeekExtremesRetainClampAndEndBehavior() {
+        let model = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: FakeReaderSpeechSynthesizer()),
+            readAloudVoiceResolver: { _, _ in nil }
+        )
+        XCTAssertTrue(model.presentAITTS(utterances: [
+            ReaderTTSUtterance(sentenceIdentifier: "clamp-s1", text: "One."),
+            ReaderTTSUtterance(sentenceIdentifier: "clamp-s2", text: "Two."),
+        ], preferredLanguage: "en-US", autoplay: false))
+        model.seekAITTS(toProgressValue: -Double.greatestFiniteMagnitude, shouldPlay: false)
+        XCTAssertEqual(model.ttsProgressValue, 0)
+        XCTAssertEqual(model.ttsCurrentSentenceIdentifier, "clamp-s1")
+        model.seekAITTS(toProgressValue: Double.greatestFiniteMagnitude, shouldPlay: false)
+        XCTAssertEqual(model.ttsProgressValue, model.ttsProgressUpperBound)
+        XCTAssertEqual(model.ttsCurrentSentenceIdentifier, "clamp-s2")
+        XCTAssertFalse(model.isPlaying)
+        XCTAssertTrue(model.hasPreparedAITTS)
+    }
+
     func testAudioAvailabilitySnapshotKeepsRecordedAndReadAloudIndependent() {
         let ebookURL = URL(string: "ebook://book/section.epub")!
         let ebook = ReaderAudioAvailabilitySnapshot(
@@ -522,4 +579,21 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertEqual(historyRecord.audioSubtitlesURL, URL(string: "https://example.com/new-subtitles.vtt")!)
         XCTAssertEqual(historyRecord.audioSubtitlesRole, AudioSubtitlesRole.content)
     }
+
+    func testShortDurationRejectsIndefiniteAndOutOfRangeMediaLengths() {
+        for duration in [
+            Double.infinity, -Double.infinity, Double.nan,
+            Double.greatestFiniteMagnitude, Double(Int.max), -1, 0
+        ] {
+            XCTAssertNil(ReaderDateFormatter.shortDurationString(from: duration),
+                         "Unsafe duration: \(duration)")
+        }
+    }
+
+    func testShortDurationRetainsFiniteMetadataFormatting() {
+        XCTAssertEqual(ReaderDateFormatter.shortDurationString(from: 59), "1m")
+        XCTAssertEqual(ReaderDateFormatter.shortDurationString(from: 3600), "1h")
+        XCTAssertEqual(ReaderDateFormatter.shortDurationString(from: 86_400), "1d")
+    }
+
 }
