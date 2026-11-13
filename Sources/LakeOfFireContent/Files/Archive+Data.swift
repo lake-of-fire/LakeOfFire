@@ -117,6 +117,13 @@ public struct ReaderPackageEntrySource: Sendable {
     private let kind: Kind
     private let limits: ReaderPackageResourceLimits
 
+    fileprivate var backingURL: URL {
+        switch kind {
+        case .directory(let rootURL): return rootURL
+        case .archive(let fileURL): return fileURL
+        }
+    }
+
     public init(
         localURL: URL,
         limits: ReaderPackageResourceLimits = .default
@@ -325,14 +332,15 @@ public struct ReaderPackageEntrySource: Sendable {
     }
 
     public static func sanitizeSubpath(_ rawSubpath: String) throws -> String {
-        let trimmed = rawSubpath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              !trimmed.hasPrefix("/"),
-              !trimmed.contains("\\") else {
+        // This is an already-decoded archive path, not an authored URI.
+        // Whitespace is part of the filename and must retain its identity.
+        guard !rawSubpath.isEmpty,
+              !rawSubpath.hasPrefix("/"),
+              !rawSubpath.contains("\\") else {
             throw ReaderPackageEntrySourceError.invalidSubpath
         }
 
-        let components = trimmed.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        let components = rawSubpath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         guard !components.isEmpty,
               !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
             throw ReaderPackageEntrySourceError.invalidSubpath
@@ -579,11 +587,68 @@ public actor ReaderPackageEntrySourceCache {
         public let source: ReaderPackageEntrySource
         public let entries: [ReaderPackageEntryMetadata]
         public let generationID: String
+        private let preparedFontObfuscation: Result<ReaderEBookFontObfuscation, Error>?
 
         public init(source: ReaderPackageEntrySource, entries: [ReaderPackageEntryMetadata], generationID: String) {
             self.source = source
             self.entries = entries
             self.generationID = generationID
+            preparedFontObfuscation = nil
+        }
+
+        fileprivate init(source: ReaderPackageEntrySource, entries: [ReaderPackageEntryMetadata],
+                         generationID: String,
+                         preparedFontObfuscation: Result<ReaderEBookFontObfuscation, Error>) {
+            self.source = source
+            self.entries = entries
+            self.generationID = generationID
+            self.preparedFontObfuscation = preparedFontObfuscation
+        }
+
+        // A captured legacy generation must not borrow replacement bytes or
+        // decoder metadata after waiting outside the cache actor. Preserve the
+        // immutable-package/root-observation contract used by cache lookup.
+        private func validateGeneration() throws {
+            try Task.checkCancellation()
+            let token = try ReaderPackageEntrySourceCache.freshnessToken(for: source.backingURL)
+            guard generationID == ReaderPackageEntrySourceCache.generationID(for: token) else {
+                throw ReaderEBookPackageSnapshotError.sourceChanged
+            }
+        }
+
+        public func readEntry(subpath: String) throws -> Data {
+            try validateGeneration()
+            let data = try source.readEntry(subpath: subpath)
+            try validateGeneration()
+            return data
+        }
+
+        /// Native HTML/CSS bypasses Foliate's decoder. Keep raw /entry reads
+        /// separate and derive instructions only from this captured source.
+        public func readNativeResource(subpath rawSubpath: String) throws -> Data {
+            try validateGeneration()
+            let subpath = try ReaderPackageEntrySource.sanitizeSubpath(rawSubpath)
+            let fontObfuscation: ReaderEBookFontObfuscation
+            if let preparedFontObfuscation {
+                fontObfuscation = try preparedFontObfuscation.get()
+            } else {
+                // Preserve the public initializer for externally constructed
+                // values; production cache generations always retain a result.
+                fontObfuscation = try ReaderEBookFontObfuscation.prepare(
+                    entries: entries, packageDocumentPath: nil
+                ) { try readEntry(subpath: $0) }
+            }
+            let rawBytes = try readEntry(subpath: subpath)
+            let data = try fontObfuscation.decode(rawBytes, subpath: subpath)
+            try validateGeneration()
+            return data
+        }
+
+        public func mimeType(subpath: String, data: Data) throws -> ReaderPackageEntryResponseMetadata {
+            try validateGeneration()
+            let metadata = try source.mimeType(subpath: subpath, data: data)
+            try validateGeneration()
+            return metadata
         }
     }
 
@@ -593,6 +658,7 @@ public actor ReaderPackageEntrySourceCache {
         let localURL: URL
         let freshnessToken: String
         let generationID: String
+        let fontObfuscation: Result<ReaderEBookFontObfuscation, Error>
     }
 
     private let countLimit: Int
@@ -633,24 +699,38 @@ public actor ReaderPackageEntrySourceCache {
            cached.freshnessToken == freshnessToken {
             try Task.checkCancellation()
             recordAccess(forKey: cacheKey)
-            return CachedSource(source: cached.source, entries: cached.entries, generationID: cached.generationID)
+            return CachedSource(source: cached.source, entries: cached.entries, generationID: cached.generationID,
+                                preparedFontObfuscation: cached.fontObfuscation)
         }
 
         let source = try Self.preparedSource(for: localURL)
         let entries = try source.enumerateEntries()
         let generationID = Self.generationID(for: freshnessToken)
+        let captured = CachedSource(source: source, entries: entries, generationID: generationID)
+        // Prepare once for this generation under the existing actor. Preserve
+        // native-only errors without making raw /entry depend on font metadata.
+        let fontObfuscation = Result {
+            try ReaderEBookFontObfuscation.prepare(entries: entries, packageDocumentPath: nil) {
+                try captured.readEntry(subpath: $0)
+            }
+        }
         try Task.checkCancellation()
+        guard try Self.freshnessToken(for: localURL) == freshnessToken else {
+            throw ReaderEBookPackageSnapshotError.sourceChanged
+        }
         store(
             CacheRecord(
                 source: source,
                 entries: entries,
                 localURL: localURL,
                 freshnessToken: freshnessToken,
-                generationID: generationID
+                generationID: generationID,
+                fontObfuscation: fontObfuscation
             ),
             forKey: cacheKey
         )
-        return CachedSource(source: source, entries: entries, generationID: generationID)
+        return CachedSource(source: source, entries: entries, generationID: generationID,
+                            preparedFontObfuscation: fontObfuscation)
     }
 
     private func freshCachedSource(forKey cacheKey: String) throws -> CachedSource? {
@@ -664,7 +744,8 @@ public actor ReaderPackageEntrySourceCache {
         }
         try Task.checkCancellation()
         recordAccess(forKey: cacheKey)
-        return CachedSource(source: cached.source, entries: cached.entries, generationID: cached.generationID)
+        return CachedSource(source: cached.source, entries: cached.entries, generationID: cached.generationID,
+                                preparedFontObfuscation: cached.fontObfuscation)
     }
 
     private func store(_ record: CacheRecord, forKey cacheKey: String) {

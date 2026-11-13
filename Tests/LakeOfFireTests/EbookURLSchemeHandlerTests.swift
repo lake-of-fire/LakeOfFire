@@ -1425,6 +1425,55 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(String(decoding: try source.readEntry(subpath: chapterPath), as: UTF8.self), chapterHTML)
     }
 
+    func testPackageSourcesPreserveDecodedFilenameWhitespace() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directory = root.appendingPathComponent("unpacked", isDirectory: true)
+        let archiveURL = root.appendingPathComponent("book.epub")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = [
+            "chapter.xhtml", " chapter.xhtml", "chapter.xhtml ", " chapter.xhtml ",
+            "OPS/chapter.xhtml", "OPS/chapter.xhtml ", " ", "chapter%20.xhtml",
+        ]
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("OPS", isDirectory: true),
+            withIntermediateDirectories: true)
+        let archive = try XCTUnwrap(Archive(url: archiveURL, accessMode: .create))
+        for (index, path) in paths.enumerated() {
+            let data = Data("chapter-\(index)".utf8)
+            try data.write(to: directory.appendingPathComponent(path))
+            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) {
+                position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        }
+
+        for packageURL in [directory, archiveURL] {
+            let source = try ReaderPackageEntrySource(localURL: packageURL)
+            let entries = try source.enumerateEntries()
+            XCTAssertEqual(Set(entries.map(\.path)), Set(paths), packageURL.path)
+            for (index, path) in paths.enumerated() {
+                XCTAssertEqual(try ReaderPackageEntrySource.sanitizeSubpath(path), path)
+                XCTAssertEqual(try source.readEntry(subpath: path),
+                    Data("chapter-\(index)".utf8), path)
+            }
+        }
+    }
+
+    func testDecodedPackagePathValidationStillRejectsUnsafeComponents() {
+        for path in [
+            "", "/", "/chapter.xhtml", "../chapter.xhtml", "./chapter.xhtml",
+            "OPS/../chapter.xhtml", "OPS/./chapter.xhtml", "OPS//chapter.xhtml",
+            "OPS/chapter.xhtml/", "OPS\\chapter.xhtml",
+        ] {
+            XCTAssertThrowsError(try ReaderPackageEntrySource.sanitizeSubpath(path), path) { error in
+                guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                    return XCTFail("Expected invalidSubpath for \(path), got \(error)")
+                }
+            }
+        }
+    }
+
     func testReaderPackageArchiveSourceAdvertisesOnlyFirstAddressableEntryPerPath() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -2301,5 +2350,148 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertFalse(result.isAuthoritativelyProcessed)
         let writerInvocationCount = await writerInvocationCounter.count
         XCTAssertEqual(writerInvocationCount, 0)
+    }
+}
+
+
+extension EbookURLSchemeHandlerTests {
+    private func nativeFontFixture(chapter: String = "original") -> (
+        archive: Data, idpf: Data, adobe: Data, untouched: Data
+    ) {
+        // Published SHA1("abc") and literal UUID bytes make the fixture key
+        // independent of the production OPF/key preparation implementation.
+        let idpfKey: [UInt8] = [0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e,
+                                0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d]
+        let adobeKey: [UInt8] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+                                 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]
+        let idpf = Data("OTTO".utf8) + Data((0..<1396).map { UInt8(($0 * 17 + 3) % 251) })
+        let adobe = Data("wOFF".utf8) + Data((0..<1296).map { UInt8(($0 * 11 + 7) % 251) })
+        let untouched = Data("unrecognized encryption remains authored bytes".utf8)
+        func encoded(_ data: Data, key: [UInt8], prefix: Int) -> Data {
+            var bytes = Array(data)
+            for index in 0..<min(prefix, bytes.count) { bytes[index] ^= key[index % key.count] }
+            return Data(bytes)
+        }
+        let container = "<container xmlns='urn:oasis:names:tc:opendocument:xmlns:container'><rootfiles><rootfile full-path='OPS/book.opf' media-type='application/oebps-package+xml'/></rootfiles></container>"
+        let opf = "<package xmlns='http://www.idpf.org/2007/opf' unique-identifier='book-id'><metadata xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:identifier id='book-id'>a b&#x9;c&#xD;&#xA;</dc:identifier><dc:identifier>urn:uuid:00112233-4455-6677-8899-aabbccddeeff</dc:identifier></metadata><spine/></package>"
+        let encryption = "<encryption xmlns='urn:oasis:names:tc:opendocument:xmlns:container' xmlns:enc='http://www.w3.org/2001/04/xmlenc#'><enc:EncryptedData><enc:EncryptionMethod Algorithm='http://www.idpf.org/2008/embedding'/><enc:CipherData><enc:CipherReference URI='OPS/fonts/idpf.otf'/></enc:CipherData></enc:EncryptedData><enc:EncryptedData><enc:EncryptionMethod Algorithm='http://ns.adobe.com/pdf/enc#RC'/><enc:CipherData><enc:CipherReference URI='OPS/fonts/adobe.woff'/></enc:CipherData></enc:EncryptedData><enc:EncryptedData><enc:EncryptionMethod Algorithm='unsupported-encryption'/><enc:CipherData><enc:CipherReference URI='OPS/fonts/untouched.woff'/></enc:CipherData></enc:EncryptedData></encryption>"
+        let files: [(String, Data)] = [
+            ("mimetype", Data("application/epub+zip".utf8)),
+            ("META-INF/container.xml", Data(container.utf8)),
+            ("META-INF/encryption.xml", Data(encryption.utf8)),
+            ("OPS/book.opf", Data(opf.utf8)),
+            ("OPS/chapter.xhtml", Data("<html>\(chapter)</html>".utf8)),
+            ("OPS/style.css", Data("@font-face { src: url(fonts/idpf.otf) }".utf8)),
+            ("OPS/fonts/idpf.otf", encoded(idpf, key: idpfKey, prefix: 1040)),
+            ("OPS/fonts/adobe.woff", encoded(adobe, key: adobeKey, prefix: 1024)),
+            ("OPS/fonts/untouched.woff", untouched),
+        ]
+        return (EBookZIPPathFixture.archive(files.map {
+            .init(name: Data($0.0.utf8), bytes: $0.1)
+        }), idpf, adobe, untouched)
+    }
+
+    private func nativeFontReaderURL(_ fileURL: URL) throws -> URL {
+        var components = URLComponents(string: "ebook://ebook/load/local/Books/native-fonts.epub")!
+        components.queryItems = [.init(name: "diagnosticLocalFilePath", value: fileURL.path)]
+        return try XCTUnwrap(components.url)
+    }
+
+    func testCapturedLegacyNativeFontsDecodeOnceWhileEntryBytesRemainRaw() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("book.epub")
+        let fixture = nativeFontFixture()
+        try fixture.archive.write(to: fileURL)
+        let cache = ReaderPackageEntrySourceCache()
+        let cached = try await cache.cachedSource(forPackageURL: nativeFontReaderURL(fileURL),
+            readerFileManager: ReaderFileManager())
+        let rawIDPF = try cached.readEntry(subpath: "OPS/fonts/idpf.otf")
+        let rawAdobe = try cached.readEntry(subpath: "OPS/fonts/adobe.woff")
+        XCTAssertNotEqual(rawIDPF, fixture.idpf)
+        XCTAssertNotEqual(rawAdobe, fixture.adobe)
+        XCTAssertEqual(rawIDPF.dropFirst(1040), fixture.idpf.dropFirst(1040))
+        XCTAssertEqual(rawAdobe.dropFirst(1024), fixture.adobe.dropFirst(1024))
+        XCTAssertEqual(try cached.readNativeResource(subpath: "OPS/fonts/idpf.otf"), fixture.idpf)
+        XCTAssertEqual(try cached.readNativeResource(subpath: "OPS/fonts/adobe.woff"), fixture.adobe)
+        XCTAssertEqual(try cached.readNativeResource(subpath: "OPS/fonts/idpf.otf"), fixture.idpf)
+        XCTAssertEqual(try cached.readEntry(subpath: "OPS/fonts/idpf.otf"), rawIDPF)
+        XCTAssertEqual(try cached.source.readEntry(subpath: "OPS/fonts/adobe.woff"), rawAdobe)
+        XCTAssertEqual(try cached.readNativeResource(subpath: "OPS/fonts/untouched.woff"), fixture.untouched)
+        XCTAssertEqual(try cached.readNativeResource(subpath: "OPS/chapter.xhtml"), Data("<html>original</html>".utf8))
+        XCTAssertEqual(try cached.readNativeResource(subpath: "OPS/style.css"), Data("@font-face { src: url(fonts/idpf.otf) }".utf8))
+        XCTAssertEqual(try Data(contentsOf: fileURL), fixture.archive)
+    }
+
+    func testLegacyNativeReadRejectsReplacementWhileBoundLeaseRetainsItsOwnFontBytes() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("book.epub")
+        let first = nativeFontFixture()
+        try first.archive.write(to: fileURL)
+        let readerURL = try nativeFontReaderURL(fileURL)
+        let cache = ReaderPackageEntrySourceCache(), manager = ReaderFileManager()
+        let captured = try await cache.cachedSource(forPackageURL: readerURL, readerFileManager: manager)
+        let snapshot = try ReaderEBookPackageSnapshot.retainCoordinatedFile(at: fileURL, maximumBytes: 1_000_000)
+        let sourceURL = URL(string: "ebook://ebook/load/local/Books/native-fonts.epub")!
+        let package = try ReaderEBookServingPackage(sourceURL: sourceURL, snapshot: snapshot,
+            packageDocumentPath: "OPS/book.opf")
+        let sessions = ReaderEBookServingSessionStore()
+        let lease = try sessions.install(package)
+        let leaseGeneration = lease.generationID
+        let raw = try lease.readEntry(subpath: "OPS/fonts/idpf.otf")
+        XCTAssertNotEqual(raw, first.idpf)
+        XCTAssertEqual(try lease.readNativeResource(subpath: "OPS/fonts/idpf.otf"), first.idpf)
+        XCTAssertEqual(try lease.readNativeResource(subpath: "OPS/fonts/adobe.woff"), first.adobe)
+        XCTAssertEqual(try lease.readEntry(subpath: "OPS/fonts/idpf.otf"), raw)
+        let second = nativeFontFixture(chapter: "replacement generation")
+        let oldDate = try XCTUnwrap(try fileURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        try second.archive.write(to: fileURL, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: oldDate.addingTimeInterval(60)], ofItemAtPath: fileURL.path)
+        let staleReads: [() throws -> Data] = [
+            { try captured.readNativeResource(subpath: "OPS/fonts/idpf.otf") },
+            { try captured.readEntry(subpath: "OPS/chapter.xhtml") },
+        ]
+        for read in staleReads {
+            XCTAssertThrowsError(try read()) { error in
+                XCTAssertEqual(error as? ReaderEBookPackageSnapshotError, .sourceChanged)
+            }
+        }
+        let replacement = try await cache.cachedSource(forPackageURL: readerURL, readerFileManager: manager)
+        XCTAssertNotEqual(captured.generationID, replacement.generationID)
+        XCTAssertEqual(try replacement.readNativeResource(subpath: "OPS/chapter.xhtml"), Data("<html>replacement generation</html>".utf8))
+        XCTAssertEqual(try lease.readNativeResource(subpath: "OPS/chapter.xhtml"), Data("<html>original</html>".utf8))
+        XCTAssertEqual(lease.generationID, leaseGeneration)
+        sessions.withdraw(lease)
+        XCTAssertThrowsError(try lease.readNativeResource(subpath: "OPS/fonts/idpf.otf"))
+        XCTAssertEqual(try replacement.readNativeResource(subpath: "OPS/fonts/idpf.otf"), second.idpf)
+    }
+
+    func testCapturedLegacyNativeReadPreservesCancellationAndMissingEntryErrors() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("book.epub")
+        let fixture = nativeFontFixture()
+        try fixture.archive.write(to: fileURL)
+        let cached = try await ReaderPackageEntrySourceCache().cachedSource(
+            forPackageURL: nativeFontReaderURL(fileURL), readerFileManager: ReaderFileManager())
+        XCTAssertThrowsError(try cached.readNativeResource(subpath: "OPS/fonts/missing.otf")) {
+            guard case ReaderPackageEntrySourceError.entryNotFound = $0 else {
+                return XCTFail("Unexpected missing-entry error: \($0)")
+            }
+        }
+        let request = Task { () -> Bool in
+            withUnsafeCurrentTask { $0?.cancel() }
+            do { _ = try cached.readNativeResource(subpath: "OPS/fonts/idpf.otf"); return false }
+            catch is CancellationError { return true }
+            catch { return false }
+        }
+        let wasCancelled = await request.value
+        XCTAssertTrue(wasCancelled)
+        XCTAssertEqual(try cached.readNativeResource(subpath: "OPS/fonts/idpf.otf"), fixture.idpf)
+        XCTAssertEqual(try Data(contentsOf: fileURL), fixture.archive)
     }
 }

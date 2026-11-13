@@ -9,26 +9,47 @@ public struct ReaderLoadingProgressOverlayViewModifier: ViewModifier {
     let isLoading: Bool
     let statusMessage: String?
     let showsImmediately: Bool
+    let failureMessage: String?
+    let retry: (() -> Void)?
 
     public init(
         isLoading: Bool,
         statusMessage: String? = nil,
-        showsImmediately: Bool = false
+        showsImmediately: Bool = false,
+        failureMessage: String? = nil,
+        retry: (() -> Void)? = nil
     ) {
         self.isLoading = isLoading
         self.statusMessage = statusMessage
         self.showsImmediately = showsImmediately
+        self.failureMessage = failureMessage
+        self.retry = retry
     }
 
     public func body(content: Content) -> some View {
         content
             .overlay {
                 ReaderLoadingOverlay(
-                    isLoading: isLoading,
+                    isLoading: isLoading && failureMessage == nil,
                     statusMessage: statusMessage,
                     showDelayNanoseconds: showsImmediately ? 0 : 200_000_000,
                     showsImmediately: showsImmediately
                 )
+            }
+            .overlay {
+                if let failureMessage {
+                    VStack(spacing: 16) {
+                        Text(failureMessage)
+                            .multilineTextAlignment(.center)
+                        Button("Retry") { retry?() }
+                            .accessibilityIdentifier("ReaderPreparationRetry")
+                    }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.background)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("ReaderPreparationFailure")
+                }
             }
     }
 }

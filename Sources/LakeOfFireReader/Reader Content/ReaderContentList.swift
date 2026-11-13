@@ -314,11 +314,41 @@ struct ReaderContentListAppearance: Sendable {
     }
 }
 
+@MainActor
+enum ReaderContentSelectionDispatch {
+    @discardableResult
+    static func dispatch<C: ReaderContentProtocol>(
+        selectedContent: C,
+        selectedKey: String,
+        capturedGeneration: UUID,
+        selection: Binding<String?>,
+        currentGeneration: @escaping @MainActor () -> UUID,
+        onSelectionSynchronously: ((C) -> Void)?,
+        deferred: @escaping @MainActor () async -> Void
+    ) -> Task<Void, Never>? {
+        if let onSelectionSynchronously {
+            guard currentGeneration() == capturedGeneration,
+                  selection.wrappedValue == selectedKey else { return nil }
+            onSelectionSynchronously(selectedContent)
+            if currentGeneration() == capturedGeneration, selection.wrappedValue == selectedKey {
+                selection.wrappedValue = nil
+            }
+            return nil
+        }
+
+        return Task { @MainActor in
+            guard currentGeneration() == capturedGeneration else { return }
+            await deferred()
+        }
+    }
+}
+
 private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: ViewModifier {
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
     @Binding var entrySelection: String?
     let enabled: Bool
     let onSelection: ((C) -> Void)?
+    let onSynchronousSelection: ((C) -> Void)?
     @State private var selectionLoadGeneration = UUID()
 
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
@@ -328,7 +358,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
     @AppStorage("errorMessage") private var errorMessage = ""
 
     func body(content: Content) -> some View {
-        let shouldSyncToReader = enabled && onSelection == nil
+        let shouldSyncToReader = enabled && onSelection == nil && onSynchronousSelection == nil
 
         return content
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
@@ -343,10 +373,14 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                 let currentPageURL = readerContent.pageURL
                 selectionLoadGeneration = loadGeneration
 
-                Task { @MainActor in
-                    guard selectionLoadGeneration == loadGeneration else {
-                        return
-                    }
+                ReaderContentSelectionDispatch.dispatch(
+                    selectedContent: selectedContent,
+                    selectedKey: itemSelection,
+                    capturedGeneration: loadGeneration,
+                    selection: $entrySelection,
+                    currentGeneration: { selectionLoadGeneration },
+                    onSelectionSynchronously: onSynchronousSelection
+                ) {
                     if let onSelection {
                         onSelection(selectedContent)
                         if selectionLoadGeneration == loadGeneration, entrySelection == itemSelection {
@@ -467,14 +501,16 @@ private extension View {
         viewModel: ReaderContentListViewModel<C>,
         entrySelection: Binding<String?>,
         enabled: Bool,
-        onSelection: ((C) -> Void)? = nil
+        onSelection: ((C) -> Void)? = nil,
+        onSynchronousSelection: ((C) -> Void)? = nil
     ) -> some View {
         modifier(
             ReaderContentSelectionSyncModifier(
                 viewModel: viewModel,
                 entrySelection: entrySelection,
                 enabled: enabled,
-                onSelection: onSelection
+                onSelection: onSelection,
+                onSynchronousSelection: onSynchronousSelection
             )
         )
     }
@@ -1057,6 +1093,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @ViewBuilder let emptyStateView: () -> EmptyState
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
+    // Runs inline with selection observation, before scheduling any loading task.
+    // When supplied, this takes precedence over the deferred callback.
+    let onContentSelectedSynchronously: ((C) -> Void)?
     let onContentAppear: ((C) -> Void)?
     let scrollTargetID: String?
 
@@ -1076,6 +1115,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @State private var internalMultiSelection = Set<String>()
     @State private var deleteEligibilityByContentKey: [String: ReaderFileDeleteEligibility] = [:]
     @State private var deleteEligibilityRefreshTask: Task<Void, Never>?
+    @State private var currentLoadRequestID: UUID?
     @State private var pendingScrollTargetID: String?
     @State private var lastScrolledTargetID: String?
 
@@ -1190,6 +1230,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             onRequestDelete: onRequestDeleteSingle,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentSelectedSynchronously: onContentSelectedSynchronously,
             onContentAppear: onContentAppear
         )
     }
@@ -1310,25 +1351,25 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     @MainActor
-    private func scheduleScrollToTarget(with proxy: ScrollViewProxy, reason: String) {
-        guard let targetID = normalizedScrollTargetID else { return }
-        guard viewModel.filteredContentIDs.contains(targetID) else {
-            return
-        }
-        guard pendingScrollTargetID != targetID else {
-            return
-        }
+    private func scrollToTarget(with proxy: ScrollViewProxy, requestID: UUID) async {
+        guard !Task.isCancelled, currentLoadRequestID == requestID,
+              let targetID = normalizedScrollTargetID,
+              viewModel.filteredContentIDs.contains(targetID) else { return }
         let anchorID = readerContentListSeparatedRowScrollAnchorID(targetID)
         pendingScrollTargetID = targetID
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            guard pendingScrollTargetID == targetID else {
-                return
+        await performReaderContentListScroll(
+            isCurrent: {
+                currentLoadRequestID == requestID
+                    && pendingScrollTargetID == targetID
+                    && viewModel.filteredContentIDs.contains(targetID)
+            },
+            scroll: {
+                pendingScrollTargetID = nil
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(anchorID, anchor: .center)
+                }
             }
-            pendingScrollTargetID = nil
-            withAnimation(.easeInOut(duration: 0.25)) {
-                proxy.scrollTo(anchorID, anchor: .center)
-            }
-        }
+        )
     }
 
     private var listContainer: some View {
@@ -1403,10 +1444,17 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 
     @ViewBuilder
     private func listBody(scrollProxy: ScrollViewProxy) -> some View {
+        let request = ReaderContentListLoadRequest(
+            contents: contents,
+            sortOrder: sortOrder,
+            hasContentFilter: contentFilter != nil,
+            hasPostSortTransform: postSortTransform != nil
+        )
         listContainerWithSpacing
-            .onAppear {
-            }
             .onDisappear {
+                currentLoadRequestID = nil
+                pendingScrollTargetID = nil
+                deleteEligibilityRefreshTask?.cancel()
             }
             .toolbar {
 #if os(iOS)
@@ -1434,32 +1482,31 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     entrySelection = nil
                 }
             }
-            .task { @MainActor in
-                try? await viewModel.load(
-                    contents: contents,
+            .task(id: request) { @MainActor in
+                guard !Task.isCancelled else { return }
+                let requestID = UUID()
+                currentLoadRequestID = requestID
+                pendingScrollTargetID = nil
+                deleteEligibilityRefreshTask?.cancel()
+                await performReaderContentListLoad(
+                    viewModel: viewModel,
+                    request: request,
                     contentFilter: contentFilter,
-                    sortOrder: sortOrder,
-                    postSortTransform: postSortTransform
+                    postSortTransform: postSortTransform,
+                    isCurrent: { currentLoadRequestID == requestID },
+                    onLoaded: {
+                        refreshGrouping()
+                        refreshDeleteEligibilityCache()
+                        await scrollToTarget(with: scrollProxy, requestID: requestID)
+                    }
                 )
-                refreshGrouping()
-                scheduleScrollToTarget(with: scrollProxy, reason: "taskEnd")
-            }
-            .onChange(of: contents) { contents in
-                Task { @MainActor in
-                    try? await viewModel.load(
-                        contents: contents,
-                        contentFilter: contentFilter,
-                        sortOrder: sortOrder,
-                        postSortTransform: postSortTransform
-                    )
-                    refreshGrouping()
-                    scheduleScrollToTarget(with: scrollProxy, reason: "contentsChanged")
-                }
             }
             .onChange(of: viewModel.filteredContents) { _ in
+                // Keep groups aligned with preview and final snapshots without
+                // starting another load or leaving a queued scroll behind.
+                guard currentLoadRequestID != nil else { return }
                 refreshGrouping()
                 refreshDeleteEligibilityCache()
-                scheduleScrollToTarget(with: scrollProxy, reason: "filteredContentsChanged")
             }
             .onChange(of: multiSelection) { _ in
                 refreshDeleteEligibilityCache()
@@ -1474,7 +1521,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             viewModel: viewModel,
             entrySelection: $entrySelection,
             enabled: true,
-            onSelection: onContentSelected
+            onSelection: onContentSelected,
+            onSynchronousSelection: onContentSelectedSynchronously
         )
     }
 
@@ -1771,6 +1819,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentSelectedSynchronously: ((C) -> Void)? = nil,
         onContentAppear: ((C) -> Void)? = nil,
         scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
@@ -1801,6 +1850,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.customGrouping = customGrouping
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
+        self.onContentSelectedSynchronously = onContentSelectedSynchronously
         self.onContentAppear = onContentAppear
         self.scrollTargetID = scrollTargetID
         self.postSortTransform = postSortTransform
@@ -1894,6 +1944,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentSelectedSynchronously: ((C) -> Void)? = nil,
         onContentAppear: ((C) -> Void)? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) {
@@ -1920,6 +1971,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentSelectedSynchronously: onContentSelectedSynchronously,
             onContentAppear: onContentAppear,
             postSortTransform: postSortTransform,
             supplementarySections: { EmptyView() },
@@ -1954,6 +2006,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentSelectedSynchronously: ((C) -> Void)? = nil,
         scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
@@ -1983,6 +2036,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentSelectedSynchronously: onContentSelectedSynchronously,
             onContentAppear: nil,
             scrollTargetID: scrollTargetID,
             postSortTransform: postSortTransform,
@@ -2015,6 +2069,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentSelectedSynchronously: ((C) -> Void)? = nil,
         onContentAppear: ((C) -> Void)? = nil,
         scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
@@ -2045,6 +2100,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentSelectedSynchronously: onContentSelectedSynchronously,
             onContentAppear: onContentAppear,
             scrollTargetID: scrollTargetID,
             postSortTransform: postSortTransform,
@@ -2064,6 +2120,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
+    let onContentSelectedSynchronously: ((C) -> Void)?
     let onContentAppear: ((C) -> Void)?
 
     public var body: some View {
@@ -2085,7 +2142,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             viewModel: viewModel,
             entrySelection: $entrySelection,
             enabled: true,
-            onSelection: onContentSelected
+            onSelection: onContentSelected,
+            onSynchronousSelection: onContentSelectedSynchronously
         )
         .onAppear {
         }
@@ -2107,6 +2165,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentSelectedSynchronously: ((C) -> Void)? = nil,
         onContentAppear: ((C) -> Void)? = nil
     ) {
         self.viewModel = viewModel
@@ -2125,6 +2184,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
+        self.onContentSelectedSynchronously = onContentSelectedSynchronously
         self.onContentAppear = onContentAppear
     }
 }

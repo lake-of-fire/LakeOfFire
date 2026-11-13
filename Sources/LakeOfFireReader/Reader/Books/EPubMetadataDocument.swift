@@ -165,9 +165,9 @@ enum EPubMetadataDocument {
             var value = ""
         }
         var titles: [(id: String?, value: String)] = []
-        private var mainTitleIDs = Set<String>()
+        private var mainTitleIDs = Set<Data>()
         var preferredTitle: String? {
-            titles.first(where: { $0.id.map(mainTitleIDs.contains) == true })?.value
+            titles.first(where: { $0.id.map { mainTitleIDs.contains(Data($0.utf8)) } == true })?.value
                 ?? titles.first?.value
         }
         var authors: [String] = []
@@ -191,8 +191,12 @@ enum EPubMetadataDocument {
             }
             if matches(["package", "metadata", "meta"], namespace: opfNamespace),
                attributes["property"] == "title-type",
-               let refines = attributes["refines"], refines.hasPrefix("#"), refines.count > 1 {
-                capture = Capture(name: "title-type", depth: stack.count, id: String(refines.dropFirst()))
+               let refines = attributes["refines"], refines.hasPrefix("#"),
+               let titleID = String(refines.dropFirst()).removingPercentEncoding,
+               !titleID.isEmpty {
+                // refines is a URL reference; XML parsing does not decode its
+                // fragment. Decode once and retain the XML ID's exact spelling.
+                capture = Capture(name: "title-type", depth: stack.count, id: titleID)
             }
             if matches(["package", "metadata", "meta"], namespace: opfNamespace),
                attributes["name"]?.lowercased() == "cover", coverID == nil {
@@ -217,7 +221,7 @@ enum EPubMetadataDocument {
                 switch capture.name {
                 case "title": titles.append((capture.id, value))
                 case "title-type":
-                    if value == "main", let id = capture.id { mainTitleIDs.insert(id) }
+                    if value == "main", let id = capture.id { mainTitleIDs.insert(Data(id.utf8)) }
                 case "creator": authors.append(value)
                 case "date": if date == nil { date = parseDate(value) }
                 default: break

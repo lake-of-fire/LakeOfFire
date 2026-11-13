@@ -385,6 +385,10 @@ public class BookLibraryViewModel: ObservableObject {
     private var openSelectionGeneration: UInt64 = 0
     private var openSelectionTask: Task<Void, Never>?
 
+    deinit {
+        editorsPicksFetchTask?.cancel()
+    }
+
     @discardableResult
     func startOpenSelection(
         _ operation: @escaping @MainActor (OpenSelection) async -> Void
@@ -499,49 +503,85 @@ public class BookLibraryViewModel: ObservableObject {
         }
     }
 
-    static func fetchPublications(from url: URL) async -> ([Publication], String?) {
-        await withCheckedContinuation { continuation in
-            OPDSParser.parseURL(url: url) { parseData, error in
-                Task { @MainActor in
-                    if let error {
-                        continuation.resume(returning: ([], "Failed to fetch data: \(error.localizedDescription)"))
-                        return
-                    }
+    /// Convert the parser's publication graph to detached Reader values.
+    /// Standalone OPDS entry documents have the same Reader presentation as
+    /// feed entries; navigation/empty feeds remain the loader's responsibility.
+    static func mappedPublications(in document: ParseData, relativeTo url: URL) -> [Publication]? {
+        let publications: [LakeOfFireOPDS.Publication]
+        // The catalog UI presents one list. Keep books from declared groups
+        // after top-level books, preserving each collection's publication order.
+        let entries = (document.feed?.publications ?? [])
+            + (document.feed?.groups.flatMap(\.publications) ?? [])
+        if !entries.isEmpty {
+            publications = entries
+        } else if let standalone = document.publication {
+            publications = [standalone]
+        } else {
+            return nil
+        }
+        return publications.map { publication in
+            let coverURL = publication.images.first(withRel: .cover)?.url(relativeTo: url)
+                ?? publication.images.first(withRel: .opdsImage)?.url(relativeTo: url)
+                ?? publication.images.first(withRel: .opdsImageThumbnail)?.url(relativeTo: url)
+                // OPDS 2.0 images already identify visual representations;
+                // the collection's links do not require legacy image relations.
+                ?? publication.images.lazy.compactMap { $0.url(relativeTo: url) }.first
+            // Keep the existing generic acquisition priority. Purchase, loan,
+            // sample and subscription URLs are not full-book downloads.
+            let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
+                ?? publication.links.first(withRel: .opdsAcquisitionOpenAccess)
+            return Publication(
+                title: publication.metadata.title,
+                author: publication.metadata.authors.map(\.name).joined(separator: ", "),
+                publicationDate: publication.metadata.published,
+                coverURL: coverURL,
+                downloadURL: acquisitionLink?.url(relativeTo: url),
+                summary: publication.metadata.description ?? publication.metadata.subtitle
+            )
+        }
+    }
 
-                    if let publications = parseData?.feed?.publications, !publications.isEmpty {
-                        let mapped = publications.map { publication -> Publication in
-                            let coverLink = publication.images.first(withRel: .cover) ?? publication.images.first(withRel: .opdsImage) ?? publication.images.first(withRel: .opdsImageThumbnail)
-                            let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
-                            let summary = publication.metadata.description ?? publication.metadata.subtitle
-                            return Publication(
-                                title: publication.metadata.title,
-                                author: publication.metadata.authors.map(\.name).joined(separator: ", "),
-                                publicationDate: publication.metadata.published,
-                                coverURL: coverLink?.url(relativeTo: url.domainURL),
-                                downloadURL: acquisitionLink?.url(relativeTo: url.domainURL),
-                                summary: summary
-                            )
-                        }
-                        continuation.resume(returning: (mapped, nil))
-                        return
-                    }
-
-                    if let navigationLinks = parseData?.feed?.navigation,
-                       let allBooksLink = navigationLinks.first(where: { $0.title?.hasPrefix("All Books") == true }) {
-                        guard let allBooksURL = allBooksLink.url(relativeTo: url.domainURL) ?? URL(string: allBooksLink.href) else {
-                            continuation.resume(returning: ([], "Invalid 'All Books' URL"))
-                            return
-                        }
-                        Task {
-                            continuation.resume(returning: await Self.fetchPublications(from: allBooksURL))
-                        }
-                        return
-                    }
-
-                    continuation.resume(returning: ([], "No publications or navigable links found"))
+    static func fetchPublications(from url: URL, session: URLSession = .shared) async -> ([Publication], String?) {
+        var nextURL = url
+        var visited = Set<URL>()
+        while true {
+            do {
+                try Task.checkCancellation()
+                let requestURL = catalogDocumentIdentity(nextURL)
+                guard visited.insert(requestURL).inserted else {
+                    return ([], "The catalog links back to a document that was already opened.")
                 }
+                let document = try await OPDSParser.parseURL(url: requestURL, session: session)
+                try Task.checkCancellation()
+                let documentURL = catalogDocumentIdentity(document.documentURL)
+                if documentURL != requestURL, !visited.insert(documentURL).inserted {
+                    return ([], "The catalog links back to a document that was already opened.")
+                }
+                if let mapped = mappedPublications(in: document, relativeTo: documentURL) {
+                    return (mapped, nil)
+                }
+                guard let allBooksLink = document.feed?.navigation.first(where: {
+                    $0.title?.hasPrefix("All Books") == true
+                }) else {
+                    return ([], "No publications or navigable links found")
+                }
+                guard let allBooksURL = allBooksLink.url(relativeTo: documentURL) else {
+                    return ([], "Invalid 'All Books' URL")
+                }
+                nextURL = allBooksURL
+            } catch {
+                if Task.isCancelled || error is CancellationError { return ([], nil) }
+                return ([], "Failed to fetch data: \(error.localizedDescription)")
             }
         }
+    }
+
+    private static func catalogDocumentIdentity(_ url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return url }
+        // Fragments address positions in one response; queries remain distinct
+        // catalog documents and are never stripped or reordered.
+        components.fragment = nil
+        return components.url ?? url
     }
 
     @MainActor
@@ -568,23 +608,14 @@ public class BookLibraryViewModel: ObservableObject {
                 return downloadable != nil
             },
             existsLocally: {
-                await downloadable?.existsLocally() == true
+                guard let downloadable else { return false }
+                return await ReaderFileManager.isDownloadReadyForImport(downloadable)
             },
             importContent: { existsLocally in
-                guard let downloadable else { return false }
-                if existsLocally {
-                    importedURL = try await readerFileManager.ensureImported(
-                        downloadable: downloadable
-                    )
-                } else {
-                    importedURL = try await readerFileManager.importFile(
-                        fileURL: downloadable.localDestination,
-                        fromDownloadURL: downloadable.url
-                    )
-                    if importedURL == nil {
-                        print("Couldn't import \(publication.title) file URL")
-                    }
-                }
+                guard existsLocally, let downloadable else { return false }
+                importedURL = try await readerFileManager.ensureImported(
+                    downloadable: downloadable
+                )
                 return importedURL != nil
             },
             loadContent: {
@@ -692,7 +723,8 @@ public class BookLibraryViewModel: ObservableObject {
                 return downloadable != nil
             },
             existsLocally: {
-                await downloadable?.existsLocally() == true
+                guard let downloadable else { return false }
+                return await ReaderFileManager.isDownloadReadyForImport(downloadable)
             },
             importContent: { existsLocally in
                 guard existsLocally, let downloadable else { return false }

@@ -161,20 +161,39 @@ public func prewarmReaderPaginationSizeTrackingCache() {
     _ = readerPaginationSizeTrackingCache
 }
 
+/// Dependency replacement permanently retires receipts already queued on another actor.
+private final class ReaderReadabilityOwnerLifetime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isCurrent = true
+
+    func permitsCommit() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isCurrent
+    }
+
+    func withdraw() {
+        lock.lock()
+        isCurrent = false
+        lock.unlock()
+    }
+}
+
 @MainActor
-fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
+internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
     var forceReaderModeWhenAvailable: Bool
     
-    var scriptCaller: WebViewScriptCaller
-    var readerViewModel: ReaderViewModel
-    var readerModeViewModel: ReaderModeViewModel
-    var readerContent: ReaderContent
-    var navigator: WebViewNavigator
+    private(set) var scriptCaller: WebViewScriptCaller
+    private(set) var readerViewModel: ReaderViewModel
+    private(set) var readerModeViewModel: ReaderModeViewModel
+    private(set) var readerContent: ReaderContent
+    private(set) var navigator: WebViewNavigator
     var hideNavigationDueToScroll: Binding<Bool>
     var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
     var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
     var ebookOpeningPreparer: ReaderEBookOpeningPreparer?
     var colorScheme: ColorScheme
+    var mediaLanguageIdentifier: String?
 
     private struct NavigationVisibilityEvent {
         let timestamp: Date
@@ -186,7 +205,13 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
     private var lastNonEBookReaderProgress: (url: URL, fractionalCompletion: Float)?
     private let trackingSizeHistoryLimit = 10
-    fileprivate var automaticReadabilityTask: Task<Void, Never>?
+    private var readabilityOwnerLifetime = ReaderReadabilityOwnerLifetime()
+    internal private(set) var automaticReadabilityTask: Task<Void, Never>?
+
+    deinit {
+        readabilityOwnerLifetime.withdraw()
+        automaticReadabilityTask?.cancel()
+    }
 
     nonisolated private func makeBucketKey(from cacheKey: String) -> String {
         let parts = cacheKey.split(separator: "|").map(String.init)
@@ -237,8 +262,51 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         return true
     }
 
-    private func scheduleAutomaticReadability(reason: String, windowURL: URL?, frameInfo: WKFrameInfo) {
-        guard canRunAutomaticReadability(for: windowURL) else { return }
+    private struct ReadabilityReceipt {
+        let caller: WebViewScriptCaller
+        let binding: WebViewScriptCaller.JavaScriptBindingToken
+        let permitsMutation: @Sendable () -> Bool
+        let isCurrent: @MainActor () -> Bool
+    }
+
+    private func captureReadabilityReceipt(
+        binding: WebViewScriptCaller.JavaScriptBindingToken?, expectedURL: URL
+    ) -> ReadabilityReceipt? {
+        let ownerLifetime = readabilityOwnerLifetime
+        let caller = scriptCaller
+        let contentOwner = readerContent
+        let viewOwner = readerViewModel
+        let modeOwner = readerModeViewModel
+        let navigatorOwner = navigator
+        guard let binding,
+              let bindingIsCurrent = caller.makeJavaScriptBindingCommitFence(requiring: binding) else { return nil }
+        let selectionIsCurrent = contentOwner.makeSelectionCommitFence(requiring: contentOwner.currentSelectionID)
+        let permitsMutation: @Sendable () -> Bool = {
+            !Task.isCancelled && ownerLifetime.permitsCommit()
+                && bindingIsCurrent() && selectionIsCurrent()
+        }
+        let isCurrent = { @MainActor [weak self] in
+            guard let self else { return false }
+            return permitsMutation() && self.scriptCaller === caller
+                && self.readerContent === contentOwner
+                && self.readerViewModel === viewOwner
+                && self.readerModeViewModel === modeOwner
+                && self.navigator === navigatorOwner
+                && caller.currentJavaScriptBindingToken == binding
+                && self.documentIsStillCurrent(expectedURL)
+        }
+        guard isCurrent() else { return nil }
+        return ReadabilityReceipt(caller: caller, binding: binding,
+                                  permitsMutation: permitsMutation, isCurrent: isCurrent)
+    }
+
+    private func scheduleAutomaticReadability(
+        reason: String, windowURL: URL?, frameInfo: WKFrameInfo,
+        receiptBinding: WebViewScriptCaller.JavaScriptBindingToken?
+    ) {
+        guard let receipt = captureReadabilityReceipt(
+            binding: receiptBinding, expectedURL: windowURL ?? readerViewModel.state.pageURL
+        ), canRunAutomaticReadability(for: windowURL) else { return }
         automaticReadabilityTask?.cancel()
         automaticReadabilityTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -248,10 +316,10 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
             } catch {
                 return
             }
-            guard canRunAutomaticReadability(for: windowURL) else { return }
-            try? await scriptCaller.evaluateJavaScript(
+            guard receipt.isCurrent(), canRunAutomaticReadability(for: windowURL) else { return }
+            try? await receipt.caller.evaluateJavaScript(
                 "window.manabi_readability?.()",
-                in: frameInfo
+                in: frameInfo, requiring: receipt.binding
             )
         }
     }
@@ -273,7 +341,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         _ windowURL: URL,
         source: String
     ) async throws -> (any ReaderContentProtocol)? {
-        if let currentContent = readerContent.content,
+        if let currentContent = readerContent.validCachedContent,
            currentContent.url.matchesReaderURL(windowURL) {
             return currentContent
         }
@@ -414,7 +482,8 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 scheduleAutomaticReadability(
                     reason: reason,
                     windowURL: windowURL,
-                    frameInfo: message.frameInfo
+                    frameInfo: message.frameInfo,
+                    receiptBinding: message.javaScriptBindingToken
                 )
             }),
             ("trackingBookKey", { [weak self] message in
@@ -579,9 +648,16 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     return
                 }
                 guard !windowURL.isNativeReaderView,
-                      let content = try? await contentForWindowURL(windowURL, source: "readabilityFramePing") else { return }
-                if await readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
-                    readerViewModel.refreshSettingsInWebView(content: content, reason: "readability-frame-ping")
+                      let receipt = captureReadabilityReceipt(
+                        binding: message.javaScriptBindingToken, expectedURL: windowURL
+                      ), let content = try? await contentForWindowURL(windowURL, source: "readabilityFramePing"),
+                      receipt.isCurrent(), !content.isInvalidated,
+                      readerViewModel.scriptCaller === receipt.caller else { return }
+                if receipt.caller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
+                    readerViewModel.refreshSettingsInWebView(
+                        content: content, reason: "readability-frame-ping",
+                        documentIsCurrent: receipt.isCurrent
+                    )
                 }
             }),
             ("readabilityModeUnavailable", { @MainActor [weak self] message in
@@ -594,6 +670,13 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                       url == readerViewModel.state.pageURL else {
                     return
                 }
+                guard let receipt = captureReadabilityReceipt(
+                    binding: message.javaScriptBindingToken, expectedURL: url
+                ) else { return }
+                let caller = receipt.caller
+                let receiptBinding = receipt.binding
+                let permitsMutation = receipt.permitsMutation
+                let receiptIsCurrent = receipt.isCurrent
                 guard readabilityMessageCanRepresentTopLevelDocument(
                     pageURL: result.pageURL,
                     windowURL: result.windowURL,
@@ -619,18 +702,19 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 guard let content = try? await contentForWindowURL(url, source: "readabilityModeUnavailable") else {
                     return
                 }
-                guard documentIsStillCurrent(url) else { return }
+                guard receiptIsCurrent(), !content.isInvalidated else { return }
                 if content.rssContainsFullContent && !content.isReaderModeByDefault {
-                    try? await scriptCaller.evaluateJavaScript("""
+                    try? await caller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.mnbReaderModeAvailable = 'true';
                             document.body.dataset.mnbReaderModeAvailableConfidently = 'true';
                             document.body.dataset.mnbReaderModeAvailableFor = window.location.href;
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
-                        """)
-                    guard documentIsStillCurrent(url) else { return }
+                        """, requiring: receiptBinding)
+                    guard receiptIsCurrent() else { return }
                     try? await ReaderContentLoader.updateContent(url: url) { object in
+                        guard permitsMutation() else { return false }
                         var didChange = false
                         if !object.isReaderModeAvailable {
                             object.isReaderModeAvailable = true
@@ -650,28 +734,30 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 }
                 guard !url.isReaderURLLoaderURL else { return }
 
-                guard documentIsStillCurrent(url) else { return }
-                try? await scriptCaller.evaluateJavaScript("""
+                guard receiptIsCurrent() else { return }
+                try? await caller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
-                        """)
+                        """, requiring: receiptBinding)
                 
-                guard documentIsStillCurrent(url) else { return }
+                guard receiptIsCurrent() else { return }
                 if readerModeViewModel.isReaderMode {
                     readerModeViewModel.isReaderMode = false
                 }
                 
                 do {
-                    guard documentIsStillCurrent(url) else { return }
+                    guard receiptIsCurrent() else { return }
                     try await ReaderContentLoader.updateContent(url: url) { object in
+                        guard permitsMutation() else { return false }
                         guard object.isReaderModeAvailable else { return false }
                         object.isReaderModeAvailable = false
                         return true
                     }
                     
-                    guard documentIsStillCurrent(url) else { return }
+                    guard receiptIsCurrent() else { return }
                     try await { @RealmBackgroundActor in
+                        guard permitsMutation() else { return }
                         try await HistoryRecord.refreshDemotedStatus(forURL: url)
                     }()
                 } catch {
@@ -684,10 +770,16 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     return
                 }
                 guard let url = result.windowURL,
-                      url == readerViewModel.state.pageURL,
-                      let content = try? await contentForWindowURL(url, source: "readabilityParsed") else {
+                      url == readerViewModel.state.pageURL else {
                     return
                 }
+                guard let receipt = captureReadabilityReceipt(
+                    binding: message.javaScriptBindingToken, expectedURL: url
+                ) else { return }
+                let caller = receipt.caller
+                let receiptBinding = receipt.binding
+                let permitsMutation = receipt.permitsMutation
+                let receiptIsCurrent = receipt.isCurrent
                 guard readabilityMessageCanRepresentTopLevelDocument(
                     pageURL: result.pageURL,
                     windowURL: result.windowURL,
@@ -711,11 +803,14 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     // Don't override a parent window readability result.
                     return
                 }
-                guard documentIsStillCurrent(url) else { return }
+                guard receiptIsCurrent() else { return }
+                guard let content = try? await contentForWindowURL(url, source: "readabilityParsed"),
+                      receiptIsCurrent(), !content.isInvalidated else { return }
                 guard !result.outputHTML.isEmpty else {
                     if content.rssContainsFullContent && !content.isReaderModeByDefault {
-                        guard documentIsStillCurrent(url) else { return }
+                        guard receiptIsCurrent() else { return }
                         try? await ReaderContentLoader.updateContent(url: url) { object in
+                            guard permitsMutation() else { return false }
                             var didChange = false
                             if !object.isReaderModeAvailable {
                                 object.isReaderModeAvailable = true
@@ -729,8 +824,9 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                         }
                         return
                     }
-                    guard documentIsStillCurrent(url) else { return }
+                    guard receiptIsCurrent() else { return }
                     try? await ReaderContentLoader.updateContent(url: url) { object in
+                        guard permitsMutation() else { return false }
                         guard object.isReaderModeAvailable else { return false }
                         object.isReaderModeAvailable = false
                         return true
@@ -740,10 +836,15 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 
                 guard !url.isNativeReaderView else { return }
                 let hasParsedPublicationDate = result.outputHTML.contains("id=\"reader-publication-date\"")
-                let publicationDateFallback = hasParsedPublicationDate
-                    ? nil
-                    : await readerContentPublicationDateFallback(for: content)
-                guard documentIsStillCurrent(url) else { return }
+                let publicationDateFallback: String?
+                if hasParsedPublicationDate {
+                    publicationDateFallback = nil
+                } else if let loader = readerModeViewModel.readerPublicationDateLoader {
+                    publicationDateFallback = await loader(url)
+                } else {
+                    publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                }
+                guard receiptIsCurrent(), !content.isInvalidated else { return }
                 let resolvedOutputHTML = publicationDateFallback.map {
                     buildCanonicalReadabilityHTML(
                         title: result.title,
@@ -771,23 +872,24 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                         scriptCaller: scriptCaller
                     )
                 } else if resolvedOutputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
-                    try? await scriptCaller.evaluateJavaScript("""
+                    try? await caller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.mnbReaderModeAvailableConfidently = 'true';
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
-                        """)
+                        """, requiring: receiptBinding)
                 } else {
-                    try? await scriptCaller.evaluateJavaScript("""
+                    try? await caller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
-                        """)
+                        """, requiring: receiptBinding)
                 }
                 
                 do {
-                    guard documentIsStillCurrent(url) else { return }
+                    guard receiptIsCurrent() else { return }
                     try await ReaderContentLoader.updateContent(url: url) { object in
+                        guard permitsMutation() else { return false }
                         var didChange = false
                         if !object.isReaderModeAvailable {
                             object.isReaderModeAvailable = true
@@ -799,15 +901,15 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                         }
                         return didChange
                     }
-                    guard documentIsStillCurrent(url) else { return }
-                    await readerContent.content?.realm?.asyncRefresh()
-                    guard documentIsStillCurrent(url) else { return }
-                    if let observedObject = readerContent.content as? (Object & ReaderContentProtocol),
+                    guard receiptIsCurrent() else { return }
+                    await readerContent.validCachedContent?.realm?.asyncRefresh()
+                    guard receiptIsCurrent() else { return }
+                    if let observedObject = readerContent.validCachedContent as? (Object & ReaderContentProtocol),
                        observedObject.url.matchesReaderURL(url),
                         !observedObject.isReaderModeAvailable,
                        let observedRealm = observedObject.realm {
                         try await observedRealm.asyncWritePreservingOwnership {
-                            guard !Task.isCancelled else { return }
+                            guard permitsMutation(), !observedObject.isInvalidated else { return }
                             observedObject.isReaderModeAvailable = true
                             if shouldPreserveFullContentOriginal && !observedObject.isReaderModeOfferHidden {
                                 observedObject.isReaderModeOfferHidden = true
@@ -816,22 +918,25 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                         }
                     }
 
-                    guard documentIsStillCurrent(url) else { return }
+                    guard receiptIsCurrent() else { return }
                     try await { @RealmBackgroundActor in
+                        guard permitsMutation() else { return }
                         try await HistoryRecord.refreshDemotedStatus(forURL: url)
                     }()
                 } catch {
                     print(error)
                 }
-                guard documentIsStillCurrent(url) else { return }
-                await readerContent.content?.realm?.asyncRefresh()
-                guard documentIsStillCurrent(url) else { return }
+                guard receiptIsCurrent() else { return }
+                await readerContent.validCachedContent?.realm?.asyncRefresh()
+                guard receiptIsCurrent() else { return }
                 readerContent.refreshObservedContentState()
             }),
-            ("showOriginal", { @MainActor [weak self] _ in
-                guard let self else { return }
+            ("showOriginal", { @MainActor [weak self] message in
+                guard let self, let binding = message.javaScriptBindingToken else { return }
                 do {
-                    try await showOriginal()
+                    try await showOriginal(requiring: binding)
+                } catch is CancellationError {
+                    return
                 } catch {
                     print(error)
                 }
@@ -1040,28 +1145,19 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 guard let result = FractionalCompletionMessage(fromMessage: message) else { return }
                 handleNavigationVisibility(for: result)
             }),
+            (ReaderWebMediaBridge.messageHandlerName, { @MainActor [weak self] message in
+                guard let self, let event = ReaderWebMediaBridge.decode(message: message) else { return }
+                switch event {
+                case .readyState: break
+                case .media(let info):
+                    ReaderWebMediaBridge.postCandidateUpdate(info, message: message, scriptCaller: scriptCaller, currentPageURL: readerViewModel.state.pageURL, contentLanguageIdentifier: mediaLanguageIdentifier)
+                case .playback(let event):
+                    ReaderWebMediaBridge.postPlaybackUpdate(event, message: message, scriptCaller: scriptCaller, currentPageURL: readerViewModel.state.pageURL, contentLanguageIdentifier: mediaLanguageIdentifier)
+                }
+            }),
             ("videoStatus", { @MainActor [weak self] message in
                 guard let self else { return }
-                do {
-                    guard let result = VideoStatusMessage(fromMessage: message) else { return }
-                    guard let windowURL = result.windowURL,
-                          let pageURL = result.pageURL,
-                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
-                            claimedURL: windowURL,
-                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
-                            currentPageURL: readerViewModel.state.pageURL,
-                            requiresMainFrame: false,
-                            isMainFrame: message.frameInfo.isMainFrame
-                          ),
-                          ReaderDocumentMutationAdmission.acceptsFrameTarget(
-                            claimedFrameURL: pageURL,
-                            frameRequestURL: message.frameInfo.request.url
-                          ),
-                          documentIsStillCurrent(windowURL) else { return }
-                    _ = try await MediaStatus.getOrCreate(url: pageURL)
-                } catch {
-                    print(error)
-                }
+                ReaderWebMediaBridge.postExternalSubtitlesUpdate(from: message, scriptCaller: scriptCaller, currentPageURL: readerViewModel.state.pageURL, contentLanguageIdentifier: mediaLanguageIdentifier)
             })
         ])
         .requiringTrustedUserAction("showOriginal")
@@ -1078,7 +1174,8 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
         navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
         ebookOpeningPreparer: ReaderEBookOpeningPreparer? = nil,
-        colorScheme: ColorScheme
+        colorScheme: ColorScheme,
+        mediaLanguageIdentifier: String? = nil
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
@@ -1091,6 +1188,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
         self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
+        self.mediaLanguageIdentifier = mediaLanguageIdentifier
     }
 
     func update(
@@ -1104,8 +1202,17 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
         navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
         ebookOpeningPreparer: ReaderEBookOpeningPreparer?,
-        colorScheme: ColorScheme
+        colorScheme: ColorScheme,
+        mediaLanguageIdentifier: String? = nil
     ) {
+        if self.scriptCaller !== scriptCaller || self.readerContent !== readerContent
+            || self.readerViewModel !== readerViewModel || self.readerModeViewModel !== readerModeViewModel
+            || self.navigator !== navigator {
+            readabilityOwnerLifetime.withdraw()
+            readabilityOwnerLifetime = ReaderReadabilityOwnerLifetime()
+            automaticReadabilityTask?.cancel()
+            automaticReadabilityTask = nil
+        }
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
         self.readerViewModel = readerViewModel
@@ -1117,25 +1224,81 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
         self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
+        self.mediaLanguageIdentifier = mediaLanguageIdentifier
     }
     
     // MARK: Readability
     
     @MainActor
-    func showOriginal() async throws {
-        let contentURL = readerContent.content?.url
-            ?? ReaderContentLoader.getContentURL(fromLoaderURL: readerContent.pageURL)
-            ?? readerContent.pageURL
+    func showOriginal(requiring binding: WebViewScriptCaller.JavaScriptBindingToken) async throws {
+        try Task.checkCancellation()
+        let readerContent = self.readerContent
+        let scriptCaller = self.scriptCaller
+        let readerViewModel = self.readerViewModel
+        let readerModeViewModel = self.readerModeViewModel
+        let navigator = self.navigator
+        let willBegin = self.showOriginalWillBeginHandler
+        let pageURL = readerContent.pageURL
+        let selectionIsCurrent = readerContent.makeSelectionCommitFence(
+            requiring: readerContent.currentSelectionID
+        )
+        let content = readerContent.validCachedContent
+        // An invalidated managed row cannot provide its URL, flags or Realm.
+        guard readerContent.content == nil || content != nil else { throw CancellationError() }
+        let contentURL = content?.url
+            ?? ReaderContentLoader.getContentURL(fromLoaderURL: pageURL)
+            ?? pageURL
+        let contentRealm = content?.realm
+        let processingAccount = readerModeViewModel.readerAccountSessionAccess.map(ReaderModeProcessingAccount.init(access:))
+        let ownerLifetime = readabilityOwnerLifetime
+        guard let bindingIsCurrent = scriptCaller.makeJavaScriptBindingCommitFence(requiring: binding) else {
+            throw CancellationError()
+        }
+        let permitsCommit: @Sendable () -> Bool = {
+            ownerLifetime.permitsCommit() && selectionIsCurrent() && bindingIsCurrent()
+                && processingAccount?.isCurrent != false
+        }
+        @MainActor func requireCurrentAction() throws {
+            try Task.checkCancellation()
+            guard self.readerContent === readerContent,
+                  self.scriptCaller === scriptCaller,
+                  self.readerViewModel === readerViewModel,
+                  self.readerModeViewModel === readerModeViewModel,
+                  self.navigator === navigator,
+                  readerModeViewModel.readerAccountSessionAccess?.snapshot == processingAccount?.snapshot,
+                  readerModeViewModel.readerAccountSessionAccess?.boundaryID == processingAccount?.access.boundaryID,
+                  permitsCommit(),
+                  readerContent.pageURL.matchesReaderURL(pageURL),
+                  scriptCaller.currentJavaScriptBindingToken == binding else {
+                throw CancellationError()
+            }
+            let currentContent = readerContent.validCachedContent
+            if let content {
+                guard let currentContent, currentContent === content else { throw CancellationError() }
+            } else {
+                guard readerContent.content == nil else { throw CancellationError() }
+            }
+        }
+        try requireCurrentAction()
         let hasCapturedReadabilityContent =
             readerModeViewModel.readabilityContent?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        let shouldRestoreStoredFullContent = readerContent.content?.rssContainsFullContent == true
+        let shouldRestoreStoredFullContent = content?.rssContainsFullContent == true
         if shouldRestoreStoredFullContent {
             readerModeViewModel.readabilityContent = nil
+            try requireCurrentAction()
             readerModeViewModel.readabilityContainerSelector = nil
+            try requireCurrentAction()
             readerModeViewModel.readabilityContainerFrameInfo = nil
+            try requireCurrentAction()
         }
-        await showOriginalWillBeginHandler?(contentURL, readerContent.pageURL)
-        try await ReaderContentLoader.updateContent(url: contentURL) { object in
+        try requireCurrentAction()
+        await willBegin?(contentURL, pageURL)
+        try requireCurrentAction()
+        try await ReaderContentLoader.updateContent(
+            url: contentURL,
+            account: processingAccount.map { (access: $0.access, snapshot: $0.snapshot) },
+            permitsCommit: permitsCommit
+        ) { object in
             let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
                 currentFlags: ReaderHTTPErrorRecoveryPolicy.ReaderModeFlags(
                     isReaderModeByDefault: object.isReaderModeByDefault,
@@ -1150,7 +1313,9 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
             object.isReaderModeOfferHidden = update.flags.isReaderModeOfferHidden
             return update.didChange
         }
-        await readerContent.content?.realm?.asyncRefresh()
+        try requireCurrentAction()
+        await contentRealm?.asyncRefresh()
+        try requireCurrentAction()
         navigator.reload()
     }
 
@@ -1260,6 +1425,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
     @Environment(\.readerEBookOpeningPreparer) internal var ebookOpeningPreparer
     @Environment(\.colorScheme) internal var colorScheme
+    @Environment(\.readerMediaLanguageIdentifier) internal var mediaLanguageIdentifier
     
     func body(content: Content) -> some View {
         ReaderMessageHandlersInstaller(
@@ -1275,6 +1441,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
             navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
             ebookOpeningPreparer: ebookOpeningPreparer,
             colorScheme: colorScheme,
+            mediaLanguageIdentifier: mediaLanguageIdentifier,
             webViewMessageHandlers: webViewMessageHandlers
         )
     }
@@ -1294,6 +1461,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
     var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
     var ebookOpeningPreparer: ReaderEBookOpeningPreparer?
     var colorScheme: ColorScheme
+    var mediaLanguageIdentifier: String?
     var webViewMessageHandlers: WebViewMessageHandlers
 
     @StateObject private var readerMessageHandlers: ReaderMessageHandlers
@@ -1313,6 +1481,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
         navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
         ebookOpeningPreparer: ReaderEBookOpeningPreparer?,
         colorScheme: ColorScheme,
+        mediaLanguageIdentifier: String?,
         webViewMessageHandlers: WebViewMessageHandlers
     ) {
         self.content = content
@@ -1327,6 +1496,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
         self.ebookOpeningPreparer = ebookOpeningPreparer
         self.colorScheme = colorScheme
+        self.mediaLanguageIdentifier = mediaLanguageIdentifier
         self.webViewMessageHandlers = webViewMessageHandlers
         _readerMessageHandlers = StateObject(wrappedValue: ReaderMessageHandlers(
             forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
@@ -1339,7 +1509,8 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
             showOriginalWillBeginHandler: showOriginalWillBeginHandler,
             navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
             ebookOpeningPreparer: ebookOpeningPreparer,
-            colorScheme: colorScheme
+            colorScheme: colorScheme,
+            mediaLanguageIdentifier: mediaLanguageIdentifier
         ))
     }
 
@@ -1358,8 +1529,12 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
                     showOriginalWillBeginHandler: showOriginalWillBeginHandler,
                     navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
                     ebookOpeningPreparer: ebookOpeningPreparer,
-                    colorScheme: colorScheme
+                    colorScheme: colorScheme,
+                    mediaLanguageIdentifier: mediaLanguageIdentifier
                 )
+            }
+            .onChange(of: mediaLanguageIdentifier) { value in
+                readerMessageHandlers.mediaLanguageIdentifier = value
             }
             .task(id: hideNavigationDueToScroll.wrappedValue) {
                 await pushHideNavigationStateToWebView(reason: "binding", force: false)

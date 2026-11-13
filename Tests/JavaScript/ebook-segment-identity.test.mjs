@@ -130,3 +130,25 @@ test('schema 14 accepts scope text tuples and rejects malformed or old layouts',
     assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({ ...payload,
         s: [[...payload.s[0], null]] }), false)
 })
+
+
+test('typed selection cannot hide malformed legacy or typed wire identities', () => {
+    const candidates = [[1001], [2001]]
+    const name = { se: { namespace: 'jmnedict', entryID: 2001 }, s: '愛' }
+    for (const invalid of [0, -1, 1.5, NaN, true, '1001']) {
+        assert.equal(expandCompactEbookSegmentResolution({ ...name, e: invalid }, ...candidates), null)
+    }
+    for (const selected of [
+        { namespace: 'other', entryID: 1001 },
+        { namespace: 'jmdict', entryID: 0 },
+        { namespace: 'jmdict', entryID: '1001' },
+        true, [],
+    ]) {
+        assert.equal(expandCompactEbookSegmentResolution({ se: selected, e: 1001 }, ...candidates), null)
+    }
+    assert.deepEqual(expandCompactEbookSegmentResolution({ ...name, e: 1001 }, ...candidates), {
+        selectedLexicon: 'jmnedict', selectedEntryID: 2001, canonicalSearchString: '愛',
+    })
+    assert.equal(expandCompactEbookSegmentResolution({ ...name, e: null }, ...candidates).selectedEntryID, 2001)
+    assert.equal(expandCompactEbookSegmentResolution({ e: 1001, s: '読む' }, ...candidates).selectedLexicon, 'jmdict')
+})

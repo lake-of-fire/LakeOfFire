@@ -650,8 +650,9 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         try await model.refreshData().value
         XCTAssertEqual(
             model.userScripts?.map(\.id),
-            [secondID, lockedID, createdScriptID]
+            [secondID, lockedID, firstID, createdScriptID]
         )
+        XCTAssertTrue(capturedFirst.isArchived, "The preserved row remains disabled after membership repair")
         XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
     }
 
