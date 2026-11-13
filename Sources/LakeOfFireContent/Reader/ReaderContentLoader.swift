@@ -340,7 +340,9 @@ public struct ReaderContentLoader {
 
     /// The storage selected when a snippet edit began. A delayed save must not
     /// follow mutable global configurations into another account's Realm.
-    public struct SnippetStorage {
+    /// Immutable capture passed to RealmBackgroundActor: configurations are value
+    /// snapshots, admissions are synchronized, and the optional row is frozen.
+    public struct SnippetStorage: @unchecked Sendable {
         public let bookmarkConfiguration: Realm.Configuration
         public let historyConfiguration: Realm.Configuration
 
@@ -1166,7 +1168,7 @@ public struct ReaderContentLoader {
     public static func commitMutation(
         in realm: Realm,
         ifCurrent: ReaderContentCommitIfCurrent,
-        validatingBeforeCommit: () throws -> Void = {}
+        validatingBeforeCommit: @escaping @Sendable () throws -> Void = {}
     ) throws {
         var didCommit = false
         do {
