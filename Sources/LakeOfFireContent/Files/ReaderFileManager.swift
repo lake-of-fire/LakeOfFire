@@ -785,7 +785,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let id = UUID()
         inventoryNeedsFollowUp.remove(receipt)
         lastInventoryPublishedAt.removeAll()
-        let task = Task { @MainActor in
+        let task: Task<Void, Error> = Task { @MainActor in
             var publishedGeneration: UInt64?
             defer {
                 if inventoryTasks[receipt]?.id == id {
