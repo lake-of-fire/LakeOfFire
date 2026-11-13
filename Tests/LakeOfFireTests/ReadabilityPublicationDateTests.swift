@@ -1,6 +1,8 @@
 import XCTest
 @preconcurrency import WebKit
 import LakeOfFireContent
+import SwiftSoup
+@testable import LakeOfFireReader
 
 @MainActor
 private final class PublicationDateFixtureDelegate: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
@@ -52,6 +54,9 @@ final class ReadabilityPublicationDateTests: XCTestCase {
             XCTAssertEqual(result["dateText"], value)
             XCTAssertEqual(result["dateChildren"], "0")
             XCTAssertEqual(result["injectedNodes"], "0")
+            XCTAssertEqual(result["rebuiltDateText"], value)
+            XCTAssertEqual(result["rebuiltDateChildren"], "0")
+            XCTAssertEqual(result["rebuiltOriginalCount"], "1")
         }
     }
 
@@ -61,6 +66,8 @@ final class ReadabilityPublicationDateTests: XCTestCase {
         XCTAssertEqual(result["payloadDate"], result["expectedFormattedDate"])
         XCTAssertEqual(result["dateChildren"], "0")
         XCTAssertEqual(result["datePresent"], "true")
+        XCTAssertEqual(result["rebuiltDateText"], result["expectedFormattedDate"])
+        XCTAssertEqual(result["rebuiltDateChildren"], "0")
     }
 
     func test_emptyDate_omitsDateLabelAndPreservesNullPayload() async throws {
@@ -68,11 +75,32 @@ final class ReadabilityPublicationDateTests: XCTestCase {
         XCTAssertEqual(result["datePresent"], "false")
         XCTAssertEqual(result["payloadHasDateValue"], "false")
         XCTAssertEqual(result["payloadIsNull"], "true")
+        XCTAssertEqual(result["rebuiltDatePresent"], "false")
     }
 
-    // Execute the actual bundled parser, sanitizer and initialization template. Inspect the
-    // generated DOM without executing it; this does not test rendered layout or image loading.
-    private func parseDate(_ value: String) async throws -> [String: String] {
+    func test_externalArticleWithoutDate_includesOriginalLink() async throws {
+        let sourceURL = try XCTUnwrap(URL(string: "https://reader.example/article?x=one&quote=%22&tag=%3Cpart%3E"))
+        let result = try await parseDate("", sourceURL: sourceURL)
+        XCTAssertEqual(result["originalCount"], "1")
+        XCTAssertEqual(result["originalHref"], sourceURL.absoluteString)
+        XCTAssertEqual(result["originalText"], "View Original")
+        XCTAssertEqual(result["metaCount"], "1")
+        XCTAssertEqual(result["dividerCount"], "0")
+    }
+
+    func test_externalArticleWithDate_separatesDateAndOriginalLink() async throws {
+        let result = try await parseDate("2026-10-22")
+        XCTAssertEqual(result["originalCount"], "1")
+        XCTAssertEqual(result["dateText"], result["expectedFormattedDate"])
+        XCTAssertEqual(result["dividerCount"], "1")
+    }
+
+    // Execute the bundled parser in WebKit, then rebuild its output through the native
+    // cached-content builder. Inspect generated DOM; layout and clicks are not exercised.
+    private func parseDate(
+        _ value: String,
+        sourceURL: URL = URL(string: "https://reader.example/article")!
+    ) async throws -> [String: String] {
         let loaded = expectation(description: "Article fixture loaded")
         let parsed = expectation(description: "Production readability payload received")
         let delegate = PublicationDateFixtureDelegate(loaded: loaded, parsed: parsed)
@@ -93,7 +121,7 @@ final class ReadabilityPublicationDateTests: XCTestCase {
             <!doctype html><html><head><title>Reader date fixture</title></head><body>
             <article><h1>Reader date fixture</h1>\(String(repeating: paragraph, count: 12))</article>
             </body></html>
-            """, baseURL: URL(string: "https://reader.example/article"))
+            """, baseURL: sourceURL)
         await fulfillment(of: [loaded], timeout: 10)
         if let error = delegate.navigationError { throw error }
         _ = try await call("""
@@ -107,7 +135,7 @@ final class ReadabilityPublicationDateTests: XCTestCase {
         try await evaluate("window.manabi_readability();", in: webView)
         await fulfillment(of: [parsed], timeout: 10)
         let outputHTML = try XCTUnwrap(delegate.outputHTML)
-        return try await call("""
+        var result = try await call("""
             const output = new DOMParser().parseFromString(outputHTML, 'text/html');
             const date = output.getElementById('reader-publication-date');
             let expectedFormattedDate = '';
@@ -131,6 +159,11 @@ final class ReadabilityPublicationDateTests: XCTestCase {
                 datePresent: String(!!date),
                 dateChildren: String(date?.children.length || 0),
                 injectedNodes: String(output.querySelectorAll('#date-injected,img[onerror]').length),
+                originalCount: String(output.querySelectorAll('.reader-view-original').length),
+                originalHref: output.querySelector('.reader-view-original')?.getAttribute('href') || '',
+                originalText: output.querySelector('.reader-view-original')?.textContent || '',
+                metaCount: String(output.querySelectorAll('#reader-meta-line').length),
+                dividerCount: String(output.querySelectorAll('.reader-meta-divider').length),
                 expectedFormattedDate
             };
             """, arguments: [
@@ -140,6 +173,16 @@ final class ReadabilityPublicationDateTests: XCTestCase {
                 "payloadHasDateValue": delegate.publishedTime != nil,
                 "payloadIsNull": delegate.publishedTimeIsNull
             ], in: webView)
+        let rebuiltHTML = try XCTUnwrap(buildSnippetCanonicalReadabilityHTML(
+            html: outputHTML, contentURL: sourceURL, fallbackTitle: nil
+        ))
+        let rebuilt = try SwiftSoup.parse(rebuiltHTML)
+        let rebuiltDate = try rebuilt.getElementById("reader-publication-date")
+        result["rebuiltDateText"] = try rebuiltDate?.text(trimAndNormaliseWhitespace: false) ?? ""
+        result["rebuiltDateChildren"] = String(rebuiltDate?.children().count ?? 0)
+        result["rebuiltDatePresent"] = rebuiltDate == nil ? "false" : "true"
+        result["rebuiltOriginalCount"] = String(try rebuilt.getElementsByClass("reader-view-original").count)
+        return result
     }
 
     private func evaluate(_ source: String, in webView: WKWebView) async throws {

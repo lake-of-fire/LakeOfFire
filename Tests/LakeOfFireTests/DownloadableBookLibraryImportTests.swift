@@ -140,6 +140,67 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
+    func testLocalBookSelectionPreservesCommittedEditorImportWithoutOpeningIt() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            let viewModel = BookLibraryViewModel()
+            let gate = CommittedEditorImportGate()
+            let suspended = expectation(description: "Verified import committed before local selection")
+            var importedURL: URL?
+            var reachedCommit = false
+            var operationError: Error?
+            var downstreamStages: [String] = []
+            let task = try XCTUnwrap(viewModel.startOpenSelection { selection in
+                do {
+                    try await viewModel.open(selection: selection, stages: .init(
+                        resolveDownloadable: { true },
+                        existsLocally: { true },
+                        importContent: { _ in
+                            importedURL = try await fixture.manager.ensureImported(downloadable: fixture.downloadable)
+                            reachedCommit = importedURL != nil
+                            await gate.wait { suspended.fulfill() }
+                            return importedURL != nil
+                        },
+                        loadContent: { downstreamStages.append("load"); return true },
+                        navigate: { _ in downstreamStages.append("navigate") },
+                        publishNavigation: { downstreamStages.append("publish") }
+                    ))
+                } catch {
+                    operationError = error
+                    viewModel.publishOpenError(error, selection: selection)
+                    suspended.fulfill()
+                }
+            })
+            addTeardownBlock { task.cancel(); await gate.release(); await task.value }
+            await fulfillment(of: [suspended], timeout: 10)
+            guard reachedCommit else {
+                await gate.release()
+                await task.value
+                XCTFail("Expected the verified import to commit: \(String(describing: operationError))")
+                return
+            }
+            var selectedKey: String?
+            let binding = viewModel.localContentSelectionBinding(Binding(
+                get: { selectedKey }, set: { selectedKey = $0 }
+            ))
+            binding.wrappedValue = "ContentFile:local-B"
+            XCTAssertTrue(task.isCancelled)
+            await gate.release()
+            await task.value
+
+            let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+            XCTAssertNil(operationError)
+            XCTAssertNil(viewModel.errorMessage)
+            XCTAssertEqual(importedURL, fixture.expectedReaderURL)
+            XCTAssertEqual(selectedKey, "ContentFile:local-B")
+            XCTAssertEqual(realm.objects(ContentFile.self).count, 1)
+            XCTAssertTrue(realm.objects(HistoryRecord.self).isEmpty)
+            XCTAssertEqual(fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url), [fixture.expectedReaderURL])
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.downloadable.localDestination.path))
+            XCTAssertTrue(downstreamStages.isEmpty)
+        }
+    }
+
+    @MainActor
     private func assertEnsureImportedIndexesBook(_ fixture: Fixture) async throws {
         let importedURL = try await assertEnsureImportedIndexesRealmMetadata(fixture)
         XCTAssertEqual(importedURL, fixture.expectedReaderURL)
@@ -165,5 +226,24 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
         )
         XCTAssertEqual(contentFile.mimeType, "application/epub+zip")
         return importedURL
+    }
+}
+
+private actor CommittedEditorImportGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    func wait(onSuspension: @Sendable () -> Void) async {
+        guard !released else { return }
+        await withCheckedContinuation {
+            continuation = $0
+            onSuspension()
+        }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }

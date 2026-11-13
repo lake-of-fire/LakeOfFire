@@ -204,6 +204,9 @@ final class LibraryCategoryEditorPresentationTests: XCTestCase, @unchecked Senda
         fixture.realm.refresh()
         let afterRetirement = snapshot(fixture.realm)
 
+        XCTAssertNil(editor.createFeed())
+        try await editor.deleteCategory()
+        try await editor.restoreCategory()
         try await command.write()
         try await editor.deleteFeeds([selection]).value
         fixture.realm.refresh()
