@@ -82,10 +82,12 @@ public final class BookmarkStatusCache: ObservableObject {
     }
 
     public func isBookmarked(_ readerContent: any ReaderContentProtocol) -> Bool {
-        bookmarkedCompoundKeys.contains(readerContent.compoundKey)
+        guard !readerContent.isInvalidated else { return false }
+        return bookmarkedCompoundKeys.contains(readerContent.compoundKey)
     }
 
     public func setIsBookmarked(_ isBookmarked: Bool, for readerContent: any ReaderContentProtocol) {
+        guard !readerContent.isInvalidated else { return }
         guard bookmarkedCompoundKeys.contains(readerContent.compoundKey) != isBookmarked else {
             return
         }
@@ -94,6 +96,21 @@ public final class BookmarkStatusCache: ObservableObject {
         } else {
             bookmarkedCompoundKeys.remove(readerContent.compoundKey)
         }
+    }
+
+    func toggleBookmarkIfNeeded<C: ReaderContentProtocol>(
+        for readerContent: C,
+        newValue: Bool,
+        isEnabled: Bool,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        guard !readerContent.isInvalidated else { return }
+        guard newValue != (isEnabled && isBookmarked(readerContent)) else { return }
+
+        // A completed mutation describes its own transaction, not necessarily
+        // the current state after overlapping commands. Realm observation owns
+        // the displayed status, including while follow-up analysis is pending.
+        _ = try await readerContent.toggleBookmark(realmConfiguration: realmConfiguration)
     }
 }
 
@@ -147,12 +164,12 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
             get: { showBookmarkExists },
             set: { newValue in
                 Task { @MainActor in
-                    if newValue != showBookmarkExists {
-                        let isBookmarked = try await readerContent.toggleBookmark(
-                            realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration
-                        )
-                        bookmarkStatusCache.setIsBookmarked(isBookmarked, for: readerContent)
-                    }
+                    try await bookmarkStatusCache.toggleBookmarkIfNeeded(
+                        for: readerContent,
+                        newValue: newValue,
+                        isEnabled: isEnabled,
+                        realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration
+                    )
                 }
             }
         )

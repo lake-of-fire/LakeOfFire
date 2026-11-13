@@ -101,7 +101,10 @@ public enum ReaderDateFormatter {
     }
 
     public static func shortDurationString(from duration: TimeInterval) -> String? {
-        guard duration > 0 else { return nil }
+        // Indefinite streaming media can report +infinity, and invalid or
+        // extremely large values cannot be safely converted to Int below.
+        guard duration.isFinite, duration > 0,
+              duration < Double(Int.max) else { return nil }
 
         let minute: TimeInterval = 60
         let hour: TimeInterval = 3600

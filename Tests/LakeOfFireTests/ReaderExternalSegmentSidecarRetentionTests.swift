@@ -1,6 +1,6 @@
 import XCTest
 import WebKit
-@testable import LakeOfFireReader
+@_spi(ReaderProcessing) @testable import LakeOfFireReader
 
 private final class CapturingURLSchemeTask: NSObject, WKURLSchemeTask {
     let request: URLRequest
@@ -42,7 +42,40 @@ private actor SidecarProcessorInvocationCounter {
     }
 }
 
+private final class SidecarRetentionClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var currentDate: Date
+
+    init(_ currentDate: Date) {
+        self.currentDate = currentDate
+    }
+
+    func value() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentDate
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        currentDate = currentDate.addingTimeInterval(interval)
+        lock.unlock()
+    }
+}
+
 final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
+    func testStoreRejectsSidecarAboveProducerConsumerEntryLimit() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            maximumEntryByteCount: 8
+        )
+
+        XCTAssertNotNil(store.insert(Data(repeating: 1, count: 8)))
+        XCTAssertNil(store.insert(Data(repeating: 1, count: 9)))
+    }
+
     @MainActor
     func testInternalReaderSchemeHandlerServesStoredSidecar() throws {
         let directoryURL = temporaryDirectoryURL()
@@ -97,6 +130,306 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
 
         XCTAssertEqual(recreatedStore.entry(for: retained.token)?.data, retainedData)
         XCTAssertEqual(recreatedStore.entry(for: retained.token)?.signature, retained.signature)
+    }
+
+    func testDiskRetentionPrunesEvictedProducerEntriesImmediatelyAfterPublication() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1,
+            diskByteLimit: Int.max,
+            diskCountLimit: 1,
+            maximumDiskAge: 365 * 24 * 60 * 60,
+            descriptorLeaseDuration: 0
+        )
+        let first = try XCTUnwrap(store.insert(validSidecarData(runtimeIDToken: "!first")))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -10)],
+            ofItemAtPath: directoryURL.appendingPathComponent(first.token).path
+        )
+        let secondData = validSidecarData(runtimeIDToken: "!second")
+        let second = try XCTUnwrap(store.insert(secondData))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(second.token).path))
+        XCTAssertEqual(
+            ReaderExternalSegmentSidecarStore(directoryURL: directoryURL).entry(for: second.token)?.data,
+            secondData
+        )
+    }
+
+    func testCrossStoreLeasePreventsPruningUntilTheReaderLeaseExpires() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let clock = SidecarRetentionClock(Date(timeIntervalSinceReferenceDate: 1_000))
+        let firstStore = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1,
+            diskByteLimit: Int.max,
+            diskCountLimit: 1,
+            maximumDiskAge: 365 * 24 * 60 * 60,
+            descriptorLeaseDuration: 60,
+            now: { clock.value() }
+        )
+        let first = try XCTUnwrap(firstStore.insert(validSidecarData(runtimeIDToken: "!first")))
+
+        clock.advance(by: 1)
+        let secondStore = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1,
+            diskByteLimit: Int.max,
+            diskCountLimit: 1,
+            maximumDiskAge: 365 * 24 * 60 * 60,
+            descriptorLeaseDuration: 60,
+            now: { clock.value() }
+        )
+        let second = try XCTUnwrap(secondStore.insert(validSidecarData(runtimeIDToken: "!second")))
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(second.token).path))
+
+        clock.advance(by: 60)
+        XCTAssertEqual(secondStore.entry(for: second.token)?.data, validSidecarData(runtimeIDToken: "!second"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(second.token).path))
+    }
+
+    func testLeaseRenewalPublishesANewLeaseFileBeforeRetiringThePriorLease() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let clock = SidecarRetentionClock(Date(timeIntervalSinceReferenceDate: 1_000))
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            descriptorLeaseDuration: 60,
+            now: { clock.value() }
+        )
+        let stored = try XCTUnwrap(store.insert(validSidecarData(runtimeIDToken: "!renewed")))
+        let leaseDirectoryURL = directoryURL.appendingPathComponent(".leases", isDirectory: true)
+        let originalLeaseFiles = try FileManager.default.contentsOfDirectory(
+            at: leaseDirectoryURL,
+            includingPropertiesForKeys: nil
+        ).map(\.lastPathComponent)
+
+        clock.advance(by: 30)
+        XCTAssertNotNil(store.entry(for: stored.token))
+        let renewedLeaseFiles = try FileManager.default.contentsOfDirectory(
+            at: leaseDirectoryURL,
+            includingPropertiesForKeys: nil
+        ).map(\.lastPathComponent)
+
+        XCTAssertEqual(originalLeaseFiles.count, 1)
+        XCTAssertEqual(renewedLeaseFiles.count, 1)
+        XCTAssertNotEqual(originalLeaseFiles, renewedLeaseFiles)
+    }
+
+    func testProducerRetryFenceAdvancesWithoutChangingContentAddress() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let data = validSidecarData(runtimeIDToken: "!runtime")
+        let documentHTML = Data("<html><head></head><body><m-m id=\"runtime\">猫</m-m></body></html>".utf8)
+
+        let first = externalizingReaderSegmentSidecar(
+            documentHTML: documentHTML,
+            canonicalSidecar: data,
+            scheme: .internalReader,
+            store: store
+        )
+        let second = externalizingReaderSegmentSidecar(
+            documentHTML: documentHTML,
+            canonicalSidecar: data,
+            scheme: .internalReader,
+            store: store
+        )
+        let firstHTML = String(decoding: first.documentHTML, as: UTF8.self)
+        let secondHTML = String(decoding: second.documentHTML, as: UTF8.self)
+        let firstRetryToken = try XCTUnwrap(sidecarRetryToken(in: firstHTML))
+        let secondRetryToken = try XCTUnwrap(sidecarRetryToken(in: secondHTML))
+
+        XCTAssertEqual(first.endpointURL, second.endpointURL)
+        XCTAssertEqual(first.signature, second.signature)
+        XCTAssertNotEqual(firstRetryToken, secondRetryToken)
+        XCTAssertEqual(firstRetryToken.count, 32)
+    }
+
+    func testOtherStoreRenewalAfterPruneDiscoveryProtectsItsDataUntilExpiry() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let clock = SidecarRetentionClock(Date(timeIntervalSinceReferenceDate: 1_000))
+        let reader = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL, totalByteLimit: 1,
+            descriptorLeaseDuration: 60, now: { clock.value() }
+        )
+        let bytes = validSidecarData(runtimeIDToken: "!renewed-after-discovery")
+        let first = try XCTUnwrap(reader.insert(bytes))
+        clock.advance(by: 61)
+        let pruner = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL, totalByteLimit: 1,
+            diskByteLimit: Int.max, diskCountLimit: 1,
+            descriptorLeaseDuration: 0, now: { clock.value() }
+        )
+        var renewals = 0
+        pruner.beforeDiskPruneAdmission = {
+            renewals += 1
+            // The first lease has expired and prune has discovered its data.
+            // Renew through the actual independent store before final eviction
+            // admission. A pre-renewal lease snapshot cannot authorize unlink.
+            XCTAssertEqual(reader.entry(for: first.token)?.data, bytes)
+        }
+        let second = try XCTUnwrap(pruner.insert(validSidecarData(runtimeIDToken: "!pruning-store")))
+        pruner.beforeDiskPruneAdmission = nil
+        XCTAssertEqual(renewals, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(second.token).path))
+        // A store with no lease of its own still honors the other owner's
+        // persisted expiration. Capacity may recover once that lease expires.
+        clock.advance(by: 61)
+        XCTAssertNotNil(pruner.entry(for: second.token))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+    }
+
+    func testOtherStoreRenewalWaitsUntilAdmittedEvictionFinishes() throws {
+        let directoryURL = temporaryDirectoryURL()
+        var peerFinished = false
+        defer {
+            // Retain the fixture if a broken admission leaves the peer active.
+            if peerFinished { try? FileManager.default.removeItem(at: directoryURL) }
+        }
+        let clock = SidecarRetentionClock(Date(timeIntervalSinceReferenceDate: 1_000))
+        let reader = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL, descriptorLeaseDuration: 60, now: { clock.value() }
+        )
+        let bytes = validSidecarData(runtimeIDToken: "!contending-renewal")
+        let first = try XCTUnwrap(reader.insert(bytes))
+        clock.advance(by: 61)
+        let pruner = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL, totalByteLimit: 1,
+            diskByteLimit: Int.max, diskCountLimit: 1,
+            descriptorLeaseDuration: 0, now: { clock.value() }
+        )
+        let started = DispatchSemaphore(value: 0)
+        let completed = DispatchSemaphore(value: 0)
+        var removals = 0
+        pruner.beforeDiskEntryRemoval = { token in
+            guard token == first.token else { return }
+            removals += 1
+            DispatchQueue.global(qos: .userInitiated).async {
+                started.signal()
+                // The same directory's final lease snapshot is already taken.
+                // This real peer must wait for unlink/admission release before
+                // it can renew and restore its still-cached verified bytes.
+                XCTAssertEqual(reader.entry(for: first.token)?.data, bytes)
+                completed.signal()
+            }
+            XCTAssertEqual(started.wait(timeout: .now() + 5), .success)
+            let completion = completed.wait(timeout: .now() + 0.1)
+            if completion == .success { peerFinished = true }
+            XCTAssertEqual(completion, .timedOut,
+                           "A peer cannot acquire a lease inside another store's eviction decision")
+        }
+        let second = try XCTUnwrap(pruner.insert(validSidecarData(runtimeIDToken: "!admitted-prune")))
+        if !peerFinished {
+            guard completed.wait(timeout: .now() + 5) == .success else {
+                XCTFail("Peer did not finish after directory admission was released")
+                return
+            }
+            peerFinished = true
+        }
+        XCTAssertEqual(removals, 1)
+        XCTAssertEqual(try Data(contentsOf: directoryURL.appendingPathComponent(first.token)), bytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(second.token).path))
+    }
+
+    func testFailedMemoryHitLeaseRenewalPreservesThePriorLeaseAndRefusesPublication() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let bytes = validSidecarData(runtimeIDToken: "!renewal-failure")
+        let saved = try XCTUnwrap(store.insert(bytes))
+        let leaseDirectory = directoryURL.appendingPathComponent(".leases", isDirectory: true)
+        let retainedLeases = directoryURL.appendingPathComponent(".retained-leases", isDirectory: true)
+        let previous = try FileManager.default.contentsOfDirectory(atPath: leaseDirectory.path)
+        XCTAssertEqual(previous.count, 1)
+        let leaseBytes = try Data(contentsOf: leaseDirectory.appendingPathComponent(try XCTUnwrap(previous.first)))
+        try FileManager.default.moveItem(at: leaseDirectory, to: retainedLeases)
+        try Data("directory unavailable".utf8).write(to: leaseDirectory)
+
+        XCTAssertNil(store.entry(for: saved.token), "A memory hit cannot ignore failed renewal")
+        XCTAssertNil(store.insert(bytes), "Failed renewal cannot publish a fresh descriptor")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: retainedLeases.path), previous)
+        XCTAssertEqual(try Data(contentsOf: retainedLeases.appendingPathComponent(try XCTUnwrap(previous.first))),
+                       leaseBytes)
+        XCTAssertEqual(try Data(contentsOf: directoryURL.appendingPathComponent(saved.token)), bytes)
+
+        let obstruction = directoryURL.appendingPathComponent(".lease-directory-obstruction")
+        try FileManager.default.moveItem(at: leaseDirectory, to: obstruction)
+        try FileManager.default.moveItem(at: retainedLeases, to: leaseDirectory)
+        XCTAssertEqual(store.entry(for: saved.token)?.data, bytes)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: leaseDirectory.path).count, 1)
+    }
+
+    func testUnreadableLeaseDirectoryDoesNotAuthorizeAnotherStoresEviction() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let reader = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let first = try XCTUnwrap(reader.insert(validSidecarData(runtimeIDToken: "!unreadable-directory")))
+        let pruner = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL, totalByteLimit: 1,
+            diskByteLimit: Int.max, diskCountLimit: 1, descriptorLeaseDuration: 0
+        )
+        let leaseDirectory = directoryURL.appendingPathComponent(".leases", isDirectory: true)
+        try FileManager.default.moveItem(at: leaseDirectory,
+                                        to: directoryURL.appendingPathComponent(".retained-leases"))
+        try Data("not a directory".utf8).write(to: leaseDirectory)
+        let second = try XCTUnwrap(pruner.insert(validSidecarData(runtimeIDToken: "!must-not-evict")))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(second.token).path))
+    }
+
+    func testUnreadableLeasePayloadSuppressesEvictionAndValidStateCanRecover() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let clock = SidecarRetentionClock(Date(timeIntervalSinceReferenceDate: 1_000))
+        let reader = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL, descriptorLeaseDuration: 60, now: { clock.value() }
+        )
+        let first = try XCTUnwrap(reader.insert(validSidecarData(runtimeIDToken: "!unreadable-lease")))
+        let invalidLease = directoryURL.appendingPathComponent(".leases")
+            .appendingPathComponent(first.token + "." + String(repeating: "a", count: 32)
+                                   + "." + String(repeating: "b", count: 32))
+        // Above the bounded lease payload read, despite a valid owner filename.
+        try Data(repeating: 0x31, count: 65).write(to: invalidLease)
+        let pruner = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL, totalByteLimit: 1,
+            diskByteLimit: Int.max, diskCountLimit: 1,
+            descriptorLeaseDuration: 0, now: { clock.value() }
+        )
+        let second = try XCTUnwrap(pruner.insert(validSidecarData(runtimeIDToken: "!conservative-pruner")))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+        try FileManager.default.moveItem(at: invalidLease,
+                                        to: directoryURL.appendingPathComponent(".invalid-lease"))
+        clock.advance(by: 61)
+        XCTAssertNotNil(pruner.entry(for: second.token))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(first.token).path))
+    }
+
+    func testUnavailableDirectoryAdmissionCannotPublishOrEvict() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let bytes = validSidecarData(runtimeIDToken: "!admission-failure")
+        let saved = try XCTUnwrap(store.insert(bytes))
+        let admission = directoryURL.appendingPathComponent(".store-admission")
+        try FileManager.default.moveItem(at: admission,
+                                        to: directoryURL.appendingPathComponent(".retained-admission"))
+        try FileManager.default.createDirectory(at: admission, withIntermediateDirectories: false)
+        XCTAssertNil(store.entry(for: saved.token))
+        XCTAssertNil(store.insert(validSidecarData(runtimeIDToken: "!unadmitted")))
+        XCTAssertEqual(try Data(contentsOf: directoryURL.appendingPathComponent(saved.token)), bytes)
     }
 
     func testOversizedDurableSidecarIsNotRetainedAboveMemoryBudget() throws {
@@ -338,7 +671,7 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
             return [
                 runtimeIDToken,
                 segmentHashIndex,
-                NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(),
+                NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), 0,
                 sentenceIdentifierIndex,
                 paragraphIdentifierIndex,
             ]
@@ -352,6 +685,7 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
                 "ns": [],
                 "p": [],
                 "h": ["segment-hash"],
+                "x": ["猫"],
                 "sid": ["sentence-id"],
                 "pid": ["paragraph-id"],
             ],
@@ -364,5 +698,20 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         return "<html><body>\(segments)<script id=\"mnb-segment-metadata\">"
             + String(decoding: sidecarData, as: UTF8.self)
             + "</script></body></html>"
+    }
+
+    private func sidecarRetryToken(in html: String) -> String? {
+        guard let range = html.range(
+            of: #"data-mnb-segment-sidecar-retry=\"([0-9a-f]{32})\""#,
+            options: .regularExpression
+        ) else {
+            return nil
+        }
+        let attribute = String(html[range])
+        return String(
+            attribute
+                .replacingOccurrences(of: "data-mnb-segment-sidecar-retry=\"", with: "")
+                .dropLast()
+        )
     }
 }

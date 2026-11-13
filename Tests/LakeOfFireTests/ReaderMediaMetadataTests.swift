@@ -1,5 +1,7 @@
+import BigSyncKit
 import XCTest
 import AVFoundation
+@testable import LakeOfFireCore
 import Combine
 import RealmSwift
 import RealmSwiftGaps
@@ -374,6 +376,48 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertEqual(bookmark.audioSubtitlesURL, entry.audioSubtitlesURL)
         XCTAssertEqual(bookmark.audioSubtitlesRole, .content)
         XCTAssertEqual(bookmark.rssContainsFullContent, false)
+        let mutationKey = "Bookmark." + bookmark.compoundKey
+        let initialGeneration = try XCTUnwrap(
+            realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey)
+        ).generation
+        let entryKey = managedEntry.compoundKey
+        let updatedAudioURL = URL(string: "https://example.com/updated-audio.m4a")!
+        let updatedSubtitlesURL = URL(string: "https://example.com/updated-subtitles.vtt")!
+        try await { @RealmBackgroundActor in
+            let sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await sourceRealm.asyncWritePreservingOwnership {
+                let current = try XCTUnwrap(
+                    sourceRealm.object(ofType: FeedEntry.self, forPrimaryKey: entryKey)
+                )
+                current.voiceAudioURL = updatedAudioURL
+                current.voiceAudioURLs.removeAll()
+                current.voiceAudioURLs.append(updatedAudioURL)
+                current.audioSubtitlesURL = updatedSubtitlesURL
+                current.audioSubtitlesRoleRawValue = AudioSubtitlesRole.media.rawValue
+                current.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }()
+        await realm.asyncRefresh()
+        try await managedEntry.addBookmark(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(bookmark.voiceAudioURL, updatedAudioURL)
+        XCTAssertEqual(Array(bookmark.voiceAudioURLs), [updatedAudioURL])
+        XCTAssertEqual(bookmark.audioSubtitlesURL, updatedSubtitlesURL)
+        XCTAssertEqual(bookmark.audioSubtitlesRole, .media)
+        let updatedMutation = try XCTUnwrap(
+            realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey)
+        )
+        let updatedGeneration = updatedMutation.generation
+        let updatedAt = bookmark.modifiedAt
+        XCTAssertNotEqual(updatedGeneration, initialGeneration,
+                          "A configure-only media change must create a new journal generation")
+        XCTAssertEqual(updatedMutation.changedAt, updatedAt)
+
+        try await managedEntry.addBookmark(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(updatedMutation.generation, updatedGeneration,
+                       "Rebuilding identical value lists must not journal the bookmark again")
+        XCTAssertEqual(bookmark.modifiedAt, updatedAt)
     }
 
     @MainActor
@@ -1105,4 +1149,21 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertEqual(historyRecord.audioSubtitlesURL, URL(string: "https://example.com/new-subtitles.vtt")!)
         XCTAssertEqual(historyRecord.audioSubtitlesRole, AudioSubtitlesRole.content)
     }
+
+    func testShortDurationRejectsIndefiniteAndOutOfRangeMediaLengths() {
+        for duration in [
+            Double.infinity, -Double.infinity, Double.nan,
+            Double.greatestFiniteMagnitude, Double(Int.max), -1, 0
+        ] {
+            XCTAssertNil(ReaderDateFormatter.shortDurationString(from: duration),
+                         "Unsafe duration: \(duration)")
+        }
+    }
+
+    func testShortDurationRetainsFiniteMetadataFormatting() {
+        XCTAssertEqual(ReaderDateFormatter.shortDurationString(from: 59), "1m")
+        XCTAssertEqual(ReaderDateFormatter.shortDurationString(from: 3600), "1h")
+        XCTAssertEqual(ReaderDateFormatter.shortDurationString(from: 86_400), "1d")
+    }
+
 }

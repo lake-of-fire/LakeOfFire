@@ -100,6 +100,38 @@ final class SyncMutationBoundaryTests: XCTestCase {
     }
 
     @RealmBackgroundActor
+    func testBookmarkConfigurationStaysInCallerWriteUntilFinalJournalRefreshAndRollback() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self])
+        let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+        let changedAt = Date(timeIntervalSinceReferenceDate: 54_000)
+        let audioURL = URL(string: "https://example.com/owned-audio.m4a")!
+        try realm.beginWrite()
+        defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
+        let bookmark = Bookmark.addInOwnedWrite(
+            url: URL(string: "https://example.com/owned-bookmark")!,
+            title: "Owned bookmark", isFromClipboard: false,
+            rssContainsFullContent: false, isReaderModeByDefault: false,
+            isReaderModeAvailable: false, realm: realm, at: changedAt,
+            configure: { managed in
+                XCTAssertTrue(managed.realm == realm)
+                XCTAssertTrue(realm.isInWriteTransaction)
+                XCTAssertNil(managed.explicitlyModifiedAt)
+                XCTAssertNil(self.pendingMutation(for: managed, in: realm),
+                             "The final journal refresh must follow configuration")
+                managed.voiceAudioURLs.append(audioURL)
+            }
+        )
+        XCTAssertTrue(realm.isInWriteTransaction, "The helper must not commit its caller's transaction")
+        XCTAssertEqual(Array(bookmark.voiceAudioURLs), [audioURL])
+        XCTAssertEqual(bookmark.explicitlyModifiedAt, changedAt)
+        XCTAssertEqual(pendingMutation(for: bookmark, in: realm)?.changedAt, changedAt)
+        realm.cancelWrite()
+        XCTAssertTrue(realm.objects(Bookmark.self).isEmpty)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty,
+                      "The caller can roll back the configured bookmark and journal together")
+    }
+
+    @RealmBackgroundActor
     func testEbookMetadataJournalsPublicationOnlyUpdateOnce() async throws {
         let configuration = makeConfiguration(objectTypes: [ContentFile.self])
         let realm = try await Realm(

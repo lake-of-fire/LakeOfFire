@@ -23,6 +23,7 @@ struct LibraryCategoriesView: View {
 #endif
     
     @State private var categoryIDNeedsScrollTo: String?
+    @State private var exportViewRegistrationID = UUID()
     
 #if os(macOS)
     @State private var savePanel: NSSavePanel?
@@ -30,18 +31,43 @@ struct LibraryCategoriesView: View {
 #endif
     
     @ViewBuilder var importExportView: some View {
-        ShareLink(item: libraryManagerViewModel.exportedOPMLFileURL ?? URL(string: "about:blank")!, message: Text(""), preview: SharePreview("Manabi Reader User Feeds OPML File", image: Image(systemName: "doc"))) {
+        Group {
+            if let fileURL = libraryManagerViewModel.exportedOPMLFileURL {
+                ShareLink(
+                    item: fileURL,
+                    message: Text(""),
+                    preview: SharePreview(
+                        "Manabi Reader User Feeds OPML File",
+                        image: Image(systemName: "doc")
+                    )
+                ) {
 #if os(macOS)
-            Text("Share My Library…")
-                .frame(maxWidth: .infinity)
+                    Text("Share My Library…")
+                        .frame(maxWidth: .infinity)
 #else
-            Text("Export My Library…")
+                    Text("Export My Library…")
 #endif
+                }
+                .labelStyle(.titleAndIcon)
+                .accessibilityIdentifier("library-opml-share")
+            } else {
+                Button {
+                } label: {
+#if os(macOS)
+                    Text("Share My Library…")
+                        .frame(maxWidth: .infinity)
+#else
+                    Text("Export My Library…")
+#endif
+                }
+                .disabled(true)
+            }
         }
-        .labelStyle(.titleAndIcon)
-        .disabled(libraryManagerViewModel.exportedOPML == nil)
-        .task {
-            libraryManagerViewModel.ensureOPMLExportPrepared()
+        if libraryManagerViewModel.opmlExportFailed {
+            Button("Export failed. Retry") {
+                libraryManagerViewModel.refreshOPMLExport()
+            }
+            .accessibilityIdentifier("library-opml-retry")
         }
 #if os(macOS)
         Button {
@@ -89,8 +115,10 @@ struct LibraryCategoriesView: View {
     }
     
     @ViewBuilder var userLibraryView: some View {
-        if let categories = viewModel.userLibraryCategories {
-            ForEach(Array(categories), id: \.id) { category in
+        if let currentCategories = viewModel.userLibraryCategories {
+            let categories = currentCategories.filter { !$0.isInvalidated }
+            let displayedCategoryIDs = categories.map(\.id)
+            ForEach(categories, id: \.id) { category in
                 NavigationLink(value: ContentPaneRoute.contentCategory(category.id)) {
                     FeedCategoryButtonLabel(
                         title: category.title,
@@ -129,17 +157,20 @@ struct LibraryCategoriesView: View {
                 }
             }
             .onMove {
-                viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
+                viewModel.moveCategories(
+                    fromOffsets: $0, toOffset: $1, displayedCategoryIDs: displayedCategoryIDs
+                )
             }
             .onDelete {
-                viewModel.deleteCategory(at: $0)
+                viewModel.deleteCategory(at: $0, fromCategoryIDs: displayedCategoryIDs)
             }
         }
     }
     
     @ViewBuilder var editorsPicksLibraryView: some View {
-        if let categories = viewModel.editorsPicksLibraryCategories {
-            ForEach(Array(categories), id: \.id) { category in
+        if let currentCategories = viewModel.editorsPicksLibraryCategories {
+            let categories = currentCategories.filter { !$0.isInvalidated }
+            ForEach(categories, id: \.id) { category in
                 NavigationLink(value: ContentPaneRoute.contentCategory(category.id)) {
                     FeedCategoryButtonLabel(
                         title: category.title,
@@ -154,18 +185,13 @@ struct LibraryCategoriesView: View {
                 .deleteDisabled(true)
                 .moveDisabled(true)
             }
-            .onMove {
-                viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
-            }
-            .onDelete {
-                viewModel.deleteCategory(at: $0)
-            }
         }
     }
     
     @ViewBuilder var archiveView: some View {
-        if let categories = viewModel.archivedCategories {
-            ForEach(Array(categories), id: \.id) { category in
+        if let currentCategories = viewModel.archivedCategories {
+            let categories = currentCategories.filter { !$0.isInvalidated }
+            ForEach(categories, id: \.id) { category in
                 NavigationLink(value: ContentPaneRoute.contentCategory(category.id)) {
                     FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, isCompact: true)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -238,6 +264,12 @@ struct LibraryCategoriesView: View {
                 Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. My Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
                 }
+                .onAppear {
+                    libraryManagerViewModel.registerOPMLExportUI(exportViewRegistrationID)
+                }
+                .onDisappear {
+                    libraryManagerViewModel.unregisterOPMLExportUI(exportViewRegistrationID)
+                }
                 .labelStyle(.titleOnly)
                 .accentColor(appTint)
                 
@@ -260,7 +292,7 @@ struct LibraryCategoriesView: View {
 #if os(iOS)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    if viewModel.userLibraryCategories?.contains(where: { $0.isUserEditable }) ?? false {
+                    if viewModel.userLibraryCategories?.contains(where: { !$0.isInvalidated && $0.isUserEditable }) ?? false {
                         EditButton()
                     }
                 }
@@ -271,16 +303,19 @@ struct LibraryCategoriesView: View {
     
     @ViewBuilder func addCategoryButton(scrollProxy: ScrollViewProxy) -> some View {
         Button {
-            Task { @RealmBackgroundActor in
-                let categoryID = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
-                try await { @MainActor in
-                    let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
-                    categoryIDNeedsScrollTo = category.id.uuidString
-                    try await Task.sleep(nanoseconds: 100_000_000)
-                    //                    libraryManagerViewModel.navigationPath.removeLast(libraryManagerViewModel.navigationPath.count)
-                    contentRoute = .contentCategory(category.id)
-                }()
+            Task { @MainActor in
+                let categoryID = try await viewModel.createCategory()
+                let realm = try await Realm.open(
+                    configuration: viewModel.realmConfiguration
+                )
+                guard let category = realm.object(
+                    ofType: FeedCategory.self,
+                    forPrimaryKey: categoryID
+                ) else { return }
+                categoryIDNeedsScrollTo = categoryID.uuidString
+                try await Task.sleep(nanoseconds: 100_000_000)
+                guard !category.isInvalidated, !category.isDeleted else { return }
+                contentRoute = .contentCategory(categoryID)
             }
         } label: {
             Label("Add Category", systemImage: "plus")

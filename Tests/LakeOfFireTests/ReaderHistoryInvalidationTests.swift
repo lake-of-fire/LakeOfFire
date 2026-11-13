@@ -1,0 +1,351 @@
+import BigSyncKit
+import RealmSwift
+import XCTest
+@testable import RealmSwiftGaps
+@testable import LakeOfFireContent
+
+final class ReaderHistoryInvalidationTests: XCTestCase {
+    @MainActor
+    func testDeletedBookmarkIsIgnoredBeforeDeletionReadsURL() async throws {
+        let realm = try Realm(configuration: makeConfiguration())
+        let bookmark = Bookmark()
+        bookmark.url = URL(string: "https://example.com/retired-bookmark")!
+        bookmark.updateCompoundKey()
+        try realm.write { realm.add(bookmark) }
+        try realm.write { realm.delete(bookmark) }
+        XCTAssertTrue(bookmark.isInvalidated)
+
+        try await bookmark.delete()
+
+        XCTAssertTrue(realm.objects(Bookmark.self).isEmpty)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @MainActor
+    func testDeletedHistoryIsIgnoredBeforeDeletionReadsURL() async throws {
+        let realm = try Realm(configuration: makeConfiguration())
+        let record = HistoryRecord()
+        record.url = URL(string: "https://example.com/retired-history")!
+        record.updateCompoundKey()
+        try realm.write { realm.add(record) }
+        try realm.write { realm.delete(record) }
+        XCTAssertTrue(record.isInvalidated)
+
+        try await record.delete()
+
+        XCTAssertTrue(realm.objects(HistoryRecord.self).isEmpty)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @RealmBackgroundActor
+    func testDeletedHistoryIsIgnoredBeforeDemotionReadsPersistedState() async throws {
+        let realm = try await Realm(
+            configuration: makeConfiguration(), actor: RealmBackgroundActor.shared
+        )
+        let record = Self.makeHistory()
+        try realm.write { realm.add(record) }
+        try realm.write { realm.delete(record) }
+        XCTAssertTrue(record.isInvalidated)
+
+        try await record.refreshDemotedStatus(bookmarkRealmConfiguration: realm.configuration)
+        try await record.refreshDemotedStatus(bookmarkRealmConfiguration: realm.configuration, skipPreviouslyDemoted: false)
+
+        XCTAssertTrue(realm.objects(HistoryRecord.self).isEmpty)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @RealmBackgroundActor
+    func testGoogleQueryDemotionUsesSharedHostPathAndEncodingRules() async throws {
+        let realm = try await Realm(
+            configuration: makeConfiguration(), actor: RealmBackgroundActor.shared
+        )
+        let cases: [(String, Bool)] = [
+            ("https://www.google.com/search?%71=C%2B%2B+%E6%97%A5%E6%9C%AC%E8%AA%9E&q=second", true),
+            ("https://google.co.jp/search?q&q=second", true),
+            ("https://www.google.com/?q=first", true),
+            ("https://www.google.com/search?query=ignored", false),
+            ("https://example.com/search?q=ignored", false),
+            ("https://images.google.com/search?q=ignored", false),
+        ]
+        for (index, entry) in cases.enumerated() {
+            let (urlString, shouldDemote) = entry
+            let record = HistoryRecord()
+            record.url = try XCTUnwrap(URL(string: urlString))
+            record.isReaderModeAvailable = true
+            record.updateCompoundKey()
+            // Seed unjournaled fixture state; the actual demotion owns its write.
+            try realm.write { realm.add(record) }
+
+            try await record.refreshDemotedStatus(bookmarkRealmConfiguration: realm.configuration)
+
+            XCTAssertEqual(record.isDemoted, shouldDemote, urlString)
+            XCTAssertNotNil(record.explicitlyModifiedAt, urlString)
+            XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, index + 1, urlString)
+        }
+    }
+
+    @RealmBackgroundActor
+    func testDemotionPreservesDeletedHistoryTombstone() async throws {
+        let realm = try await Realm(
+            configuration: makeConfiguration(), actor: RealmBackgroundActor.shared
+        )
+        let record = Self.makeHistory()
+        try realm.write {
+            realm.add(record)
+            record.isDeleted = true
+            record.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let changedAt = record.explicitlyModifiedAt
+        let mutation = try XCTUnwrap(realm.objects(BigSyncPendingMutation.self).first)
+        let generation = mutation.generation
+
+        try await record.refreshDemotedStatus(bookmarkRealmConfiguration: realm.configuration, skipPreviouslyDemoted: false)
+
+        XCTAssertTrue(record.isDeleted)
+        XCTAssertNil(record.isDemoted)
+        XCTAssertEqual(record.explicitlyModifiedAt, changedAt)
+        XCTAssertEqual(mutation.generation, generation)
+    }
+
+    @RealmBackgroundActor
+    func testQueuedDemotionIgnoresDeletedAccessorAndPreservesReplacement() async throws {
+        let realm = try await Realm(
+            configuration: makeConfiguration(), actor: RealmBackgroundActor.shared
+        )
+        let record = Self.makeHistory()
+        let key = record.compoundKey
+        try realm.write { realm.add(record) }
+        try realm.beginWrite()
+
+        let submitted = XCTestExpectation(description: "Demotion write submitted")
+        let refresh = queuedRefresh(of: record, submitted: submitted)
+        cleanUpQueuedWrite(refresh, in: realm)
+        await fulfillment(of: [submitted], timeout: 5)
+
+        realm.delete(record)
+        let replacement = Self.makeHistory()
+        replacement.compoundKey = key
+        realm.add(replacement)
+        try realm.commitWrite()
+        try await refresh.value
+
+        XCTAssertTrue(record.isInvalidated)
+        XCTAssertNil(replacement.isDemoted)
+        XCTAssertNil(replacement.explicitlyModifiedAt)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @RealmBackgroundActor
+    func testQueuedDemotionUsesInputsChangedBeforeAdmission() async throws {
+        let realm = try await Realm(
+            configuration: makeConfiguration(), actor: RealmBackgroundActor.shared
+        )
+        let record = Self.makeHistory()
+        try realm.write { realm.add(record) }
+        try realm.beginWrite()
+
+        let submitted = XCTestExpectation(description: "Demotion write submitted")
+        let refresh = queuedRefresh(of: record, submitted: submitted)
+        cleanUpQueuedWrite(refresh, in: realm)
+        await fulfillment(of: [submitted], timeout: 5)
+
+        record.isReaderModeAvailable = true
+        try realm.commitWrite()
+        try await refresh.value
+
+        XCTAssertEqual(record.isDemoted, false)
+        XCTAssertNotNil(record.explicitlyModifiedAt)
+        XCTAssertFalse(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @RealmBackgroundActor
+    func testQueuedDemotionPreservesTombstoneWrittenBeforeAdmission() async throws {
+        let realm = try await Realm(
+            configuration: makeConfiguration(), actor: RealmBackgroundActor.shared
+        )
+        let record = Self.makeHistory()
+        try realm.write { realm.add(record) }
+        try realm.beginWrite()
+
+        let submitted = XCTestExpectation(description: "Demotion write submitted")
+        let refresh = queuedRefresh(of: record, submitted: submitted)
+        cleanUpQueuedWrite(refresh, in: realm)
+        await fulfillment(of: [submitted], timeout: 5)
+
+        record.isDeleted = true
+        record.refreshChangeMetadata(explicitlyModified: true)
+        let changedAt = record.explicitlyModifiedAt
+        let mutation = try XCTUnwrap(realm.objects(BigSyncPendingMutation.self).first)
+        let generation = mutation.generation
+        try realm.commitWrite()
+        try await refresh.value
+
+        XCTAssertTrue(record.isDeleted)
+        XCTAssertNil(record.isDemoted)
+        XCTAssertEqual(record.explicitlyModifiedAt, changedAt)
+        XCTAssertEqual(mutation.generation, generation)
+    }
+
+    @RealmBackgroundActor
+    func testQueuedDemotionDoesNotAcceptAnotherWritersTentativeNoop() async throws {
+        let realm = try await Realm(
+            configuration: makeConfiguration(), actor: RealmBackgroundActor.shared
+        )
+        let record = Self.makeHistory()
+        try realm.write { realm.add(record) }
+        try realm.beginWrite()
+        record.isDemoted = false
+
+        let submitted = XCTestExpectation(description: "Demotion write submitted")
+        let refresh = queuedRefresh(of: record, submitted: submitted)
+        cleanUpQueuedWrite(refresh, in: realm)
+        await fulfillment(of: [submitted], timeout: 5)
+
+        realm.cancelWrite()
+        try await refresh.value
+
+        XCTAssertEqual(record.isDemoted, true)
+        XCTAssertNotNil(record.explicitlyModifiedAt)
+        XCTAssertFalse(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @RealmBackgroundActor
+    func testCancelledQueuedDemotionLeavesOtherWritersTransactionOpen() async throws {
+        let realm = try await Realm(
+            configuration: makeConfiguration(), actor: RealmBackgroundActor.shared
+        )
+        let record = Self.makeHistory()
+        try realm.write { realm.add(record) }
+        try realm.beginWrite()
+
+        let submitted = XCTestExpectation(description: "Demotion write submitted")
+        let refresh = queuedRefresh(of: record, submitted: submitted)
+        cleanUpQueuedWrite(refresh, in: realm)
+        await fulfillment(of: [submitted], timeout: 5)
+        refresh.cancel()
+
+        switch await refresh.result {
+        case .success:
+            XCTFail("A cancelled queued refresh must not succeed")
+        case .failure(let error):
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertTrue(realm.isInWriteTransaction)
+        record.title = "Owner still owns its write"
+        try realm.commitWrite()
+        XCTAssertNil(record.isDemoted)
+        XCTAssertNil(record.explicitlyModifiedAt)
+        XCTAssertEqual(record.title, "Owner still owns its write")
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @RealmBackgroundActor
+    func testQueuedBookmarkDeletionIgnoresRetiredResolvedAccessor() async throws {
+        let configuration = makeConfiguration()
+        let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+        let bookmark = Bookmark()
+        bookmark.url = URL(string: "https://example.com/queued-bookmark")!
+        bookmark.updateCompoundKey()
+        let key = bookmark.compoundKey
+        try realm.write { realm.add(bookmark) }
+        try realm.beginWrite()
+
+        let submitted = XCTestExpectation(description: "Bookmark deletion submitted")
+        let deletion = Task { @MainActor in
+            let viewRealm = try Realm(configuration: configuration)
+            let displayed = try XCTUnwrap(viewRealm.object(ofType: Bookmark.self, forPrimaryKey: key))
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                try await displayed.delete()
+            }
+        }
+        cleanUpQueuedWrite(deletion, in: realm)
+        await fulfillment(of: [submitted], timeout: 5)
+
+        realm.delete(bookmark)
+        let replacement = Bookmark()
+        replacement.compoundKey = key
+        replacement.url = URL(string: "https://example.com/queued-bookmark")!
+        realm.add(replacement)
+        try realm.commitWrite()
+        try await deletion.value
+
+        XCTAssertTrue(bookmark.isInvalidated)
+        XCTAssertFalse(replacement.isDeleted)
+        XCTAssertNil(replacement.explicitlyModifiedAt)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @RealmBackgroundActor
+    func testCancelledQueuedHistoryDeletionLeavesOtherWritersTransactionOpen() async throws {
+        let configuration = makeConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let record = Self.makeHistory()
+        let key = record.compoundKey
+        try realm.write { realm.add(record) }
+        try realm.beginWrite()
+
+        let submitted = XCTestExpectation(description: "History deletion submitted")
+        let deletion = Task { @MainActor in
+            let viewRealm = try Realm(configuration: configuration)
+            let displayed = try XCTUnwrap(viewRealm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                try await displayed.delete()
+            }
+        }
+        cleanUpQueuedWrite(deletion, in: realm)
+        await fulfillment(of: [submitted], timeout: 5)
+        deletion.cancel()
+
+        switch await deletion.result {
+        case .success:
+            XCTFail("A cancelled queued deletion must not succeed")
+        case .failure(let error):
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertTrue(realm.isInWriteTransaction)
+        record.title = "Owner still owns its write"
+        try realm.commitWrite()
+        XCTAssertFalse(record.isDeleted)
+        XCTAssertNil(record.explicitlyModifiedAt)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @RealmBackgroundActor
+    private func queuedRefresh(
+        of record: HistoryRecord,
+        submitted: XCTestExpectation
+    ) -> Task<Void, Error> {
+        let configuration = record.realm!.configuration
+        return Task { @RealmBackgroundActor in
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
+                try await record.refreshDemotedStatus(bookmarkRealmConfiguration: configuration)
+            }
+        }
+    }
+
+    @RealmBackgroundActor
+    private func cleanUpQueuedWrite(_ task: Task<Void, Error>, in realm: Realm) {
+        addTeardownBlock { @RealmBackgroundActor in
+            task.cancel()
+            if realm.isInWriteTransaction { realm.cancelWrite() }
+            _ = await task.result
+        }
+    }
+
+    private func makeConfiguration() -> Realm.Configuration {
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [Bookmark.self, HistoryRecord.self]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let captured = configuration
+        addTeardownBlock { await RealmBackgroundActor.shared.removeCachedRealm(for: captured) }
+        return configuration
+    }
+
+    private static func makeHistory() -> HistoryRecord {
+        let record = HistoryRecord()
+        record.url = URL(string: "https://example.com/history")!
+        record.updateCompoundKey()
+        return record
+    }
+
+}

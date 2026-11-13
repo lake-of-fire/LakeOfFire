@@ -1,10 +1,59 @@
 import XCTest
 @testable import LakeOfFireContent
+@testable import LakeOfFireCore
 
 @MainActor
 final class ReaderContentLoadCoordinationTests: XCTestCase {
     private enum ResolverError: Error {
         case failed
+    }
+
+    func testNestedArticleLoaderPublishesSourceIdentityAndPreservesResolverInput() async throws {
+        let source = try XCTUnwrap(URL(string: "https://example.com/article?value=a%26b#source"))
+        let article = HistoryRecord()
+        article.url = source
+        article.title = "Stored article"
+        article.updateCompoundKey()
+        let inner = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: source))
+        var outer = try XCTUnwrap(URLComponents(string: "internal://local/load/reader"))
+        outer.queryItems = [URLQueryItem(name: "reader-url", value: inner.absoluteString)]
+        outer.fragment = "position"
+        let transport = try XCTUnwrap(outer.url)
+        let reader = ReaderContent()
+        var requestedURLs: [URL] = []
+        try await reader.load(url: transport, resolveContent: { requested in
+            requestedURLs.append(requested)
+            return article
+        })
+        XCTAssertEqual(requestedURLs, [transport])
+        XCTAssertEqual(reader.pageURL, source)
+        XCTAssertTrue(reader.content === article)
+        XCTAssertEqual(transport.readerContentURL,
+                       URL(string: "https://example.com/article?value=a%26b#position"))
+    }
+
+    func testValidSnippetAndLegacyLoaderWrappersKeepCurrentSelection() async throws {
+        let source = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "stored-snippet"))
+        let legacy = try XCTUnwrap(URL(string: "about:snippet?key=stored-snippet"))
+        let loader = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: source))
+        var nested = try XCTUnwrap(URLComponents(string: "internal://local/load/reader"))
+        nested.queryItems = [URLQueryItem(name: "reader-url", value: loader.absoluteString)]
+        let wrappers = [source, legacy, loader, try XCTUnwrap(nested.url),
+                        try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: legacy))]
+        let snippet = HistoryRecord()
+        snippet.url = source
+        snippet.updateCompoundKey()
+        let reader = ReaderContent()
+        var requests: [URL] = []
+        for wrapper in wrappers {
+            try await reader.load(url: wrapper, resolveContent: { requested in
+                requests.append(requested)
+                return snippet
+            })
+            XCTAssertEqual(reader.pageURL, source, wrapper.absoluteString)
+            XCTAssertTrue(reader.content === snippet, wrapper.absoluteString)
+        }
+        XCTAssertEqual(requests, [source])
     }
 
     func testStaleResolverCompletionCannotPublishOverNewerTarget() async throws {

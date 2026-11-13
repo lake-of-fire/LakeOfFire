@@ -72,7 +72,11 @@ public class UserScript: Object, UnownedSyncableObject, ObjectKeyIdentifiable, C
     }
 
     public func getWebViewUserScriptDescriptor() -> WebViewUserScriptDescriptor? {
-        guard let allowedDomains = getAllowedDomains() else { return nil }
+        // A partial relationship must never turn a restricted script into an
+        // unrestricted descriptor while CloudKit delivers its domain rows.
+        guard !isInvalidated, !isDeleted,
+              let allowedDomains = getAllowedDomains(),
+              allowedDomains.count == allowedDomainIDs.count else { return nil }
         return WebViewUserScriptDescriptor(
             id: id,
             source: script,

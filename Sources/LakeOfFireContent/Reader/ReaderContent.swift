@@ -1,14 +1,92 @@
 import SwiftUI
+import LakeOfFireCore
 import Combine
 import SwiftUIWebView
+import Foundation
 
-private func logReaderLoad(_ message: String) {
-#if DEBUG
-    debugPrint("# READERLOAD \(message)")
-#endif
+/// A selection can only lose authority. The fence retains this tiny token,
+/// never its MainActor content owner or a replacement selection.
+private final class ReaderContentSelectionLifetime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isCurrent = true
+    private var withdrawalObservers: [@Sendable () -> Void] = []
+
+    func permitsCommit() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isCurrent
+    }
+
+    func onWithdrawal(_ observer: @escaping @Sendable () -> Void) {
+        lock.lock()
+        if isCurrent {
+            withdrawalObservers.append(observer)
+            lock.unlock()
+        } else {
+            lock.unlock()
+            observer()
+        }
+    }
+
+    func withdraw() {
+        lock.lock()
+        guard isCurrent else { lock.unlock(); return }
+        isCurrent = false
+        let observers = withdrawalObservers
+        withdrawalObservers.removeAll()
+        lock.unlock()
+        observers.forEach { $0() }
+    }
 }
 
-private func logTitleTrace(_ message: String) {
+/// Content publication checks reentrant subscribers before committing the model.
+/// `$content` supports subscription through AnyPublisher, not Published.Publisher.
+@propertyWrapper
+public struct ReaderContentPublication {
+    fileprivate var value: (any ReaderContentProtocol)?
+    fileprivate let subject: CurrentValueSubject<(any ReaderContentProtocol)?, Never>
+
+    public init(wrappedValue: (any ReaderContentProtocol)? = nil) {
+        value = wrappedValue
+        subject = CurrentValueSubject(wrappedValue)
+    }
+    @available(*, unavailable, message: "ReaderContent owns content publication")
+    public var wrappedValue: (any ReaderContentProtocol)? {
+        get { fatalError() }
+        set { fatalError() }
+    }
+    public var projectedValue: AnyPublisher<(any ReaderContentProtocol)?, Never> {
+        subject.eraseToAnyPublisher()
+    }
+    @MainActor
+    public static subscript(
+        _enclosingInstance owner: ReaderContent,
+        wrapped wrappedKeyPath: ReferenceWritableKeyPath<ReaderContent, (any ReaderContentProtocol)?>,
+        storage storageKeyPath: ReferenceWritableKeyPath<ReaderContent, Self>
+    ) -> (any ReaderContentProtocol)? {
+        get { owner[keyPath: storageKeyPath].value }
+        set { owner.setContent(newValue) }
+    }
+}
+
+public struct ReaderContentLoadReceipt: Sendable {
+    private let admission: @MainActor @Sendable () -> Bool
+
+    fileprivate init(admission: @escaping @MainActor @Sendable () -> Bool) {
+        self.admission = admission
+    }
+
+    @MainActor
+    public var isCurrent: Bool { admission() }
+
+    @MainActor
+    fileprivate func requiringCurrent() throws -> Self {
+        try Task.checkCancellation()
+        guard isCurrent else { throw CancellationError() }
+        return self
+    }
+
+    fileprivate static var rejected: Self { .init(admission: { false }) }
 }
 
 @MainActor
@@ -17,20 +95,72 @@ public class ReaderContent: ObservableObject {
 
     nonisolated(unsafe) public static var contentResolver: ContentResolver?
 
-    @Published public var content: (any ReaderContentProtocol)? {
-        didSet {
-            logTitleTrace(
-                "stage=readerContent.content.didSet pageURL=\(pageURL.absoluteString) oldContentURL=\(oldValue?.url.absoluteString ?? "nil") newContentURL=\(content?.url.absoluteString ?? "nil") oldType=\(oldValue.map { String(describing: type(of: $0)) } ?? "nil") newType=\(content.map { String(describing: type(of: $0)) } ?? "nil") oldTitle=\(oldValue?.title.debugTitleFragment ?? "<nil>") newTitle=\(content?.title.debugTitleFragment ?? "<nil>") oldLocationBarTitle=\(oldValue?.locationBarTitle.debugTitleFragment ?? "<nil>") newLocationBarTitle=\(content?.locationBarTitle.debugTitleFragment ?? "<nil>")"
-            )
-            syncLocationBarTitle()
-            syncContentTitle()
+    @ReaderContentPublication public var content: (any ReaderContentProtocol)?
+    private var contentPublicationID = UUID()
+    // Invalidation belongs to the stored row's owner, even while a successor
+    // publication still exposes this predecessor through will-set callbacks.
+    private var cachedContentLifetime: ReaderContentSelectionLifetime?
+
+    @discardableResult
+    fileprivate func setContent(
+        _ value: (any ReaderContentProtocol)?,
+        permitsPublication: @escaping @MainActor () -> Bool = { true }
+    ) -> Bool {
+        guard permitsPublication() else { return false }
+        if let value {
+            guard !value.isInvalidated, !value.isDeleted else {
+                nativeContentLifetime.withdraw()
+                return false
+            }
+            guard !ignoresTransientBlank(value.url) else { return false }
+            receiveNativeContentTarget(value.url)
         }
-    }// = ReaderContentLoader.unsavedHome
+        // nil evicts the cache without changing the mounted logical content.
+        let lifetime = nativeContentLifetime
+        let publicationID = UUID()
+        contentPublicationID = publicationID
+        var completed = false
+        defer {
+            // Both notification boundaries can reject before model storage.
+            // Repair only this generation; a reentrant successor owns its replay.
+            if !completed, contentPublicationID == publicationID {
+                if let cached = _content.value, cached.isInvalidated || cached.isDeleted {
+                    cachedContentLifetime?.withdraw()
+                    _content.value = nil
+                    cachedContentLifetime = nil
+                }
+                if _content.subject.value !== _content.value {
+                    _content.subject.send(_content.value)
+                }
+            }
+        }
+        func isCurrent() -> Bool {
+            if let value, value.isInvalidated || value.isDeleted {
+                // Withdraw this publication's owner, never a reentrant successor.
+                lifetime.withdraw()
+                return false
+            }
+            return contentPublicationID == publicationID
+                && (value == nil || lifetime.permitsCommit()) && permitsPublication()
+        }
+        guard isCurrent() else { return false }
+        objectWillChange.send()
+        guard isCurrent() else { return false }
+        _content.subject.send(value)
+        guard isCurrent() else { return false }
+        _content.value = value
+        cachedContentLifetime = value == nil ? nil : lifetime
+        syncLocationBarTitle()
+        guard isCurrent() else { return false }
+        syncContentTitle()
+        guard isCurrent() else { return false }
+        completed = true
+        return true
+    }
+
     @Published public var pageURL = URL(string: "about:blank")! {
+        willSet { receiveNativeContentTarget(newValue) }
         didSet {
-            logTitleTrace(
-                "stage=readerContent.pageURL.didSet oldPageURL=\(oldValue.absoluteString) newPageURL=\(pageURL.absoluteString) contentURL=\(content?.url.absoluteString ?? "nil") currentLocationBarTitle=\(locationBarTitle.debugTitleFragment)"
-            )
             syncLocationBarTitle()
         }
     }
@@ -40,21 +170,179 @@ public class ReaderContent: ObservableObject {
     @Published public var isRenderingReaderHTML = false
     @Published public private(set) var isReaderMainFrameNavigating = false
     @Published public private(set) var mainFrameNavigationURL: URL?
+    private var mainFrameNavigationTasks: [UUID: URL] = [:]
+    private var mainFrameNavigationTaskOrder: [UUID] = []
     public let contentTitleSubject = PassthroughSubject<String, Never>()
     public private(set) var contentTitle: String = ""
     private var contentTitleURL: URL?
-    private var mainFrameNavigationTasks: [UUID: URL] = [:]
-    private var mainFrameNavigationTaskOrder: [UUID] = []
     public private(set) var snippetTitleIsGeneratedFromPrefix = false
-
+    
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
-    private var loadingRequestID: UUID?
     private var loadingResolvedContentURL: URL?
+    // A pending native intent can retire a resolver's mutation authority while
+    // retaining its predecessor selection for the existing handoff contract.
+    private var loadingNativeContentLifetime: ReaderContentSelectionLifetime?
+    // The last admitted selection outlives its loading task: a completed task
+    // may still have readers queued to receive its result.
+    private var selectionID: UUID?
+    private var selectionLifetime = ReaderContentSelectionLifetime()
+    // Native actions belong to logical content, independently of selections
+    // and renderer bindings. A withdrawn token can never become current again.
+    private var nativeContentURL: URL?
+    private var nativeContentLifetime = ReaderContentSelectionLifetime()
+    private var selectionHandoff: ReaderContentSelectionHandoff?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
     private var preloadedContent: (any ReaderContentProtocol)?
 
     public init() {
+    }
+
+    /// Cached model identity is optional after cleanup; the mounted document's
+    /// native identity continues to live in pageURL and its selection fence.
+    public var cachedContentURL: URL? {
+        validCachedContent?.url
+    }
+
+    /// Read the current row rather than the retained contentTitle projection,
+    /// which can outlive a removed cached model.
+    public var cachedContentTitle: String? {
+        validCachedContent?.title
+    }
+
+    /// Only use this model synchronously on MainActor. Revalidate after any
+    /// suspension; a valid row can still be removed while work is pending.
+    public var validCachedContent: (any ReaderContentProtocol)? {
+        guard let content else { return nil }
+        guard !content.isInvalidated, !content.isDeleted else {
+            cachedContentLifetime?.withdraw()
+            return nil
+        }
+        return content
+    }
+
+    deinit {
+        selectionHandoff?.withdraw()
+        selectionLifetime.withdraw()
+        nativeContentLifetime.withdraw()
+    }
+
+    /// The existing native content selection, including its unresolved load.
+    public var currentSelectionID: UUID? { selectionID }
+
+    /// Capture before suspending. A replacement selection closes this fence
+    /// permanently, even if navigation later returns to the same URL.
+    public func makeSelectionCommitFence(requiring expectedID: UUID?) -> @Sendable () -> Bool {
+        guard selectionID == expectedID else { return { false } }
+        let lifetime = selectionLifetime
+        return { lifetime.permitsCommit() }
+    }
+
+    /// Capture synchronously at a native action, before any suspension. Loader
+    /// URLs, fragments and renderer replacements retain the logical owner.
+    /// Never infer a fresh owner from a cached model after navigation started.
+    public func makeNativeContentCommitFence(for url: URL) -> (@Sendable () -> Bool)? {
+        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        guard isCurrentNativeContent(resolvedURL) else { return nil }
+        let lifetime = nativeContentLifetime
+        return { lifetime.permitsCommit() }
+    }
+
+    private func receiveNativeContentTarget(_ url: URL) {
+        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        guard !ignoresTransientBlank(resolvedURL) else { return }
+        guard nativeContentURL?.matchesReaderURL(resolvedURL) != true
+            || !nativeContentLifetime.permitsCommit() else { return }
+        nativeContentLifetime.withdraw()
+        nativeContentLifetime = ReaderContentSelectionLifetime()
+        nativeContentURL = resolvedURL
+        // A managed row can be retargeted before an explicit page boundary.
+        // Its later invalidation belongs to the newly selected native owner.
+        if let content, !content.isInvalidated, !content.isDeleted,
+           content.url.matchesReaderURL(resolvedURL) {
+            cachedContentLifetime = nativeContentLifetime
+        }
+    }
+
+    private func ignoresTransientBlank(_ url: URL) -> Bool {
+        url.absoluteString == "about:blank"
+            && (suppressedTransientAboutBlankTargetURL != nil
+                || WebViewReaderLoadActivity.shared.hasPendingPreProvisionalLoad)
+    }
+
+    /// Presentation validation for the already captured native owner. No model
+    /// instance or physical renderer identity contributes authority.
+    public func isCurrentNativeContent(_ url: URL) -> Bool {
+        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        guard nativeContentURL?.matchesReaderURL(resolvedURL) == true,
+              nativeContentLifetime.permitsCommit() else { return false }
+        if let content {
+            guard !content.isInvalidated, !content.isDeleted else {
+                cachedContentLifetime?.withdraw()
+                return false
+            }
+            guard content.url.matchesReaderURL(resolvedURL) else {
+                cachedContentLifetime?.withdraw()
+                return false
+            }
+        }
+        return pageURL.matchesReaderURL(resolvedURL) || ignoresTransientBlank(pageURL)
+    }
+
+    /// Publish the durable row, including a fresh replacement for a frozen
+    /// snapshot. Reentrant subscribers may select a successor or change account;
+    /// the caller must not refresh or reload after losing its original owner.
+    @discardableResult
+    public func publishUpdatedContent(
+        _ updatedContent: any ReaderContentProtocol,
+        permitsPublication: @escaping @MainActor () -> Bool
+    ) -> Bool {
+        guard permitsPublication(), !updatedContent.isInvalidated, !updatedContent.isDeleted,
+              let fence = makeNativeContentCommitFence(for: updatedContent.url), fence() else { return false }
+        return setContent(updatedContent, permitsPublication: {
+            permitsPublication() && fence()
+        })
+    }
+
+    /// Called synchronously at native URL publication, before semantic deferral.
+    @discardableResult
+    public func receiveSelectionIntent(_ intent: WebViewURLTransitionIntent) -> ReaderContentSelectionHandoff? {
+        guard intent.isCurrent, intent.representsURLChange else { return nil }
+        receiveNativeContentTarget(intent.destinationURL)
+        if let selectionHandoff, selectionHandoff.intent === intent {
+            return selectionHandoff.permitsCapture ? selectionHandoff : nil
+        }
+        selectionHandoff?.withdraw()
+        // A cancelled owner closes its lifetime synchronously, even while its
+        // resolver ignores cancellation. A different native intent may retry;
+        // the old token and load identity remain permanently retired.
+        if !selectionLifetime.permitsCommit() {
+            let retiredTask = loadingTask
+            loadingTask = nil
+            loadingResolvedContentURL = nil
+            loadingNativeContentLifetime = nil
+            selectionLifetime = ReaderContentSelectionLifetime()
+            selectionID = UUID()
+            retiredTask?.cancel()
+        }
+        let handoff = ReaderContentSelectionHandoff(intent: intent,
+            predecessorSelectionID: selectionID,
+            predecessorIsCurrent: makeSelectionCommitFence(requiring: selectionID))
+        selectionHandoff = handoff
+        return handoff
+    }
+
+    public func selectionHandoff(for intent: WebViewURLTransitionIntent) -> ReaderContentSelectionHandoff? {
+        guard let selectionHandoff, selectionHandoff.intent === intent,
+              selectionHandoff.permitsCapture else { return nil }
+        return selectionHandoff
+    }
+
+    public func withdrawSelectionIntent(_ intent: WebViewURLTransitionIntent? = nil) {
+        guard intent == nil || selectionHandoff?.intent === intent else { return }
+        selectionHandoff?.withdraw()
+        // Keep this exact intent's closed handoff until a different native
+        // intent replaces it. A fragment or retry cannot revive failed work.
     }
 
     @MainActor
@@ -85,29 +373,43 @@ public class ReaderContent: ObservableObject {
         isReaderMainFrameNavigating = !mainFrameNavigationTaskOrder.isEmpty
     }
 
+    /// Select caller-resolved content through the same revocable owner used by loads.
+    public func replaceSelection(with content: (any ReaderContentProtocol)?) {
+        withdrawSelectionIntent()
+        let retiredTask = loadingTask
+        selectionLifetime.withdraw()
+        selectionLifetime = ReaderContentSelectionLifetime()
+        selectionID = UUID()
+        loadingTask = nil
+        loadingResolvedContentURL = nil
+        loadingNativeContentLifetime = nil
+        retiredTask?.cancel()
+        self.content = content
+    }
+
     private func syncLocationBarTitle() {
+        let publicationID = contentPublicationID
+        let displayURL = pageURL
+        defer {
+            // @Published sends before storage. A projection observer may
+            // synchronously install a successor; repair only from its state.
+            if contentPublicationID != publicationID || pageURL != displayURL {
+                syncLocationBarTitle()
+            }
+        }
         guard pageURL.absoluteString != "about:blank" else {
             snippetTitleIsGeneratedFromPrefix = false
             locationBarTitle = nil
-            logTitleTrace(
-                "stage=readerContent.syncLocationBarTitle action=clear reason=aboutBlank pageURL=\(pageURL.absoluteString) contentURL=\(content?.url.absoluteString ?? "nil")"
-            )
             return
         }
-        guard let content,
+        guard let content, !content.isInvalidated,
               content.url.matchesReaderURL(pageURL) else {
             snippetTitleIsGeneratedFromPrefix = false
             locationBarTitle = nil
-            logTitleTrace(
-                "stage=readerContent.syncLocationBarTitle action=clear reason=contentMismatch pageURL=\(pageURL.absoluteString) contentURL=\(content?.url.absoluteString ?? "nil") contentType=\(content.map { String(describing: type(of: $0)) } ?? "nil") contentTitle=\(content?.title.debugTitleFragment ?? "<nil>")"
-            )
             return
         }
         let trimmedTitle = resolvedLocationBarTitle(for: content)?.trimmingCharacters(in: .whitespacesAndNewlines)
         locationBarTitle = (trimmedTitle?.isEmpty == false) ? trimmedTitle : nil
-        logTitleTrace(
-            "stage=readerContent.syncLocationBarTitle action=set pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) contentTitle=\(content.title.debugTitleFragment) rawLocationBarTitle=\(content.locationBarTitle.debugTitleFragment) resolvedTitle=\(trimmedTitle.debugTitleFragment) finalLocationBarTitle=\(locationBarTitle.debugTitleFragment) snippetTitleIsGeneratedFromPrefix=\(snippetTitleIsGeneratedFromPrefix)"
-        )
     }
 
     private func resolvedLocationBarTitle(for content: any ReaderContentProtocol) -> String? {
@@ -126,18 +428,12 @@ public class ReaderContent: ObservableObject {
     }
 
     private func syncContentTitle() {
-        guard let content else {
-            logTitleTrace(
-                "stage=readerContent.syncContentTitle action=preserve reason=noContent existingTitle=\(contentTitle.debugTitleFragment) pageURL=\(pageURL.absoluteString)"
-            )
+        guard let content, !content.isInvalidated else {
             return
         }
         let newTitle = content.title
         let newTitleURL = content.url
         guard contentTitle != newTitle || contentTitleURL?.absoluteString != newTitleURL.absoluteString else { return }
-        logTitleTrace(
-            "stage=readerContent.syncContentTitle action=set oldTitle=\(contentTitle.debugTitleFragment) newTitle=\(newTitle.debugTitleFragment) oldContentURL=\(contentTitleURL?.absoluteString ?? "nil") newContentURL=\(newTitleURL.absoluteString) pageURL=\(pageURL.absoluteString)"
-        )
         contentTitle = newTitle
         contentTitleURL = newTitleURL
         guard !newTitle.isEmpty else { return }
@@ -149,44 +445,29 @@ public class ReaderContent: ObservableObject {
             || contentURL.matchesReaderURL(resolvedContentURL)
     }
 
-    private func consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: URL) {
-        guard let suppressedTransientAboutBlankTargetURL,
-              matchesResolvedContentURL(
-                suppressedTransientAboutBlankTargetURL,
-                resolvedContentURL: resolvedContentURL
-              ) else {
-            return
-        }
-        self.suppressedTransientAboutBlankTargetURL = nil
-    }
-
     @MainActor
     public func suppressTransientAboutBlank(untilNextNonBlankLoad targetURL: URL) {
         let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
         guard resolvedTargetURL.absoluteString != "about:blank" else { return }
         suppressedTransientAboutBlankTargetURL = resolvedTargetURL
-        logReaderLoad(
-            "stage=readerContent.load.suppressAboutBlank targetURL=\(resolvedTargetURL.absoluteString)"
-        )
     }
 
     @MainActor
     public func preloadResolvedContent(_ content: any ReaderContentProtocol, for targetURL: URL) {
         let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
-        guard content.url.matchesReaderURL(resolvedTargetURL) else {
-            logReaderLoad(
-                "stage=readerContent.preload.skip targetURL=\(resolvedTargetURL.absoluteString) contentURL=\(content.url.absoluteString) reason=mismatch"
-            )
+        guard !content.isInvalidated, content.url.matchesReaderURL(resolvedTargetURL) else {
             return
         }
         preloadedResolvedContentURL = resolvedTargetURL
         preloadedContent = content
-        logReaderLoad(
-            "stage=readerContent.preload targetURL=\(resolvedTargetURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey)"
-        )
     }
 
     private func consumePreloadedContentIfMatching(resolvedContentURL: URL) -> (any ReaderContentProtocol)? {
+        if preloadedContent?.isInvalidated == true {
+            preloadedResolvedContentURL = nil
+            preloadedContent = nil
+            return nil
+        }
         guard let preloadedResolvedContentURL,
               let preloadedContent,
               preloadedContent.url.matchesReaderURL(resolvedContentURL),
@@ -199,193 +480,349 @@ public class ReaderContent: ObservableObject {
     }
 
     @MainActor
-    public func load(url: URL) async throws {
+    public func loadWithSelectionReceipt(url: URL) async throws -> ReaderContentLoadReceipt {
+        var receipt = ReaderContentLoadReceipt.rejected
+        try await load(url: url, capturingSelection: { receipt = $0 }) { url in
+            try await Self.contentResolver?(url, true, "ReaderContent.load")
+        }
+        return try receipt.requiringCurrent()
+    }
+
+    private func makeLoadReceipt(
+        selectionFence: @escaping @Sendable () -> Bool,
+        expectedContent: (any ReaderContentProtocol)?
+    ) -> ReaderContentLoadReceipt {
+        let expectedIdentity = expectedContent.map { ObjectIdentifier($0) }
+        return .init(admission: { [weak self] in
+            guard selectionFence(), let self else { return false }
+            let currentContent = content
+            guard currentContent?.isInvalidated != true else { return false }
+            return currentContent.map { ObjectIdentifier($0) } == expectedIdentity
+        })
+    }
+
+    public func load(url: URL, consuming intent: WebViewURLTransitionIntent? = nil) async throws {
+        try await load(url: url, consuming: intent) { url in
+            try await Self.contentResolver?(url, true, "ReaderContent.load")
+        }
+    }
+
+    /// The resolver supplies content only; this owner retains coalescing,
+    /// cancellation and display publication for both production and tests.
+    @MainActor
+    func load(
+        url: URL,
+        consuming intent: WebViewURLTransitionIntent? = nil,
+        capturingSelection: (@MainActor (ReaderContentLoadReceipt) -> Void)? = nil,
+        resolveContent: @escaping @MainActor (URL) async throws -> (any ReaderContentProtocol)?
+    ) async throws {
+        let handoff = intent.flatMap { expected in
+            selectionHandoff?.intent === expected ? selectionHandoff : nil
+        }
+        defer { handoff?.withdrawIfUnselected() }
+        try Task.checkCancellation()
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         let displayURL = resolvedContentURL
-        logReaderLoad(
-            "stage=readerContent.load.begin requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) currentPageURL=\(pageURL.absoluteString) currentContentURL=\(content?.url.absoluteString ?? "nil") hasLoadingTask=\(loadingTask != nil)"
-        )
+        if let intent {
+            guard let handoff, handoff.permitsCapture,
+                  resolvedContentURL.matchesReaderURL(intent.destinationURL) else { throw CancellationError() }
+        }
 
-        if resolvedContentURL.absoluteString == "about:blank",
-           let suppressedTargetURL = suppressedTransientAboutBlankTargetURL,
-           suppressedTargetURL.absoluteString != "about:blank" {
-            logReaderLoad(
-                "stage=readerContent.load.skipTransientAboutBlank requestURL=\(url.absoluteString) targetURL=\(suppressedTargetURL.absoluteString)"
-            )
+        let entryFence = makeSelectionCommitFence(requiring: selectionID)
+        if ignoresTransientBlank(resolvedContentURL) {
+            capturingSelection?(makeLoadReceipt(selectionFence: entryFence, expectedContent: content))
             return
         }
 
-        if resolvedContentURL.absoluteString == "about:blank",
-           WebViewReaderLoadActivity.shared.hasPendingPreProvisionalLoad {
-            logReaderLoad(
-                "stage=readerContent.load.skipActiveInternalLoaderAboutBlank requestURL=\(url.absoluteString)"
-            )
-            return
-        }
+        receiveNativeContentTarget(resolvedContentURL)
+        let nativeLifetime = nativeContentLifetime
 
-        if resolvedContentURL.absoluteString != "about:blank",
-           let suppressedTargetURL = suppressedTransientAboutBlankTargetURL,
-           !matchesResolvedContentURL(suppressedTargetURL, resolvedContentURL: resolvedContentURL) {
+        if resolvedContentURL.absoluteString != "about:blank" {
             suppressedTransientAboutBlankTargetURL = nil
         }
 
         if let loadingTask,
            let loadingResolvedContentURL,
+           loadingNativeContentLifetime === nativeLifetime,
+           nativeLifetime.permitsCommit(),
+           selectionLifetime.permitsCommit(),
            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
-            let startedAt = CFAbsoluteTimeGetCurrent()
-            logReaderLoad(
-                "stage=readerContent.load.reuseLoadingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) currentPageURL=\(pageURL.absoluteString) currentContentURL=\(content?.url.absoluteString ?? "nil")"
-            )
-            _ = try await loadingTask.value
-            logReaderLoad(
-                "stage=readerContent.load.awaitExistingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
-            )
-            return
+            let loadID = selectionID
+            let joinedLifetime = selectionLifetime
+            if let handoff {
+                guard handoff.beginSelection(selectionID: loadID,
+                    fence: makeSelectionCommitFence(requiring: loadID)) else { throw CancellationError() }
+                selectionLifetime.onWithdrawal { [weak handoff] in handoff?.withdraw() }
+            }
+            do {
+                let loadedContent = try await withTaskCancellationHandler {
+                    try await loadingTask.value
+                } onCancel: {
+                    // Retire this consuming intent without cancelling the shared resolver.
+                    handoff?.withdraw()
+                }
+                try Task.checkCancellation()
+                guard selectionID == loadID, joinedLifetime.permitsCommit(),
+                      nativeLifetime.permitsCommit() else { throw CancellationError() }
+                if handoff != nil {
+                    try Task.checkCancellation()
+                    guard handoff?.permitsCapture != false else { throw CancellationError() }
+                }
+                if let currentContent = content, !currentContent.isInvalidated,
+                   matchesResolvedContentURL(currentContent.url, resolvedContentURL: resolvedContentURL),
+                   pageURL != displayURL {
+                    pageURL = displayURL
+                }
+                completeSelectionHandoff(handoff, selectionID: loadID, url: resolvedContentURL)
+                capturingSelection?(makeLoadReceipt(
+                    selectionFence: { joinedLifetime.permitsCommit() && nativeLifetime.permitsCommit() },
+                    expectedContent: loadedContent
+                ))
+                return
+            } catch is CancellationError {
+                guard intent == nil, !Task.isCancelled, selectionID == loadID,
+                      !joinedLifetime.permitsCommit() else { throw CancellationError() }
+                // One fresh request through the existing selection path below.
+                // Never reopen the withdrawn lifetime or adopt a successor.
+            }
         }
 
-        if let existingContent = content,
-           matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
-            let pageAlreadyMatchesDisplay = pageURL.absoluteString == displayURL.absoluteString
-                || pageURL.matchesReaderURL(displayURL)
-            if pageAlreadyMatchesDisplay {
-                consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
-                logReaderLoad(
-                    "stage=readerContent.load.reuseExistingContent.sameDisplay requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) displayURL=\(displayURL.absoluteString) currentPageURL=\(pageURL.absoluteString)"
-                )
-                return
-            }
-            consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
-            if !pageURL.matchesReaderURL(url) {
-                logReaderLoad(
-                    "stage=readerContent.load.reuseExistingContent requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) displayURL=\(displayURL.absoluteString)"
-                )
+        // Reopening the already displayed content is not a new selection.
+        // Keep completed readers valid, but still retire any unrelated task.
+        if handoff?.isPending != true, loadingTask == nil, selectionLifetime.permitsCommit(),
+           let existingContent = content, !existingContent.isInvalidated,
+           matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL),
+           matchesResolvedContentURL(pageURL, resolvedContentURL: displayURL) {
+            if pageURL != displayURL {
                 pageURL = displayURL
             }
+            completeSelectionHandoff(handoff, selectionID: selectionID, url: resolvedContentURL)
+            capturingSelection?(makeLoadReceipt(selectionFence: entryFence, expectedContent: existingContent))
             return
         }
 
-        if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
-            consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
-            logReaderLoad(
-                "stage=readerContent.load.usePreloadedContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) contentURL=\(preloadedContent.url.absoluteString) key=\(preloadedContent.compoundKey)"
-            )
-            currentSectionIndex = nil
-            content = preloadedContent
-            pageURL = displayURL
-            logReaderLoad(
-                "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(preloadedContent.url.absoluteString)"
-            )
-            return
-        }
-
-        logReaderLoad(
-            "stage=readerContent.load.clearState requestURL=\(url.absoluteString) newPageURL=\(displayURL.absoluteString)"
-        )
-        content = nil
-        currentSectionIndex = nil
-        pageURL = displayURL
-
-        loadingTask?.cancel()
-        let requestID = UUID()
-        loadingRequestID = requestID
-        loadingResolvedContentURL = resolvedContentURL
-        loadingTask = Task { @MainActor [weak self] in
-            try Task.checkCancellation()
-            let content = try await Self.contentResolver?(
-                url,
-                true,
-                "ReaderContent.load"
-            ) ?? ReaderContentLoader.unsavedHome
-            guard self?.loadingRequestID == requestID else {
-                logReaderLoad(
-                    "stage=readerContent.load.discardStaleContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) returnedContentURL=\(content.url.absoluteString)"
-                )
-                return nil
+        // Every new selection retires the preceding load, including cached and
+        // preloaded fast paths. Withdraw its identity before cancellation can
+        // invoke callbacks; an old completion may never republish its content.
+        if let handoff {
+            guard handoff.predecessorSelectionID == selectionID, handoff.permitsCapture else {
+                throw CancellationError()
             }
-            guard content.url.matchesReaderURL(resolvedContentURL) else {
-                logReaderLoad(
-                    "stage=readerContent.load.mismatchedContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) returnedContentURL=\(content.url.absoluteString)"
-                )
-                debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
-                return nil
-            }
-            self?.consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
-            self?.content = content
-            logReaderLoad(
-                "stage=readerContent.load.contentResolved requestURL=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey)"
-            )
-            return content
+        } else {
+            withdrawSelectionIntent()
         }
+        let retiredTask = loadingTask
+        let loadID = UUID()
+        let nextLifetime = ReaderContentSelectionLifetime()
+        if let handoff {
+            guard handoff.beginSelection(selectionID: loadID,
+                fence: { nextLifetime.permitsCommit() }) else { throw CancellationError() }
+            nextLifetime.onWithdrawal { [weak handoff] in handoff?.withdraw() }
+        }
+        selectionLifetime.withdraw()
+        selectionLifetime = nextLifetime
+        selectionID = loadID
+        let requestFence: @Sendable () -> Bool = {
+            nextLifetime.permitsCommit() && nativeLifetime.permitsCommit()
+        }
+        loadingTask = nil
+        loadingResolvedContentURL = nil
+        loadingNativeContentLifetime = nil
         defer {
-            if loadingRequestID == requestID {
-                loadingTask = nil
-                loadingRequestID = nil
-                loadingResolvedContentURL = nil
-            }
+            completeSelectionHandoff(handoff, selectionID: loadID, url: resolvedContentURL)
+            finishLoading(ifOwnedBy: loadID)
         }
-        let loadedContent = try await loadingTask?.value
-        let finalContentURL = loadedContent.flatMap { $0 }?.url.absoluteString ?? content?.url.absoluteString ?? "nil"
-        logReaderLoad(
-            "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(finalContentURL)"
-        )
+        // Cover synchronous cached/preloaded publication as well as resolver
+        // suspension. Cancellation closes this caller's captured lifetime,
+        // never a replacement selection or a coalesced caller's owner.
+        try await withTaskCancellationHandler {
+            retiredTask?.cancel()
+            @MainActor
+            func validateSelection() throws {
+                try Task.checkCancellation()
+                guard selectionID == loadID, nextLifetime.permitsCommit(),
+                      handoff?.permitsCapture != false else { throw CancellationError() }
+            }
+            @MainActor
+            func validatePublication() throws {
+                try validateSelection()
+                guard nativeLifetime.permitsCommit() else { throw CancellationError() }
+            }
+            try validatePublication()
+
+            if let existingContent = content, !existingContent.isInvalidated,
+               matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
+                let pageAlreadyMatchesDisplay = matchesResolvedContentURL(
+                    pageURL, resolvedContentURL: displayURL
+                )
+                if pageAlreadyMatchesDisplay {
+                    if pageURL != displayURL {
+                        pageURL = displayURL
+                        try validatePublication()
+                    }
+                    capturingSelection?(makeLoadReceipt(selectionFence: requestFence, expectedContent: existingContent))
+                    return
+                }
+                if !pageURL.matchesReaderURL(url) {
+                    pageURL = displayURL
+                    try validatePublication()
+                }
+                capturingSelection?(makeLoadReceipt(selectionFence: requestFence, expectedContent: existingContent))
+                return
+            }
+
+            if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
+                currentSectionIndex = nil
+                try validatePublication()
+                let didPublish = setContent(preloadedContent, permitsPublication: {
+                    self.selectionID == loadID && nextLifetime.permitsCommit()
+                        && nativeLifetime.permitsCommit() && handoff?.permitsCapture != false
+                })
+                guard didPublish else {
+                    // Let this deleted row's current commit clean up missing
+                    // content. A different native owner must still reject.
+                    try validateSelection()
+                    guard self.nativeContentLifetime === nativeLifetime,
+                          preloadedContent.isInvalidated || preloadedContent.isDeleted else {
+                        throw CancellationError()
+                    }
+                    capturingSelection?(makeLoadReceipt(selectionFence: requestFence, expectedContent: nil))
+                    return
+                }
+                try validatePublication()
+                pageURL = displayURL
+                try validatePublication()
+                capturingSelection?(makeLoadReceipt(selectionFence: requestFence, expectedContent: preloadedContent))
+                return
+            }
+
+            _ = setContent(nil, permitsPublication: {
+                self.selectionID == loadID && nextLifetime.permitsCommit()
+                    && nativeLifetime.permitsCommit() && handoff?.permitsCapture != false
+            })
+            try validatePublication()
+            currentSectionIndex = nil
+            try validatePublication()
+            pageURL = displayURL
+            try validatePublication()
+
+            loadingResolvedContentURL = resolvedContentURL
+            loadingNativeContentLifetime = nativeLifetime
+            let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor [weak self, loadID] in
+                // Finish before any coalesced waiter receives success/error. Its
+                // immediate retry must not rejoin this already-completed task.
+                defer { self?.finishLoading(ifOwnedBy: loadID) }
+                try Task.checkCancellation()
+                let content = try await resolveContent(url) ?? ReaderContentLoader.unsavedHome
+                // Preserve the existing nonthrowing retirement result for a superseded load.
+                guard let self, self.selectionID == loadID, nativeLifetime.permitsCommit() else { return nil }
+                try Task.checkCancellation()
+                guard handoff?.permitsCapture != false else { throw CancellationError() }
+                guard !content.isInvalidated else { return nil }
+                guard content.url.matchesReaderURL(resolvedContentURL) else {
+                    debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
+                    return nil
+                }
+                guard self.setContent(content, permitsPublication: {
+                    self.selectionID == loadID && nextLifetime.permitsCommit()
+                        && nativeLifetime.permitsCommit() && handoff?.permitsCapture != false
+                }) else { return nil }
+                guard self.selectionID == loadID, nextLifetime.permitsCommit(),
+                      nativeLifetime.permitsCommit(), handoff?.permitsCapture != false,
+                      self.content === content else { return nil }
+                return content
+            }
+            loadingTask = task
+            let loadedContent = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                // Nested handler order must not let resolver cancellation
+                // callbacks observe a still-current owner.
+                nextLifetime.withdraw()
+                handoff?.withdraw()
+                task.cancel()
+            }
+            try Task.checkCancellation()
+            capturingSelection?(makeLoadReceipt(selectionFence: requestFence, expectedContent: loadedContent))
+        } onCancel: {
+            nextLifetime.withdraw()
+            handoff?.withdraw()
+        }
+    }
+
+    private func completeSelectionHandoff(_ handoff: ReaderContentSelectionHandoff?,
+                                          selectionID expectedID: UUID?, url: URL) {
+        guard let handoff else { return }
+        guard !Task.isCancelled, handoff.intent.isCurrent,
+              selectionID == expectedID, let content, !content.isInvalidated,
+              matchesResolvedContentURL(content.url, resolvedContentURL: url),
+              matchesResolvedContentURL(pageURL, resolvedContentURL: url) else {
+            handoff.withdraw()
+            return
+        }
+        handoff.completeSelection(selectionID: expectedID)
+    }
+
+    private func finishLoading(ifOwnedBy loadID: UUID) {
+        // Old completion is independent of a new selection's loading slot.
+        guard selectionID == loadID else { return }
+        loadingResolvedContentURL = nil
+        loadingNativeContentLifetime = nil
+        loadingTask = nil
     }
 
     @MainActor
     public func prepareForDisplay(url: URL) async throws {
         try await load(url: url)
     }
-
+    
     @MainActor
     public func getContent() async throws -> (any ReaderContentProtocol)? {
-        let startedAt = CFAbsoluteTimeGetCurrent()
         if let content {
-            return content
+            return content.isInvalidated ? nil : content
         }
-        let content = try await loadingTask?.value
-        let contentURL = content?.url.absoluteString ?? "nil"
-        logReaderLoad(
-            "stage=readerContent.getContent source=loadingTask contentURL=\(contentURL) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
-        )
-        return content
+        let selectionID = self.selectionID
+        let resolvedContent = try await loadingTask?.value
+        // Completing a task makes its value available, not permanently current.
+        // Navigation or a publication subscriber may replace the selection
+        // before this waiter resumes. Never return the displaced value or
+        // substitute the newly displayed content for the original read.
+        guard self.selectionID == selectionID,
+              let resolvedContent, !resolvedContent.isInvalidated,
+              content === resolvedContent else { return nil }
+        return resolvedContent
+    }
+
+    /// Compatibility for hosts that do not need the captured rename outcome.
+    public func updateContentTitle(_ newTitle: String) async {
+        _ = try? await updateContentTitle(newTitle, for: nil)
     }
 
     @MainActor
-    public func updateContentTitle(_ newTitle: String) async {
-        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard let content else { return }
-        guard trimmed != content.title else { return }
-        logTitleTrace(
-            "stage=readerContent.updateContentTitle begin pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) oldTitle=\(content.title.debugTitleFragment) requestedTitle=\(newTitle.debugTitleFragment) trimmedTitle=\(trimmed.debugTitleFragment)"
-        )
-        let isTitlePrefixOfContent =
-            content.url.isSnippetURL &&
-            ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
-                trimmed,
-                sourceHTML: content.html
-            )
-
-        content.title = trimmed
-        content.isTitlePrefixOfContent = isTitlePrefixOfContent
-        syncLocationBarTitle()
-        syncContentTitle()
-
-        do {
-            let contentURL = content.url
-            try await ReaderContentLoader.updateContent(url: contentURL) { object in
-                guard object.title != trimmed || object.isTitlePrefixOfContent != isTitlePrefixOfContent else {
-                    return false
-                }
-                object.title = trimmed
-                object.isTitlePrefixOfContent = isTitlePrefixOfContent
-                return true
-            }
-            logTitleTrace(
-                "stage=readerContent.updateContentTitle persisted contentURL=\(contentURL.absoluteString) finalTitle=\(trimmed.debugTitleFragment) isTitlePrefixOfContent=\(isTitlePrefixOfContent)"
-            )
-        } catch {
-            debugPrint("# EPUB  contentTitle.update.failed", error.localizedDescription)
+    @discardableResult
+    public func updateContentTitle(_ newTitle: String, for targetURL: URL?) async throws -> Bool {
+        let contentURL: URL
+        if let targetURL {
+            contentURL = targetURL
+        } else {
+            guard let content, !content.isInvalidated else { return false }
+            contentURL = content.url
         }
+        let didChange = try await ReaderContentLoader.updateSnippetTitle(
+            contentURL: contentURL,
+            title: newTitle
+        )
+        // The rename belongs to the snippet captured when its UI was opened.
+        // A completed write must not replace a subsequently displayed document.
+        guard let observedContent = content, !observedContent.isInvalidated,
+              observedContent.url == contentURL,
+              let reference = ReaderContentLoader.ContentReference(content: observedContent),
+              let refreshedContent = try await reference.resolveOnMainActor(),
+              !refreshedContent.isInvalidated,
+              content === observedContent else { return didChange }
+        content = refreshedContent
+        refreshObservedContentState()
+        return didChange
     }
 }
 

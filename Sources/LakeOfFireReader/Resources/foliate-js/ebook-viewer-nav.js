@@ -101,9 +101,11 @@ const safeRound = (value, digits = 1) =>
             : null);
 
 export class NavigationHUD {
-    constructor({ onJumpRequest, getRenderer, formatPercent, onHideNavigationDueToScrollChange } = {}) {
+    constructor({ onJumpRequest, isJumpRequestCurrent, getRenderer, getHistoryActionContext, formatPercent, onHideNavigationDueToScrollChange } = {}) {
         this.onJumpRequest = onJumpRequest;
+        this.isJumpRequestCurrent = isJumpRequestCurrent;
         this.getRenderer = getRenderer;
+        this.getHistoryActionContext = getHistoryActionContext;
         this.formatPercent = formatPercent ?? (value => `${Math.round(value * 100)}%`);
         this.onHideNavigationDueToScrollChange = onHideNavigationDueToScrollChange;
         
@@ -208,7 +210,9 @@ export class NavigationHUD {
         this.scrubSession = null;
         this.isProcessingRelocateJump = false;
         this.onJumpRequest = null;
+        this.isJumpRequestCurrent = null;
         this.getRenderer = null;
+        this.getHistoryActionContext = null;
         this.onHideNavigationDueToScrollChange = null;
         return true;
     }
@@ -828,6 +832,11 @@ export class NavigationHUD {
     }
 
     _postNativeOverlayState(source = 'refresh') {
+        if (this.destroyed) return;
+        const historyActionContext = this.getHistoryActionContext?.(this) ?? null;
+        // A production HUD can publish only after it belongs to the installed
+        // Reader. Stale messages must not clear a successor's native action.
+        if (this.getHistoryActionContext && !historyActionContext) return;
         const percentLabel = this.navHiddenOverlay?.percent?.textContent
             || this.navPrimaryTextCompact?.textContent
             || this.navPrimaryTextFull?.textContent
@@ -860,6 +869,7 @@ export class NavigationHUD {
                 currentPageNumber,
                 totalPages,
                 source,
+                historyActionContext,
             });
         } catch (_error) {}
     }
@@ -1409,6 +1419,12 @@ export class NavigationHUD {
         }
         if (this.isProcessingRelocateJump) {
             this.currentLocationDescriptor = descriptor;
+            // A relocate can arrive before the navigation promise settles. The
+            // captured renderer receipt, rather than that event, admits history.
+            if (this.pendingRelocateJump?.requiresReceipt) {
+                this.pendingRelocateJump.relocatedDescriptor = descriptor;
+                return;
+            }
             this._finalizePendingRelocateJump(descriptor);
             if (this.isProcessingRelocateJump || this.pendingRelocateJump) {
                 return;
@@ -2104,6 +2120,7 @@ export class NavigationHUD {
     }
     
     async _handleRelocateJump(direction) {
+        if (this.destroyed || (direction !== 'back' && direction !== 'forward')) return;
 
         const stack = this.relocateStacks?.[direction];
         if (!stack?.length) {
@@ -2115,12 +2132,15 @@ export class NavigationHUD {
         if (this.pendingRelocateJump) {
             return;
         }
-        const descriptor = this._cloneDescriptor(stack[stack.length - 1]);
+        const stackEntry = stack[stack.length - 1];
+        const descriptor = this._cloneDescriptor(stackEntry);
         if (!descriptor) {
             return;
         }
 
-        this.requestExplicitRelocateHistoryMutation?.('relocate-button');
+        if (typeof this.isJumpRequestCurrent !== 'function') {
+            this.requestExplicitRelocateHistoryMutation?.('relocate-button');
+        }
 
         const preJumpDescriptor = this._cloneDescriptor(this.pendingReleasedScrubDescriptor)
             ?? this._cloneDescriptor(this.currentLocationDescriptor)
@@ -2128,26 +2148,41 @@ export class NavigationHUD {
         const opposite = direction === 'back' ? 'forward' : 'back';
         const oppositeStack = this.relocateStacks?.[opposite];
 
-        this.pendingRelocateJump = {
+        const pending = {
             direction,
             targetDescriptor: descriptor,
             preJumpDescriptor,
+            stackEntry,
+            requiresReceipt: typeof this.isJumpRequestCurrent === 'function',
         };
+        this.pendingRelocateJump = pending;
         this.isProcessingRelocateJump = true;
         this._updateRelocateButtons();
 
         const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
 
+        let failed = false;
         try {
-
-            await this.onJumpRequest?.(descriptor);
-
+            const receipt = await this.onJumpRequest?.(descriptor);
+            const accepted = pending.requiresReceipt && !this.destroyed && this.pendingRelocateJump === pending
+                && this.isJumpRequestCurrent?.(receipt) === true;
+            if (accepted && !this.destroyed && this.pendingRelocateJump === pending
+                && stack[stack.length - 1] === pending.stackEntry) {
+                const landed = pending.relocatedDescriptor ?? pending.targetDescriptor;
+                this.currentLocationDescriptor = landed;
+                this._finalizePendingRelocateJump(landed);
+            }
         } catch (error) {
+            failed = true;
             console.error('Failed to navigate to saved location', error);
-            this.pendingRelocateJump = null;
-            this.isProcessingRelocateJump = false;
-            this._updateRelocateButtons();
         } finally {
+            // Never clear a successor's controls. An unaccepted receipt leaves
+            // both history stacks intact and permits retry immediately.
+            if (this.pendingRelocateJump === pending && (pending.requiresReceipt || this.destroyed || failed)) {
+                this.pendingRelocateJump = null;
+                this.isProcessingRelocateJump = false;
+                this._updateRelocateButtons();
+            }
         }
     }
 }

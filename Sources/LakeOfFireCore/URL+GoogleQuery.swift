@@ -7,15 +7,22 @@ public extension URL {
         guard let host = self.host, host.starts(with: "www.google.") || host.starts(with: "google.") else {
             return nil
         }
-        // Parse the encoded query so literal plus signs from %2B survive while
-        // form-style plus separators still become spaces.
+        // Decode form parameter names and values once. Keeping the encoded
+        // value until after '+' replacement preserves literal %2B characters.
         guard let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
-              let queryItems = components.percentEncodedQueryItems,
-              let rawValue = queryItems.first(where: { $0.name == "q" })?.value else {
+              let percentEncodedQuery = components.percentEncodedQuery else {
             return nil
         }
-        // Convert '+' signs to spaces and decode percent escapes
-        let withSpaces = rawValue.replacingOccurrences(of: "+", with: " ")
-        return withSpaces.removingPercentEncoding ?? withSpaces
+        for pair in percentEncodedQuery.split(separator: "&", omittingEmptySubsequences: false) {
+            let pieces = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let rawName = pieces.first else { continue }
+            let nameWithSpaces = rawName.replacingOccurrences(of: "+", with: " ")
+            guard nameWithSpaces.removingPercentEncoding == "q" else { continue }
+
+            let rawValue = pieces.count > 1 ? String(pieces[1]) : ""
+            let withSpaces = rawValue.replacingOccurrences(of: "+", with: " ")
+            return withSpaces.removingPercentEncoding ?? withSpaces
+        }
+        return nil
     }
 }

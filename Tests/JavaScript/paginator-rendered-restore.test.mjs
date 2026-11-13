@@ -1,0 +1,980 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+const { JSDOM } = require(process.env.JSDOM_MODULE ?? 'jsdom')
+const html = '<!doctype html><html><body data-mnb-writing-direction="horizontal"><p><reader-sentinel id="page-start"></reader-sentinel>Readable text for the live paginator host.</p></body></html>'
+const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true, url: 'https://reader.invalid/' })
+const frames = []
+let nextSidecars = []
+let nextFonts = []
+const resizeObservers = []
+let fixtureTextWidth = 1200
+const rect = (width = 600, height = 800) => ({ x: 0, y: 0, top: 0, left: 0, right: width, bottom: height, width, height, toJSON() { return this } })
+const installGeometry = window => {
+    Object.defineProperties(window.HTMLElement.prototype, {
+        clientWidth: { get() { return this.style.width?.endsWith('px') ? parseFloat(this.style.width) : 600 } },
+        clientHeight: { get() { return this.style.height?.endsWith('px') ? parseFloat(this.style.height) : 800 } },
+    })
+    window.HTMLElement.prototype.getBoundingClientRect = function () { return rect(this.clientWidth, this.clientHeight) }
+    window.Range.prototype.getBoundingClientRect = () => rect(fixtureTextWidth, 400)
+    window.Range.prototype.getClientRects = () => [rect(fixtureTextWidth, 400)]
+    window.HTMLElement.prototype.scrollTo = function ({ left = this.scrollLeft, top = this.scrollTop }) { this.scrollLeft = left; this.scrollTop = top }
+    window.HTMLElement.prototype.scrollBy = function ({ left = 0, top = 0 }) { this.scrollLeft += left; this.scrollTop += top }
+}
+installGeometry(dom.window)
+const window = dom.window
+const document = window.document
+const shadowRoots = new WeakMap()
+const attachShadow = window.Element.prototype.attachShadow
+window.Element.prototype.attachShadow = function (options) {
+    const root = attachShadow.call(this, options)
+    shadowRoots.set(this, root)
+    return root
+}
+const createElement = document.createElement.bind(document)
+document.createElement = function (name, options) {
+    const element = createElement(name, options)
+    if (name.toLowerCase() === 'iframe') {
+        const section = new JSDOM(html, { pretendToBeVisual: true, url: 'https://reader.invalid/section' })
+        installGeometry(section.window)
+        section.window.manabi_waitForExternalSegmentSidecar = nextSidecars.shift()
+        const fontsReady = nextFonts.shift()
+        if (fontsReady) Object.defineProperty(section.window.document, 'fonts', { value: { ready: fontsReady } })
+        frames.push(section)
+        Object.defineProperties(element, {
+            contentDocument: { get: () => section.window.document },
+            contentWindow: { get: () => section.window },
+            src: { set(value) { this.setAttribute('data-fixture-src', value); queueMicrotask(() => this.dispatchEvent(new window.Event('load'))) } },
+        })
+    }
+    return element
+}
+Object.assign(globalThis, {
+    window, document,
+    HTMLElement: window.HTMLElement, customElements: window.customElements,
+    Event: window.Event, EventTarget: window.EventTarget, CustomEvent: window.CustomEvent,
+    Range: window.Range, Node: window.Node, NodeFilter: window.NodeFilter,
+    CSS: { escape: value => value }, // The fixture only uses the plain "page-start" identifier.
+    getComputedStyle: element => element.ownerDocument.defaultView.getComputedStyle(element),
+    requestAnimationFrame: callback => setTimeout(() => callback(performance.now()), 0),
+    cancelAnimationFrame: clearTimeout,
+    ResizeObserver: class {
+        constructor(callback) { this.callback = callback; this.targets = new Set(); resizeObservers.push(this) }
+        observe(target) { this.targets.add(target) }
+        unobserve(target) { this.targets.delete(target) }
+        disconnect() { this.targets.clear() }
+    },
+    IntersectionObserver: class {
+        constructor(callback) { this.callback = callback }
+        observe(target) { queueMicrotask(() => this.callback([{ target, isIntersecting: true, intersectionRatio: 1 }])) }
+        unobserve() {} disconnect() {}
+    },
+})
+const { Paginator, PaginatorContentView } = await import(process.env.PAGINATOR_MODULE ?? new URL(
+    '../../Sources/LakeOfFireReader/Resources/foliate-js/paginator.js', import.meta.url,
+))
+
+// Full production rendering/navigation code executes with deterministic DOM
+// geometry and browser host doubles. This suite does not verify CSS layout or
+// WKWebView behavior. Supply JSDOM_MODULE when jsdom is installed externally.
+const fixture = (sectionCount = 2, sectionOverrides = []) => {
+    const renderer = new Paginator()
+    document.body.append(renderer)
+    renderer.open({ dir: 'ltr', sections: Array.from({ length: sectionCount }, (_, index) => ({
+        id: `section-${index}`, load: async () => `fixture:${index}`, unload() {},
+        ...sectionOverrides[index],
+    })) }, false)
+    return renderer
+}
+const deferred = () => {
+    let resolve, reject
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+    return { promise, resolve, reject }
+}
+const bounded = async operation => {
+    let timer
+    try {
+        return await Promise.race([operation, new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Production navigation did not settle')), 1500)
+        })])
+    } finally { clearTimeout(timer) }
+}
+const cleanup = renderer => {
+    renderer.destroy()
+    renderer.remove()
+    for (const frame of frames.splice(0)) frame.window.close()
+    nextSidecars = []
+    nextFonts = []
+    resizeObservers.length = 0
+}
+
+const holdNextFrame = () => {
+    const entered = deferred()
+    const requestFrame = globalThis.requestAnimationFrame
+    let held
+    globalThis.requestAnimationFrame = callback => {
+        globalThis.requestAnimationFrame = requestFrame
+        held = callback
+        entered.resolve()
+        return -1
+    }
+    return {
+        entered: entered.promise,
+        restore: () => { globalThis.requestAnimationFrame = requestFrame },
+        release: async () => {
+            const callback = held
+            held = null
+            await callback?.(performance.now())
+        },
+    }
+}
+
+// Drain the real immediate display-prefetch measurement before installing a
+// gate for the separate fonts/resize anchor continuation.
+const settleDisplayPrefetch = async renderer => {
+    const measured = deferred()
+    const pageMetrics = renderer.pageMetrics.bind(renderer)
+    renderer.pageMetrics = async () => {
+        renderer.pageMetrics = pageMetrics
+        try { return await pageMetrics() }
+        finally { measured.resolve() }
+    }
+    await bounded(measured.promise)
+}
+const heldFonts = () => {
+    const gate = deferred()
+    const then = gate.promise.then.bind(gate.promise)
+    let completion
+    // Retain the actual callback promise, so retired work can settle without
+    // an obsolete relocation event being required to finish the fixture.
+    gate.promise.then = (...args) => { completion = then(...args); return completion }
+    return { ...gate, get completion() { return completion } }
+}
+const holdNextMetrics = renderer => {
+    const entered = deferred(), gate = deferred()
+    const original = renderer.pageMetrics.bind(renderer)
+    renderer.pageMetrics = () => {
+        renderer.pageMetrics = original
+        entered.resolve()
+        return gate.promise
+    }
+    return { entered: entered.promise, resolve: gate.resolve, reject: gate.reject,
+        restore: () => { renderer.pageMetrics = original } }
+}
+const emitBodyResize = renderer => {
+    const doc = renderer.getContents()[0].doc
+    const observer = resizeObservers.find(item => item.targets.has(doc.body))
+    assert.ok(observer, 'The loaded document must have its real body observer installed')
+    const expand = PaginatorContentView.prototype.expand
+    let completion
+    PaginatorContentView.prototype.expand = function (...args) {
+        const operation = expand.apply(this, args)
+        if (this.document === doc) completion = operation
+        return operation
+    }
+    try {
+        observer.callback([{ target: doc.body, contentRect: rect(600, 800) }])
+        observer.callback([{ target: doc.body, contentRect: rect(610, 800) }])
+    } finally { PaginatorContentView.prototype.expand = expand }
+    assert.ok(completion, 'The changed observer entry must call production expand')
+    return completion
+}
+
+test('expansion ownership: current fonts preserve their anchor and position receipt', async () => {
+    const fonts = heldFonts()
+    nextFonts.push(fonts.promise)
+    const renderer = fixture(1)
+    let held, previous
+    try {
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        held = holdNextMetrics(renderer)
+        fonts.resolve()
+        await bounded(held.entered)
+        assert.equal(renderer.capturePositionProof(receipt), null)
+        held.resolve(previous)
+        await bounded(fonts.completion)
+        const current = await renderer.pageMetrics()
+        assert.equal(current.start, previous.start)
+        assert.equal(renderer.isPositionReceiptCurrent(receipt), true)
+        assert.equal(renderer.isPositionProofCurrent(renderer.capturePositionProof(receipt)), true)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {}); fonts.resolve()
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+    }
+})
+
+test('expansion ownership: late fonts cannot undo newer same-document navigation', async () => {
+    const fonts = heldFonts()
+    nextFonts.push(fonts.promise)
+    const renderer = fixture(1)
+    let held, previous
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        const doc = renderer.getContents()[0].doc
+        held = holdNextMetrics(renderer)
+        fonts.resolve()
+        await bounded(held.entered)
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true }))
+        const moved = await renderer.pageMetrics()
+        assert.equal(moved.page, moved.pages - 2)
+        assert.notEqual(moved.start, previous.start)
+        assert.equal(renderer.getContents()[0].doc, doc)
+        let staleRelocations = 0
+        renderer.addEventListener('relocate', () => { staleRelocations += 1 })
+        held.resolve(previous)
+        await bounded(fonts.completion)
+        assert.equal((await renderer.pageMetrics()).start, moved.start)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+        assert.equal(staleRelocations, 0)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {}); fonts.resolve()
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+    }
+})
+
+test('expansion ownership: late fonts cannot undo an accepted relative next command', async () => {
+    const fonts = heldFonts()
+    nextFonts.push(fonts.promise)
+    const renderer = fixture(1)
+    let held, previous
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        held = holdNextMetrics(renderer)
+        fonts.resolve()
+        await bounded(held.entered)
+        const receipt = await bounded(renderer.next(1, { requiresNavigationReceipt: true }))
+        const moved = await renderer.pageMetrics()
+        assert.equal(moved.page, previous.page + 1)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+        held.resolve(previous)
+        await bounded(fonts.completion)
+        assert.equal((await renderer.pageMetrics()).start, moved.start)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {}); fonts.resolve()
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+    }
+})
+
+test('expansion ownership: an already-admitted pending target cannot lend its later anchor to fonts', async () => {
+    const fonts = heldFonts(), target = deferred()
+    nextFonts.push(fonts.promise)
+    const renderer = fixture(1)
+    let held, previous, moving, frame, expandingFrame
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        // The original load still owns the fonts callback when expansion
+        // begins. A command can then be admitted before its queued frame
+        // reaches onExpand, while its target remains unresolved.
+        frame = holdNextFrame()
+        fonts.resolve()
+        await bounded(frame.entered)
+        moving = renderer.goTo(target.promise, { requiresNavigationReceipt: true })
+        held = holdNextMetrics(renderer)
+        expandingFrame = frame.release()
+        await bounded(held.entered)
+        target.resolve({ index: 0, anchor: 1 })
+        const receipt = await bounded(moving)
+        const moved = await renderer.pageMetrics()
+        assert.equal(moved.page, moved.pages - 2)
+        assert.notEqual(moved.start, previous.start)
+        held.resolve(previous)
+        await bounded(fonts.completion)
+        assert.equal((await renderer.pageMetrics()).start, moved.start)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {}); fonts.resolve()
+        frame?.restore(); await frame?.release()
+        target.resolve({ index: 0, anchor: 0 })
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+        await expandingFrame?.catch(() => {})
+        await moving?.catch(() => {})
+    }
+})
+
+test('expansion ownership: the actual body resize callback cannot undo newer navigation', async () => {
+    const renderer = fixture(1)
+    let held, previous, expanding
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        held = holdNextMetrics(renderer)
+        expanding = emitBodyResize(renderer)
+        await bounded(held.entered)
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true }))
+        const moved = await renderer.pageMetrics()
+        assert.equal(moved.page, moved.pages - 2)
+        held.resolve(previous)
+        await bounded(expanding)
+        assert.equal((await renderer.pageMetrics()).start, moved.start)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {})
+        cleanup(renderer)
+        await expanding?.catch(() => {})
+    }
+})
+
+test('expansion ownership: a retired anchor cannot clear a pending successor loading state', async () => {
+    const fonts = heldFonts(), source = deferred(), sourceEntered = deferred()
+    nextFonts.push(fonts.promise)
+    // Section two is outside the initial neighbor-prefetch target.
+    const renderer = fixture(3, [{}, {}, { load: () => { sourceEntered.resolve(); return source.promise } }])
+    let held, previous, moving
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await settleDisplayPrefetch(renderer)
+        previous = await renderer.pageMetrics()
+        held = holdNextMetrics(renderer)
+        fonts.resolve()
+        await bounded(held.entered)
+        moving = renderer.goTo({ index: 2, anchor: 0 }, { requiresNavigationReceipt: true })
+        await bounded(sourceEntered.promise)
+        const top = shadowRoots.get(renderer).getElementById('top')
+        assert.equal(top.classList.contains('reader-loading'), true)
+        held.resolve(previous)
+        await bounded(fonts.completion)
+        assert.equal(top.classList.contains('reader-loading'), true,
+            'Only the successor display may settle its own loading presentation')
+        source.resolve('fixture:2')
+        const receipt = await bounded(moving)
+        assert.equal(renderer.getContents()[0].index, 2)
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+        assert.equal(top.classList.contains('reader-loading'), false)
+    } finally {
+        held?.restore(); held?.resolve(previous ?? {}); fonts.resolve(); source.resolve('fixture:2')
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+        await moving?.catch(() => {})
+    }
+})
+
+test('expansion ownership: current failure releases activity and permits a real render retry', async () => {
+    const fonts = heldFonts()
+    nextFonts.push(fonts.promise)
+    const renderer = fixture(1)
+    let held
+    try {
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true }))
+        await settleDisplayPrefetch(renderer)
+        held = holdNextMetrics(renderer)
+        fonts.resolve()
+        await bounded(held.entered)
+        assert.equal(renderer.capturePositionProof(receipt), null)
+        const failure = new Error('Controlled current expansion measurement failure')
+        const rejected = assert.rejects(fonts.completion, error => error === failure)
+        held.reject(failure)
+        await bounded(rejected)
+        assert.equal(renderer.isPositionProofCurrent(renderer.capturePositionProof(receipt)), true)
+        await bounded(renderer.render())
+        assert.equal(renderer.isPositionProofCurrent(renderer.capturePositionProof(receipt)), true)
+        const next = await bounded(renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true }))
+        const current = await renderer.pageMetrics()
+        assert.equal(renderer.isNavigationReceiptCurrent(next), true)
+        assert.equal(current.page, current.pages - 2)
+    } finally {
+        held?.restore(); held?.resolve({}); fonts.resolve()
+        cleanup(renderer)
+        await fonts.completion?.catch(() => {})
+    }
+})
+
+test('lifecycle: a newer render releases the held old layout and retains a current position proof', async () => {
+    const renderer = fixture(1)
+    let held, previous
+    try {
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true }))
+        const originalProof = renderer.capturePositionProof(receipt)
+        assert.equal(renderer.isPositionProofCurrent(originalProof), true)
+        held = holdNextFrame()
+        previous = renderer.render()
+        await bounded(held.entered)
+        assert.equal(renderer.capturePositionProof(receipt), null, 'unfinished layout owns position activity')
+        await bounded(renderer.render())
+        await bounded(previous)
+        const currentProof = renderer.capturePositionProof(receipt)
+        assert.equal(renderer.isPositionProofCurrent(originalProof), false)
+        assert.equal(renderer.isPositionProofCurrent(currentProof), true)
+        await held.release()
+        assert.equal(renderer.isPositionProofCurrent(currentProof), true, 'a stale frame cannot invalidate the successor proof')
+        assert.equal((await renderer.pageMetrics()).page, 1)
+    } finally {
+        held?.restore()
+        await held?.release()
+        await previous?.catch(() => {})
+        cleanup(renderer)
+    }
+})
+
+test('lifecycle: destroy settles a held anchor frame without another relocation', async () => {
+    const renderer = fixture(1)
+    let held, moving, relocations = 0
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await renderer.pageMetrics()
+        renderer.addEventListener('relocate', () => { relocations += 1 })
+        held = holdNextFrame()
+        moving = renderer.scrollToAnchor(1)
+        await bounded(held.entered)
+        renderer.destroy()
+        await bounded(moving)
+        assert.equal(relocations, 0)
+        await held.release()
+        assert.equal(relocations, 0)
+        assert.deepEqual(renderer.getContents(), [])
+    } finally {
+        held?.restore()
+        await held?.release()
+        await moving?.catch(() => {})
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: same-section navigation uses current geometry after a held anchor frame is retired', async () => {
+    const renderer = fixture(1)
+    let held, moving
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await renderer.pageMetrics()
+        held = holdNextFrame()
+        moving = renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true })
+        await bounded(held.entered)
+        fixtureTextWidth = 2400
+        await bounded(renderer.render())
+        const reflowed = await renderer.pageMetrics()
+        assert.equal(reflowed.page, reflowed.pages - 2)
+        await held.release()
+        const receipt = await bounded(moving)
+        const final = await renderer.pageMetrics()
+        assert.equal(renderer.isNavigationReceiptCurrent(receipt), true)
+        assert.equal(final.page, final.pages - 2)
+        assert.equal(final.start, reflowed.start)
+    } finally {
+        held?.restore()
+        await held?.release()
+        await moving?.catch(() => {})
+        fixtureTextWidth = 1200
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: a retired relative page frame cannot move reflowed content or grant a receipt', async () => {
+    const renderer = fixture(1)
+    let held, moving
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await renderer.pageMetrics()
+        held = holdNextFrame()
+        moving = renderer.next(1, { requiresNavigationReceipt: true })
+        await bounded(held.entered)
+        fixtureTextWidth = 2400
+        await bounded(renderer.render())
+        const reflowed = await renderer.pageMetrics()
+        await held.release()
+        const result = await bounded(moving)
+        assert.equal(result, null)
+        assert.equal(renderer.isNavigationReceiptCurrent(result), false)
+        assert.equal((await renderer.pageMetrics()).start, reflowed.start)
+    } finally {
+        held?.restore()
+        await held?.release()
+        await moving?.catch(() => {})
+        fixtureTextWidth = 1200
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: replacement during reflow prevents the old absolute target from retrying', async () => {
+    const renderer = fixture(2)
+    let oldFrame, layoutFrame, moving, reflow
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await renderer.pageMetrics()
+        let displays = 0
+        renderer.addEventListener('didDisplay', () => { displays += 1 })
+        oldFrame = holdNextFrame()
+        moving = renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true })
+        await bounded(oldFrame.entered)
+        layoutFrame = holdNextFrame()
+        reflow = renderer.render()
+        await bounded(layoutFrame.entered)
+        const current = await bounded(renderer.goTo({ index: 1, anchor: 0 }, { requiresPositionReceipt: true }))
+        assert.equal(await bounded(moving), null)
+        await bounded(reflow)
+        const currentProof = renderer.capturePositionProof(current)
+        assert.equal(renderer.isPositionProofCurrent(currentProof), true)
+        await oldFrame.release()
+        await layoutFrame.release()
+        assert.equal(renderer.getContents()[0].index, 1)
+        assert.equal(renderer.isPositionProofCurrent(currentProof), true)
+        assert.equal(displays, 1)
+    } finally {
+        oldFrame?.restore()
+        layoutFrame?.restore()
+        await oldFrame?.release()
+        await layoutFrame?.release()
+        await moving?.catch(() => {})
+        await reflow?.catch(() => {})
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: a joined current render failure rejects navigation and permits a fresh retry', async () => {
+    const renderer = fixture(1)
+    let held, moving, rendering
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        await renderer.pageMetrics()
+        held = holdNextFrame()
+        moving = renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true })
+            .then(value => ({ value }), error => ({ error }))
+        await bounded(held.entered)
+        const doc = renderer.getContents()[0].doc
+        const failure = new Error('Controlled viewport publication failure')
+        doc.defaultView.manabi_seedViewportMetrics = () => { throw failure }
+        rendering = renderer.render().then(value => ({ value }), error => ({ error }))
+        assert.equal((await bounded(rendering)).error, failure)
+        assert.equal((await bounded(moving)).error, failure)
+        delete doc.defaultView.manabi_seedViewportMetrics
+        await held.release()
+        const retry = await bounded(renderer.goTo({ index: 0, anchor: 1 }, { requiresNavigationReceipt: true }))
+        assert.equal(renderer.isNavigationReceiptCurrent(retry), true)
+        const current = await renderer.pageMetrics()
+        assert.equal(current.page, current.pages - 2)
+    } finally {
+        held?.restore()
+        await held?.release()
+        await moving?.catch(() => {})
+        await rendering?.catch(() => {})
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: a held scrollBy frame retires without applying its previous bounds', async () => {
+    const renderer = fixture(1)
+    let held, moving
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        held = holdNextFrame()
+        moving = renderer.scrollBy(600, 0)
+        await bounded(held.entered)
+        fixtureTextWidth = 2400
+        await bounded(renderer.render())
+        const current = await renderer.pageMetrics()
+        assert.equal(await bounded(moving), null)
+        await held.release()
+        assert.equal((await renderer.pageMetrics()).start, current.start)
+    } finally {
+        held?.restore()
+        await held?.release()
+        await moving?.catch(() => {})
+        fixtureTextWidth = 1200
+        cleanup(renderer)
+    }
+})
+
+test('layout owner: a snap awaiting metrics cannot use the previous layout to enter another section', async () => {
+    const renderer = fixture(2)
+    const entered = deferred(), gate = deferred()
+    let moving
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 1 }))
+        const pageMetrics = renderer.pageMetrics.bind(renderer)
+        const previous = await pageMetrics()
+        renderer.pageMetrics = () => {
+            renderer.pageMetrics = pageMetrics
+            entered.resolve()
+            return gate.promise
+        }
+        moving = renderer.snap(2, 0)
+        await bounded(entered.promise)
+        fixtureTextWidth = 2400
+        await bounded(renderer.render())
+        const current = await renderer.pageMetrics()
+        gate.resolve(previous)
+        assert.equal(await bounded(moving), null)
+        assert.equal(renderer.getContents()[0].index, 0)
+        assert.equal((await renderer.pageMetrics()).start, current.start)
+    } finally {
+        gate.resolve({})
+        await moving?.catch(() => {})
+        fixtureTextWidth = 1200
+        cleanup(renderer)
+    }
+})
+
+test('actual paginator renders first-page metrics and owns its measured proof without an injected feature flag', async () => {
+    const renderer = fixture()
+    try {
+        const receipt = await bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true }))
+        const metrics = await renderer.pageMetrics()
+        assert.equal(metrics.page, 1)
+        assert.equal(metrics.pages, 4)
+        const proof = renderer.capturePositionProof(receipt)
+        assert.deepEqual(proof, { sectionIndex: 0, fractionInSection: 0, pageFraction: 0.5 })
+        assert.equal(renderer.isPositionProofCurrent(proof), true)
+        const replacement = await bounded(renderer.goTo({ index: 1, anchor: 0 }, { requiresPositionReceipt: true }))
+        assert.equal(renderer.isPositionProofCurrent(proof), false)
+        assert.equal(renderer.capturePositionProof(replacement).sectionIndex, 1)
+    } finally { cleanup(renderer) }
+})
+
+for (const targetIndex of [0, 1]) {
+    test(`held iframe sidecar cannot strand or republish over successor section ${targetIndex}`, async () => {
+        const gate = deferred(), entered = deferred()
+        nextSidecars = [() => { entered.resolve(); return gate.promise }]
+        const renderer = fixture()
+        let displays = 0
+        renderer.addEventListener('didDisplay', () => { displays += 1 })
+        const old = renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true })
+        try {
+            await bounded(entered.promise)
+            const newer = await bounded(renderer.goTo({ index: targetIndex, anchor: 0 }, { requiresPositionReceipt: true }))
+            const activeDocument = renderer.getContents()[0].doc
+            assert.equal(renderer.isPositionReceiptCurrent(newer), true)
+            assert.equal(displays, 1)
+            gate.resolve()
+            assert.equal(await bounded(old), null)
+            assert.equal(renderer.getContents()[0].doc, activeDocument)
+            assert.equal(displays, 1)
+            assert.equal(renderer.capturePositionProof(newer).sectionIndex, targetIndex)
+        } finally {
+            gate.resolve()
+            await old.catch(() => {})
+            cleanup(renderer)
+        }
+    })
+}
+
+test('a suspended snap cannot adopt a successor command and display its neighboring section', async () => {
+    const renderer = fixture(3)
+    const gate = deferred(), entered = deferred()
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 1 }))
+        const pageMetrics = renderer.pageMetrics.bind(renderer)
+        const previousMetrics = await pageMetrics()
+        renderer.pageMetrics = () => {
+            renderer.pageMetrics = pageMetrics
+            entered.resolve()
+            return gate.promise
+        }
+        const old = renderer.snap(2, 0)
+        await bounded(entered.promise)
+        const current = await bounded(renderer.goTo({ index: 1, anchor: 0 }, { requiresPositionReceipt: true }))
+        gate.resolve(previousMetrics)
+        await bounded(old)
+        assert.equal(renderer.getContents()[0].index, 1)
+        assert.equal((await pageMetrics()).page, 1)
+        assert.equal(renderer.isPositionReceiptCurrent(current), true)
+    } finally {
+        gate.resolve({})
+        cleanup(renderer)
+    }
+})
+
+test('a current snap crosses sections and the following ordinary page turn still completes', async () => {
+    const renderer = fixture(3)
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 1 }))
+        await bounded(renderer.snap(2, 0))
+        assert.equal(renderer.getContents()[0].index, 1)
+        assert.equal((await renderer.pageMetrics()).page, 1)
+        await bounded(renderer.next())
+        assert.equal(renderer.getContents()[0].index, 1)
+        assert.equal((await renderer.pageMetrics()).page, 2)
+    } finally { cleanup(renderer) }
+})
+
+for (const suspension of ['frame', 'scroll-property']) {
+    test(`a scrollBy suspended at ${suspension} cannot move the successor document`, async () => {
+        const renderer = fixture()
+        const gate = deferred(), entered = deferred()
+        const requestFrame = globalThis.requestAnimationFrame
+        try {
+            await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+            if (suspension === 'frame') {
+                globalThis.requestAnimationFrame = callback => {
+                    globalThis.requestAnimationFrame = requestFrame
+                    entered.resolve()
+                    gate.promise.then(() => callback(performance.now()))
+                    return -1
+                }
+            } else {
+                const scrollProp = renderer.scrollProp.bind(renderer)
+                renderer.scrollProp = () => {
+                    renderer.scrollProp = scrollProp
+                    entered.resolve()
+                    return gate.promise.then(() => 'scrollLeft')
+                }
+            }
+            const old = renderer.scrollBy(600, 0)
+            await bounded(entered.promise)
+            const current = await bounded(renderer.goTo({ index: 1, anchor: 0 }, { requiresPositionReceipt: true }))
+            const before = await renderer.pageMetrics()
+            gate.resolve()
+            await bounded(old)
+            assert.equal(renderer.getContents()[0].index, 1)
+            assert.equal((await renderer.pageMetrics()).start, before.start)
+            assert.equal(renderer.isPositionReceiptCurrent(current), true)
+        } finally {
+            globalThis.requestAnimationFrame = requestFrame
+            gate.resolve()
+            cleanup(renderer)
+        }
+    })
+}
+
+test('actual paginator navigation receipts distinguish completed movement and proven boundary no-ops', async () => {
+    const renderer = fixture(1)
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        const firstPage = await renderer.pageMetrics()
+        const startBoundary = await bounded(renderer.prev(1, { requiresNavigationReceipt: true }))
+        assert.equal(renderer.isNavigationReceiptCurrent(startBoundary), true)
+        assert.equal(startBoundary.moved, false)
+        assert.equal((await renderer.pageMetrics()).start, firstPage.start)
+        const moved = await bounded(renderer.next(1, { requiresNavigationReceipt: true }))
+        assert.equal(renderer.isNavigationReceiptCurrent(moved), true)
+        assert.equal(moved.moved, true)
+        assert.equal(renderer.isNavigationReceiptCurrent(startBoundary), false)
+        const lastPage = await renderer.pageMetrics()
+        assert.equal(lastPage.page, lastPage.pages - 2)
+        const endBoundary = await bounded(renderer.next(1, { requiresNavigationReceipt: true }))
+        assert.equal(renderer.isNavigationReceiptCurrent(endBoundary), true)
+        assert.equal(endBoundary.moved, false)
+        assert.equal((await renderer.pageMetrics()).start, lastPage.start)
+        assert.equal(renderer.isNavigationReceiptCurrent(moved), false)
+    } finally { cleanup(renderer) }
+})
+
+test('actual paginator queued replacement grants only the final accepted command a receipt', async () => {
+    fixtureTextWidth = 2400
+    const renderer = fixture(1), queued = deferred()
+    let first, replaced, current
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+        assert.ok((await renderer.pageMetrics()).pages >= 5, 'controlled DOM geometry leaves room for a queued turn')
+        renderer.addEventListener('relocate', () => {
+            replaced = renderer.next(1, { requiresNavigationReceipt: true })
+            current = renderer.next(1, { requiresNavigationReceipt: true })
+            queued.resolve()
+        }, { once: true })
+        first = renderer.next(1, { requiresNavigationReceipt: true })
+        await bounded(queued.promise)
+        const [firstResult, replacedResult, currentReceipt] = await bounded(Promise.all([first, replaced, current]))
+        assert.equal(firstResult, null)
+        assert.equal(replacedResult.superseded, true)
+        assert.equal(renderer.isNavigationReceiptCurrent(replacedResult), false)
+        assert.equal(renderer.isNavigationReceiptCurrent(currentReceipt), true)
+        assert.equal(currentReceipt.moved, true)
+        assert.equal(renderer.getContents()[0].index, 0)
+        assert.equal((await renderer.pageMetrics()).page, 3)
+    } finally {
+        fixtureTextWidth = 1200
+        cleanup(renderer)
+        await Promise.allSettled([first, replaced, current].filter(Boolean).map(operation => bounded(operation)))
+    }
+})
+
+const acquisitionFixture = loaders => {
+    const loads = [], unloads = []
+    const renderer = fixture(loaders.length, loaders.map((load, index) => ({
+        // Explicit navigation supports non-linear sections. Excluding these
+        // from neighbor prefetch makes the producer schedules deterministic.
+        linear: 'no',
+        async load() { loads.push(index); return await load() },
+        unload() { unloads.push(index) },
+    })))
+    const loaded = [], relocated = [], displayed = []
+    renderer.addEventListener('load', event => loaded.push(event.detail.index))
+    renderer.addEventListener('relocate', event => relocated.push(event.detail.index))
+    renderer.addEventListener('didDisplay', () => displayed.push(renderer.getContents()[0]?.index))
+    return { renderer, loads, unloads, loaded, relocated, displayed }
+}
+
+test('missing required source preserves the visible document, same-index reposition, and a later retry', async () => {
+    let missing = true
+    const state = acquisitionFixture([
+        async () => 'fixture:original',
+        async () => missing ? null : 'fixture:retry',
+    ])
+    const { renderer } = state
+    try {
+        await bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresNavigationReceipt: true }))
+        const originalDocument = renderer.getContents()[0].doc
+        const frameCount = frames.length
+        assert.equal(renderer.style.visibility, 'visible')
+
+        await assert.rejects(
+            bounded(renderer.goTo({ index: 1, anchor: 0 }, { requiresNavigationReceipt: true })),
+            /Missing paginator source for section 1/,
+        )
+        assert.equal(renderer.getContents()[0].index, 0)
+        assert.equal(renderer.getContents()[0].doc, originalDocument)
+        assert.equal(renderer.style.visibility, 'visible')
+        assert.equal(frames.length, frameCount)
+        assert.deepEqual(state.unloads, [])
+        assert.deepEqual(state.loaded, [0])
+        assert.deepEqual(state.displayed, [0])
+        assert.equal(state.relocated.includes(1), false)
+
+        const repositioned = await bounded(renderer.goTo(
+            { index: 0, anchor: 1 }, { requiresNavigationReceipt: true },
+        ))
+        assert.equal(renderer.isNavigationReceiptCurrent(repositioned), true)
+        assert.equal(renderer.getContents()[0].doc, originalDocument)
+        assert.deepEqual(state.loads, [0, 1], 'same-index reposition must not reacquire the original section')
+        assert.deepEqual(state.unloads, [])
+
+        missing = false
+        const retried = await bounded(renderer.goTo(
+            { index: 1, anchor: 0 }, { requiresNavigationReceipt: true },
+        ))
+        assert.equal(renderer.isNavigationReceiptCurrent(retried), true)
+        assert.equal(renderer.getContents()[0].index, 1)
+        assert.notEqual(renderer.getContents()[0].doc, originalDocument)
+        assert.equal(renderer.style.visibility, 'visible')
+        assert.deepEqual(state.unloads, [0])
+        assert.deepEqual(state.loaded, [0, 1])
+        assert.equal(state.relocated.includes(1), true)
+    } finally { cleanup(renderer) }
+})
+
+test('initial missing source publishes no rendered section and a valid retry remains possible', async () => {
+    let missing = true
+    const state = acquisitionFixture([async () => missing ? null : 'fixture:first-valid'])
+    const { renderer } = state
+    try {
+        await assert.rejects(
+            bounded(renderer.goTo({ index: 0, anchor: 0 }, { requiresPositionReceipt: true })),
+            /Missing paginator source for section 0/,
+        )
+        assert.deepEqual(renderer.getContents(), [])
+        assert.deepEqual(state.loaded, [])
+        assert.deepEqual(state.relocated, [])
+        assert.deepEqual(state.displayed, [])
+        assert.deepEqual(state.unloads, [])
+
+        missing = false
+        const receipt = await bounded(renderer.goTo(
+            { index: 0, anchor: 0 }, { requiresPositionReceipt: true },
+        ))
+        assert.equal(renderer.isPositionReceiptCurrent(receipt), true)
+        assert.equal(renderer.getContents()[0].index, 0)
+        assert.equal(renderer.style.visibility, 'visible')
+        assert.deepEqual(state.loaded, [0])
+        assert.deepEqual(state.displayed, [0])
+        assert.equal(renderer.capturePositionProof(receipt).sectionIndex, 0)
+    } finally { cleanup(renderer) }
+})
+
+for (const terminal of ['missing', 'rejected']) {
+    test(`obsolete ${terminal} acquisition cannot change the successor's visible frame or publication`, async () => {
+        const gate = deferred(), entered = deferred()
+        const lateError = new Error('Obsolete section producer failed')
+        const state = acquisitionFixture([
+            async () => 'fixture:original',
+            async () => {
+                entered.resolve()
+                await gate.promise
+                if (terminal === 'rejected') throw lateError
+                return null
+            },
+            async () => 'fixture:successor',
+        ])
+        const { renderer } = state
+        let oldOutcome
+        try {
+            await bounded(renderer.goTo({ index: 0, anchor: 0 }))
+            const originalDocument = renderer.getContents()[0].doc
+            oldOutcome = renderer.goTo({ index: 1, anchor: 0 }, { requiresNavigationReceipt: true })
+                .then(value => ({ value }), error => ({ error }))
+            await bounded(entered.promise)
+            assert.equal(renderer.getContents()[0].doc, originalDocument)
+            assert.equal(renderer.style.visibility, 'visible', 'pending acquisition must keep the current page visible')
+
+            const successor = await bounded(renderer.goTo(
+                { index: 2, anchor: 0 }, { requiresNavigationReceipt: true },
+            ))
+            const successorDocument = renderer.getContents()[0].doc
+            const successorMetrics = await renderer.pageMetrics()
+            const published = {
+                loaded: [...state.loaded], relocated: [...state.relocated],
+                displayed: [...state.displayed], unloads: [...state.unloads],
+            }
+            gate.resolve()
+            const outcome = await bounded(oldOutcome)
+            if (terminal === 'rejected') assert.equal(outcome.error, lateError)
+            else assert.equal(outcome.value, null)
+
+            assert.equal(renderer.isNavigationReceiptCurrent(successor), true)
+            assert.equal(renderer.getContents()[0].index, 2)
+            assert.equal(renderer.getContents()[0].doc, successorDocument)
+            assert.equal(renderer.style.visibility, 'visible')
+            assert.equal((await renderer.pageMetrics()).start, successorMetrics.start)
+            assert.deepEqual(state.loaded, published.loaded)
+            assert.deepEqual(state.relocated, published.relocated)
+            assert.deepEqual(state.displayed, published.displayed)
+            assert.deepEqual(state.unloads, published.unloads)
+            assert.equal(state.loaded.includes(1), false)
+            assert.equal(state.relocated.includes(1), false)
+        } finally {
+            gate.resolve()
+            try {
+                if (oldOutcome) await bounded(oldOutcome)
+            } finally { cleanup(renderer) }
+        }
+    })
+}
+
+test('View first-page restoration serializes live paginator proof and rejects a later turn', async () => {
+    const { View } = await import('../../Sources/LakeOfFireReader/Resources/foliate-js/view.js')
+    const { SectionProgress } = await import('../../Sources/LakeOfFireReader/Resources/foliate-js/progress.js')
+    const { makeInitialRestoreTerminalResult } = await import('../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-restore-coordination.js')
+    const renderer = fixture(2, [{ linear: 'no', size: 100 }, { size: 100 }])
+    const view = new View()
+    view.renderer = renderer
+    view.book = { sections: [{ linear: 'no', size: 100 }, { size: 100 }] }
+    const progress = new SectionProgress(view.book.sections, 1500, 1600)
+    // View.open normally installs this dependency while constructing a browser
+    // renderer. Navigation, command ownership and live geometry remain real.
+    view.resolveNavigation = target => {
+        const [index, anchor] = progress.getSection(target.fraction)
+        return { index, anchor }
+    }
+    try {
+        const receipt = await bounded(view.goToFirstPageForRestore())
+        assert.equal(receipt.index, 1)
+        const geometry = view.captureFirstPageRestoreGeometry(receipt)
+        assert.ok(geometry)
+        assert.equal(geometry.targetSectionIndex, 1)
+        assert.equal(geometry.sectionIndex, 1)
+        assert.equal(geometry.targetAnchor, 0)
+        assert.equal(geometry.fractionInSection, 0)
+        const actual = progress.getProgress(1, geometry.fractionInSection, geometry.pageFraction).fraction
+        assert.ok(actual > 0)
+        assert.equal(makeInitialRestoreTerminalResult({
+            request: { requestID: 'real-paginator', requestedLocator: 'fraction', cfi: '', fractionalCompletion: 0 },
+            snapshot: { handledFractionalCompletion: actual, currentFractionalCompletion: actual,
+                positionMode: 'paginated', firstPageGeometry: geometry },
+        }).restoreSatisfied, true)
+        await bounded(renderer.next())
+        assert.equal(view.captureFirstPageRestoreGeometry(receipt), null)
+    } finally { cleanup(renderer) }
+})
+
+test.after(() => dom.window.close())

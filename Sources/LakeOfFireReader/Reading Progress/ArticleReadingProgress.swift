@@ -1,4 +1,5 @@
 import Foundation
+import BigSyncKit
 import RealmSwift
 import LakeKit
 import RealmSwiftGaps
@@ -10,8 +11,13 @@ fileprivate func makeArticleReadingProgressCompoundKey(url: URL) -> String {
     return String(format: "%02X", stableHash(url.absoluteString))
 }
 
-public class ArticleReadingProgress: ReadingSession {
+public class ArticleReadingProgress: ReadingSession, SyncSkippablePropertiesModel {
     @Persisted public var sentenceIdentifiersRead: List<String>
+
+    /// Exact retained reading lifetime selected by Common's source-authority
+    /// layer. Nil is the legacy/unversioned lifetime. Lake stores the pointer
+    /// but does not interpret, rotate, or synchronize authority on its own.
+    @Persisted public var readAuthorityEpochID: String?
 
     // Web only, not for ebooks
     @Persisted public var articleSentenceCount: Int?
@@ -28,10 +34,15 @@ public class ArticleReadingProgress: ReadingSession {
     @Persisted public var familiarSegmentCount: Int = 0
     @Persisted public var knownSegmentCount: Int = 0
     @Persisted public var difficultySnapshotUpdatedAt: Date?
+    /// Retained historical payload only. Preserve original order and duplicates;
+    /// current reading and learning authority never derives from this local list.
+    @Persisted public var flashcardJmdictIds: List<Int>
     @Persisted public var wordIDsUnknownWhenRead: MutableSet<Int>
 
     // When true, exclude from Continue Reading lists
     @Persisted public var hideFromContinueReading: Bool = false
+
+    public func skipSyncingProperties() -> Set<String>? { ["flashcardJmdictIds"] }
 
     public static func makePrimaryKey(url: URL) -> String {
         return makeArticleReadingProgressCompoundKey(url: url)

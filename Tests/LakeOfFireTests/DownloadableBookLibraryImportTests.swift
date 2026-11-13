@@ -1,4 +1,6 @@
 import XCTest
+import CryptoKit
+import SwiftUI
 import RealmSwift
 import SwiftCloudDrive
 import SwiftUIDownloads
@@ -43,7 +45,8 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
             at: localDestination.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try Data("epub fixture".utf8).write(to: localDestination)
+        let fixtureBytes = Data("epub fixture".utf8)
+        try fixtureBytes.write(to: localDestination)
         addTeardownBlock {
             try? FileManager.default.removeItem(at: baseURL)
         }
@@ -70,8 +73,10 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
         let downloadable = Downloadable(
             url: URL(string: "https://example.com/editor-picks/regression.epub")!,
             name: "Regression Book",
-            localDestination: localDestination
+            localDestination: localDestination,
+            localDestinationChecksum: Insecure.SHA1.hash(data: fixtureBytes).map { String(format: "%02x", $0) }.joined()
         )
+        try downloadable.ensureVerifiedLocalDestinationChecksum()
         return try await operation(Fixture(
             manager: manager,
             downloadable: downloadable,
@@ -108,20 +113,90 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     }
 
     @MainActor
-    func testRefreshDownloadedEditorsPicksPublishesExistingLibraryDownload() async throws {
+    func testRefreshDownloadedEditorsPicksRejectsUnverifiedLibraryBytes() async throws {
         try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
             await BookLibraryViewModel.refreshDownloadedEditorsPicks(
-                publications: [Publication(
-                    title: fixture.downloadable.name,
-                    downloadURL: fixture.downloadable.url
-                )],
+                publications: [Publication(title: fixture.downloadable.name, downloadURL: fixture.downloadable.url)],
                 readerFileManager: fixture.manager
             )
+            // The catalog's checksum-less descriptor has no successful-install receipt.
+            XCTAssertNil(fixture.manager.files(ofTypes: [.epub, .epubZip]))
+            let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+            XCTAssertTrue(realm.objects(ContentFile.self).isEmpty)
+        }
+    }
 
-            XCTAssertEqual(
-                fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url),
-                [fixture.expectedReaderURL]
-            )
+    @MainActor
+    func testEnsureImportedRejectsFailedVerifiedArtifactWithoutIndexing() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            fixture.downloadable.isFailed = true
+            let imported = try await fixture.manager.ensureImported(downloadable: fixture.downloadable)
+            XCTAssertNil(imported)
+            XCTAssertNil(fixture.manager.files)
+            let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+            XCTAssertTrue(realm.objects(ContentFile.self).isEmpty)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.downloadable.localDestination.path))
+        }
+    }
+
+    @MainActor
+    func testLocalBookSelectionPreservesCommittedEditorImportWithoutOpeningIt() async throws {
+        try await withFixture(downloadIsAlreadyInLibrary: true) { fixture in
+            let viewModel = BookLibraryViewModel()
+            let gate = CommittedEditorImportGate()
+            let suspended = expectation(description: "Verified import committed before local selection")
+            var importedURL: URL?
+            var reachedCommit = false
+            var operationError: Error?
+            var downstreamStages: [String] = []
+            let task = try XCTUnwrap(viewModel.startOpenSelection { selection in
+                do {
+                    try await viewModel.open(selection: selection, stages: .init(
+                        resolveDownloadable: { true },
+                        existsLocally: { true },
+                        importContent: { _ in
+                            importedURL = try await fixture.manager.ensureImported(downloadable: fixture.downloadable)
+                            reachedCommit = importedURL != nil
+                            await gate.wait { suspended.fulfill() }
+                            return importedURL != nil
+                        },
+                        loadContent: { downstreamStages.append("load"); return true },
+                        navigate: { _ in downstreamStages.append("navigate") },
+                        publishNavigation: { downstreamStages.append("publish") }
+                    ))
+                } catch {
+                    operationError = error
+                    viewModel.publishOpenError(error, selection: selection)
+                    suspended.fulfill()
+                }
+            })
+            addTeardownBlock { task.cancel(); await gate.release(); await task.value }
+            await fulfillment(of: [suspended], timeout: 10)
+            guard reachedCommit else {
+                await gate.release()
+                await task.value
+                XCTFail("Expected the verified import to commit: \(String(describing: operationError))")
+                return
+            }
+            var selectedKey: String?
+            let binding = viewModel.localContentSelectionBinding(Binding(
+                get: { selectedKey }, set: { selectedKey = $0 }
+            ))
+            binding.wrappedValue = "ContentFile:local-B"
+            XCTAssertTrue(task.isCancelled)
+            await gate.release()
+            await task.value
+
+            let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+            XCTAssertNil(operationError)
+            XCTAssertNil(viewModel.errorMessage)
+            XCTAssertEqual(importedURL, fixture.expectedReaderURL)
+            XCTAssertEqual(selectedKey, "ContentFile:local-B")
+            XCTAssertEqual(realm.objects(ContentFile.self).count, 1)
+            XCTAssertTrue(realm.objects(HistoryRecord.self).isEmpty)
+            XCTAssertEqual(fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url), [fixture.expectedReaderURL])
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.downloadable.localDestination.path))
+            XCTAssertTrue(downstreamStages.isEmpty)
         }
     }
 
@@ -151,5 +226,24 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
         )
         XCTAssertEqual(contentFile.mimeType, "application/epub+zip")
         return importedURL
+    }
+}
+
+private actor CommittedEditorImportGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    func wait(onSuspension: @Sendable () -> Void) async {
+        guard !released else { return }
+        await withCheckedContinuation {
+            continuation = $0
+            onSuspension()
+        }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }

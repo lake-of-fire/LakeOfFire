@@ -13,9 +13,24 @@ import LakeOfFireCore
 import LakeOfFireAdblock
 import LakeOfFireContent
 
+/// Keep each row's identity independent of later managed-object refreshes.
+struct LibraryCategoryFeedRow: Identifiable {
+    let id: LibraryCategoryFeedSelection
+    let feed: Feed
+
+    @MainActor
+    init?(feed: Feed) {
+        guard let selection = LibraryCategoryFeedSelection(feed: feed) else { return nil }
+        id = selection
+        self.feed = feed
+    }
+}
+
 @MainActor
 class LibraryCategoryViewModel: ObservableObject {
     let category: FeedCategory
+    let categoryID: UUID
+    let realmConfiguration: Realm.Configuration
     let libraryConfiguration: LibraryConfiguration
     @Binding var selectedFeed: Feed?
     
@@ -23,22 +38,32 @@ class LibraryCategoryViewModel: ObservableObject {
     @Published var categoryBackgroundImageURL = ""
     @Published var isEditing = false
     
+    private var isRefreshing = false
+    private var pendingFieldCommands: [LibraryCategoryField: LibraryCategoryFieldCommand] = [:]
+    private var activeWrites: [UUID: Task<Void, Error>] = [:]
+    private var feedCreationRequestID: UUID?
+    private var feedCreationTask: Task<UUID?, Error>?
+    private let owner: LibraryCategoryFieldOwner?
+    private let ordering: LibraryCategoryFieldWriteOrdering?
+    private let beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)?
+    private let retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)?
+    private let debouncedWriteDidFinish: (@MainActor @Sendable (LibraryCategoryFieldEdit) -> Void)?
     var cancellables = Set<AnyCancellable>()
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
     var isUserEditable: Bool {
-        return category.opmlURL == nil
+        return owner?.isCurrentStorage == true && !category.isInvalidated && !category.isDeleted && category.opmlURL == nil
     }
     
     var deleteButtonTitle: String {
-        if category.isArchived {
+        if !category.isInvalidated && category.isArchived {
             return "Delete"
         }
         return "Archive"
     }
     
     var deleteButtonImageName: String {
-        if category.isArchived {
+        if !category.isInvalidated && category.isArchived {
             return "trash"
         }
         return "archivebox"
@@ -55,144 +80,377 @@ class LibraryCategoryViewModel: ObservableObject {
     var showRestoreButton: Bool {
         return isUserEditable && category.isArchived
     }
+
+    var visibleFeeds: [Feed] {
+        guard owner?.isCurrentStorage == true,
+              !category.isInvalidated, !category.isDeleted else { return [] }
+        return (category.getFeeds() ?? []).filter { !$0.isInvalidated }
+    }
+
+    var visibleFeedRows: [LibraryCategoryFeedRow] {
+        visibleFeeds.compactMap { LibraryCategoryFeedRow(feed: $0) }
+    }
+
+    var duplicationCategories: [FeedCategory] {
+        guard owner?.isCurrentStorage == true,
+              !category.isInvalidated, !category.isDeleted,
+              !libraryConfiguration.isInvalidated else { return [] }
+        return (libraryConfiguration.getCategories() ?? [])
+            .filter { !$0.isInvalidated && !$0.isDeleted && $0.isUserEditable }
+    }
+
+    var managedOPMLURL: URL? {
+        guard owner?.isCurrentStorage == true,
+              !category.isInvalidated, !category.isDeleted else { return nil }
+        return category.opmlURL
+    }
+
+    var categoryImageURL: URL {
+        guard owner?.isCurrentStorage == true,
+              !category.isInvalidated, !category.isDeleted else { return URL(string: "about:blank")! }
+        return category.backgroundImageUrl
+    }
     
-    init(category: FeedCategory, libraryConfiguration: LibraryConfiguration, selectedFeed: Binding<Feed?>) {
+    /// Scheduled field delivery must target the main queue. Tests may suspend a
+    /// main-targeted queue to stage Done before the queued trailing delivery.
+    init(
+        category: FeedCategory,
+        libraryConfiguration: LibraryConfiguration,
+        selectedFeed: Binding<Feed?>,
+        observesRealm: Bool = true,
+        beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)? = nil,
+        fieldDebounceScheduler: DispatchQueue = .main,
+        debouncedWriteDidFinish: (@MainActor @Sendable (LibraryCategoryFieldEdit) -> Void)? = nil,
+        beforeObservation: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        observationDidFinish: (@RealmBackgroundActor @Sendable (Bool) -> Void)? = nil
+    ) {
+        self.beforeFieldWrite = beforeFieldWrite
+        self.retirementDidFinish = retirementDidFinish
+        self.debouncedWriteDidFinish = debouncedWriteDidFinish
+        self.realmConfiguration =
+            category.realm?.configuration
+            ?? libraryConfiguration.realm?.configuration
+            ?? LibraryDataManager.realmConfiguration
+        owner = LibraryCategoryFieldOwner(category: category, realmConfiguration: realmConfiguration)
+        ordering = owner.map { .shared(identity: LibraryCategoryFieldIdentity(owner: $0)) }
+        self.categoryID = category.id
         self.category = category
         self.libraryConfiguration = libraryConfiguration
         _selectedFeed = selectedFeed
         categoryTitle = category.title
         categoryBackgroundImageURL = category.backgroundImageUrl.absoluteString == "about:blank" ? "" : category.backgroundImageUrl.absoluteString
         
-        let ref = ThreadSafeReference(to: category)
-        Task { @RealmBackgroundActor [weak self] in
-            guard let self = self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let category = realm.resolve(ref) else { return }
-            objectNotificationToken = category
-                .observe { [weak self] change in
-                    switch change {
-                    case .change(_, _), .deleted:
-                        Task { @MainActor [weak self] in
-                            guard let self = self else { return }
-                            if !self.isEditing {
-                                self.refresh()
+        let fieldOwner = owner
+        if observesRealm {
+            Task { @RealmBackgroundActor [weak self] in
+                var registered = false
+                defer { observationDidFinish?(registered) }
+                guard let self, let fieldOwner else { return }
+                try await beforeObservation?()
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: fieldOwner.realmConfiguration,
+                    storageAdmission: fieldOwner.storageAdmission
+                )
+                guard fieldOwner.isCurrentStorage,
+                      let category = realm.object(
+                        ofType: FeedCategory.self,
+                        forPrimaryKey: fieldOwner.categoryID
+                      ), fieldOwner.matches(category) else { return }
+                objectNotificationToken = category
+                    .observe { [weak self] change in
+                        switch change {
+                        case .change(_, _), .deleted:
+                            Task { @MainActor [weak self] in
+                                guard let self = self else { return }
+                                if !self.isEditing {
+                                    self.refresh()
+                                }
                             }
+                        case .error(let error):
+                            print("An error occurred: \(error)")
                         }
-                    case .error(let error):
-                        print("An error occurred: \(error)")
                     }
-                }
-        }
-        
-        $categoryTitle
-            .dropFirst()
-            .removeDuplicates()
-            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] categoryTitle in
-                guard let self else { return }
-                let categoryID = category.id
-                Task { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
-                    guard category.isUserEditable else {
-                        await self.refresh()
-                        return
-                    }
-                    guard category.title != categoryTitle else { return }
-                    try await realm.asyncWrite {
-                        category.title = categoryTitle
-                        category.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
+                registered = true
             }
-            .store(in: &cancellables)
-        $categoryBackgroundImageURL
-            .dropFirst()
-            .removeDuplicates()
-            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] categoryBackgroundImageURL in
+        }
+        observe($categoryTitle, edit: LibraryCategoryFieldEdit.title, scheduler: fieldDebounceScheduler)
+        observe($categoryBackgroundImageURL, edit: LibraryCategoryFieldEdit.imageURL, scheduler: fieldDebounceScheduler)
+    }
+
+    private func observe(
+        _ publisher: Published<String>.Publisher,
+        edit: @escaping (String) -> LibraryCategoryFieldEdit,
+        scheduler: DispatchQueue
+    ) {
+        publisher.dropFirst()
+            .compactMap { [weak self] value -> LibraryCategoryFieldCommand? in
+                guard let self, !self.isRefreshing else { return nil }
+                return self.capture(edit(value))
+            }
+            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: scheduler)
+            .sink { [weak self] command in
                 guard let self else { return }
-                let categoryID = category.id
-                Task { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
-                    guard category.isUserEditable else {
-                        await self.refresh()
-                        return
-                    }
-                    let newURL: URL?
-                    if categoryBackgroundImageURL.isEmpty {
-                        newURL = URL(string: "about:blank")!
-                    } else {
-                        newURL = URL(string: categoryBackgroundImageURL)
-                    }
-                    guard let newURL else {
-                        return
-                    }
-                    guard category.backgroundImageUrl != newURL else { return }
-                    try await realm.asyncWrite {
-                        category.backgroundImageUrl = newURL
-                        category.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
+                self.observeCompletion(self.submit(command), edit: command.edit)
             }
             .store(in: &cancellables)
     }
-    
+
+    private func capture(_ edit: LibraryCategoryFieldEdit) -> LibraryCategoryFieldCommand? {
+        guard let owner, let ordering, owner.isCurrentStorage, isUserEditable,
+              owner.matches(category) else { return nil }
+        let command = LibraryCategoryFieldCommand(
+            owner: owner, edit: edit, intent: ordering.issueIntent(field: edit.field), ordering: ordering
+        )
+        pendingFieldCommands[edit.field] = command
+        return command
+    }
+
+    private func submit(
+        _ command: LibraryCategoryFieldCommand,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
+    ) -> Task<Void, Error> {
+        if let active = activeWrites[command.intent] { return active }
+        // A trailing delivery may arrive after finish settled this command.
+        guard pendingFieldCommands[command.edit.field]?.intent == command.intent else {
+            return Task<Void, Error> {}
+        }
+        let beforeWrite = beforeWrite ?? beforeFieldWrite
+        let task = Task<Void, Error> { @RealmBackgroundActor [weak self] in
+            do {
+                try await command.write(beforeWrite: beforeWrite)
+                await self?.settle(command, succeeded: true)
+            } catch {
+                await self?.settle(command, succeeded: false)
+                throw error
+            }
+        }
+        activeWrites[command.intent] = task
+        return task
+    }
+
+    private func settle(_ command: LibraryCategoryFieldCommand, succeeded: Bool) {
+        activeWrites[command.intent] = nil
+        guard succeeded, pendingFieldCommands[command.edit.field]?.intent == command.intent else { return }
+        pendingFieldCommands[command.edit.field] = nil
+        if !isEditing { refresh() }
+    }
+
+    private func observeCompletion(_ task: Task<Void, Error>, edit: LibraryCategoryFieldEdit? = nil) {
+        let didFinish = debouncedWriteDidFinish
+        Task { @MainActor in
+            defer { if let edit { didFinish?(edit) } }
+            do { try await task.value }
+            catch { print("# LIBRARYCATEGORYEDITOR write failed: \(error)") }
+        }
+    }
+
+    @discardableResult
+    func finishEditing() -> Task<Void, Error> {
+        isEditing = false
+        for command in pendingFieldCommands.values { _ = submit(command) }
+        let writes = Array(activeWrites.values)
+        refresh()
+        let completion = Task<Void, Error> { @RealmBackgroundActor in
+            var firstError: Error?
+            for write in writes {
+                do { try await write.value }
+                catch { if firstError == nil { firstError = error } }
+            }
+            if let firstError { throw firstError }
+        }
+        observeCompletion(completion)
+        return completion
+    }
+
+    @discardableResult
+    func writeFieldAsync(
+        _ edit: LibraryCategoryFieldEdit,
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
+    ) -> Task<Void, Error> {
+        guard let command = capture(edit) else { return Task<Void, Error> {} }
+        isRefreshing = true
+        switch edit {
+        case .title(let value): categoryTitle = value
+        case .imageURL(let value): categoryBackgroundImageURL = value
+        }
+        isRefreshing = false
+        return submit(command, beforeWrite: beforeWrite)
+    }
+
     deinit {
+        let commands = Array(pendingFieldCommands.values)
+        let writes = activeWrites
+        let retirementDidFinish = retirementDidFinish
+        Task { @RealmBackgroundActor in
+            defer { retirementDidFinish?() }
+            for command in commands {
+                // Join the original attempt before deciding whether one retry is needed.
+                if let active = writes[command.intent] {
+                    do { try await active.value; continue }
+                    catch { /* Retry the retained command below. */ }
+                }
+                do { try await command.write() }
+                catch { print("# LIBRARYCATEGORYEDITOR retirement write failed: \(error)") }
+            }
+        }
         Task { @RealmBackgroundActor [weak objectNotificationToken] in
             objectNotificationToken?.invalidate()
         }
     }
-    
+
     @MainActor
     func refresh() {
-        categoryTitle = category.title
-        categoryBackgroundImageURL = category.backgroundImageUrl.absoluteString == "about:blank" ? "" : category.backgroundImageUrl.absoluteString
+        guard let owner, owner.isCurrentStorage, owner.matches(category) else { return }
+        if !category.isFrozen { category.realm?.refresh() }
+        guard owner.isCurrentStorage, owner.matches(category) else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        if pendingFieldCommands[.title] == nil { categoryTitle = category.title }
+        if pendingFieldCommands[.imageURL] == nil {
+            categoryBackgroundImageURL = category.backgroundImageUrl.absoluteString == "about:blank"
+                ? "" : category.backgroundImageUrl.absoluteString
+        }
     }
-    
+
+    /// Admit the rendered category before scheduling, and publish only the
+    /// committed incarnation while this presentation still owns the request.
+    @discardableResult
+    func createFeed(
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil,
+        beforePublication: (@MainActor @Sendable () async throws -> Void)? = nil,
+        didPublish: @escaping @MainActor (UUID) -> Void = { _ in }
+    ) -> Task<UUID?, Error>? {
+        guard !Task.isCancelled, let owner, owner.isCurrentStorage, isUserEditable,
+              category.id == owner.categoryID, category.createdAt == owner.createdAt else { return nil }
+        let previousSelectedFeed = selectedFeed
+        let previousSelection: LibraryCategoryFeedSelection?
+        if let feed = previousSelectedFeed {
+            guard let selection = LibraryCategoryFeedSelection(feed: feed) else { return nil }
+            previousSelection = selection
+        } else {
+            previousSelection = nil
+        }
+        let reference = ThreadSafeReference(to: category)
+        let requestID = UUID()
+        feedCreationTask?.cancel()
+        feedCreationRequestID = requestID
+        let task = Task<UUID?, Error> { @MainActor in
+            defer {
+                if self.feedCreationRequestID == requestID {
+                    self.feedCreationRequestID = nil
+                    self.feedCreationTask = nil
+                }
+            }
+            guard let result = try await LibraryDataManager.shared.createEmptyFeedWithIdentity(
+                inCategory: reference,
+                realmConfiguration: owner.realmConfiguration,
+                storageAdmission: owner.storageAdmission,
+                expectedCategoryCreatedAt: owner.createdAt,
+                beforeWrite: beforeWrite
+            ) else { return nil }
+            try await beforePublication?()
+            guard !Task.isCancelled, self.feedCreationRequestID == requestID,
+                  owner.isCurrentStorage, self.selectionMatches(previousSelection, original: previousSelectedFeed),
+                  result.categoryID == owner.categoryID,
+                  result.categoryCreatedAt == owner.createdAt else { return nil }
+            let realm = try await Realm.open(configuration: owner.realmConfiguration)
+            await realm.asyncRefresh()
+            guard !Task.isCancelled, self.feedCreationRequestID == requestID,
+                  owner.isCurrentStorage, self.selectionMatches(previousSelection, original: previousSelectedFeed),
+                  let rows = result.resolveCommittedRows(in: realm) else { return nil }
+            let category = rows.category
+            let feed = rows.feed
+            self.selectedFeed = feed
+            // A binding may synchronously select another row or retire the view.
+            guard !Task.isCancelled, self.feedCreationRequestID == requestID,
+                  owner.isCurrentStorage,
+                  !category.isInvalidated, !feed.isInvalidated,
+                  category.createdAt == result.categoryCreatedAt,
+                  !category.isDeleted, category.isUserEditable,
+                  feed.createdAt == result.feedCreatedAt, !feed.isDeleted,
+                  feed.categoryID == result.categoryID,
+                  self.selectionMatches(
+                    .init(id: result.feedID, createdAt: result.feedCreatedAt), original: feed
+                  ) else { return nil }
+            didPublish(result.feedID)
+            return result.feedID
+        }
+        feedCreationTask = task
+        return task
+    }
+
+    private func selectionMatches(_ expected: LibraryCategoryFeedSelection?, original: Feed?) -> Bool {
+        guard let feed = selectedFeed else { return expected == nil }
+        guard let original, !original.isInvalidated,
+              let selection = LibraryCategoryFeedSelection(feed: feed),
+              feed.isSameObject(as: original) else { return false }
+        return selection.id == expected?.id && selection.createdAt == expected?.createdAt
+    }
+
+    func retireFeedCreation() {
+        feedCreationRequestID = nil
+        feedCreationTask?.cancel()
+        feedCreationTask = nil
+    }
+
     @MainActor
     func deleteFeed(_ feed: Feed) async throws {
-        guard feed.isUserEditable() else { return }
-        try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: ReaderContentLoader.feedEntryRealmConfiguration) { _, feed in
-            feed.isDeleted = true
-            feed.refreshChangeMetadata(explicitlyModified: true)
-        }
+        guard let owner, isUserEditable,
+              let selection = LibraryCategoryFeedSelection(feed: feed) else { return }
+        // Keep the caller's task through the actor hop and owned transaction.
+        try await LibraryCategoryFeedDeleteCommand(owner: owner, selections: [selection]).write()
     }
-    
+
+    @discardableResult
+    func deleteFeeds(
+        _ selections: [LibraryCategoryFeedSelection],
+        beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
+    ) -> Task<Void, Error> {
+        guard let owner, isUserEditable, !selections.isEmpty else {
+            return Task<Void, Error> {}
+        }
+        let command = LibraryCategoryFeedDeleteCommand(owner: owner, selections: selections)
+        let completion = Task<Void, Error> { @RealmBackgroundActor in
+            try await command.write(beforeWrite: beforeWrite)
+        }
+        observeCompletion(completion)
+        return completion
+    }
+
     @MainActor
     func deleteFeed(at offsets: IndexSet) {
-        if category.opmlURL != nil {
-            return
-        }
-        
-        for offset in offsets {
-            let feed = category.getFeeds()?[offset]
-            guard let feed, feed.isUserEditable() else { continue }
-            Task { @MainActor in
-                try await deleteFeed(feed)
-            }
-        }
+        deleteFeed(at: offsets, displayedFeeds: visibleFeedRows.map(\.id))
     }
-    
+
+    @discardableResult
+    func deleteFeed(
+        at offsets: IndexSet,
+        displayedFeeds: [LibraryCategoryFeedSelection]
+    ) -> Task<Void, Error> {
+        let selections = offsets.compactMap { offset -> LibraryCategoryFeedSelection? in
+            guard displayedFeeds.indices.contains(offset) else { return nil }
+            return displayedFeeds[offset]
+        }
+        return deleteFeeds(selections)
+    }
+
     @MainActor
     func deleteCategory() async throws {
-        let ref = ThreadSafeReference(to: category)
-        try await Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let category = realm.resolve(ref) else { return }
-            try await LibraryDataManager.shared.deleteCategory(category)
-        }.value
+        guard isUserEditable, let owner,
+              let libraryIdentity = LibraryCategoryEditorIdentity(category: category, library: libraryConfiguration) else { return }
+        try await { @RealmBackgroundActor in
+            try await LibraryDataManager.shared.deleteCategory(owner: owner, libraryIdentity: libraryIdentity)
+        }()
     }
     
     @MainActor
     func restoreCategory() async throws {
-        let ref = ThreadSafeReference(to: category)
-        try await Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let category = realm.resolve(ref) else { return }
-            try await LibraryDataManager.shared.restoreCategory(category)
-        }.value
+        guard isUserEditable, let owner,
+              let libraryIdentity = LibraryCategoryEditorIdentity(category: category, library: libraryConfiguration) else { return }
+        try await { @RealmBackgroundActor in
+            try await LibraryDataManager.shared.restoreCategory(owner: owner, libraryIdentity: libraryIdentity)
+        }()
     }
 }
 
@@ -228,21 +486,26 @@ struct LibraryCategoryView: View {
     }
     
     private func matchingDistinctFeed(category: FeedCategory, feed: Feed) -> Feed? {
-        return category.getFeeds()?.first(where: { $0.rssUrl == feed.rssUrl && $0.id != feed.id })
+        guard !category.isInvalidated, !feed.isInvalidated else { return nil }
+        return category.getFeeds()?.first(where: {
+            !$0.isInvalidated && $0.rssUrl == feed.rssUrl && $0.id != feed.id
+        })
     }
     
     @ViewBuilder func duplicationMenu(feed: Feed) -> some View {
         Menu("Duplicate In…") {
-            ForEach((libraryCategoryViewModel.libraryConfiguration.getCategories() ?? []).filter({ $0.isUserEditable })) { (category: FeedCategory) in
+            ForEach(libraryCategoryViewModel.duplicationCategories) { (category: FeedCategory) in
                 if matchingDistinctFeed(category: category, feed: feed) != nil {
                     Menu(category.title) {
                         Button("Overwrite Existing Feed") {
                             Task {
+                                guard !feed.isInvalidated, !category.isInvalidated else { return }
                                 try await libraryManagerViewModel.duplicate(feed: ThreadSafeReference(to: feed), inCategory: ThreadSafeReference(to: category), overwriteExisting: true)
                             }
                         }
                         Button("Duplicate") {
                             Task {
+                                guard !feed.isInvalidated, !category.isInvalidated else { return }
                                 try await libraryManagerViewModel.duplicate(feed: ThreadSafeReference(to: feed), inCategory: ThreadSafeReference(to: category), overwriteExisting: false)
                             }
                         }
@@ -250,10 +513,11 @@ struct LibraryCategoryView: View {
                 } else {
                     Button {
                         Task {
+                            guard !feed.isInvalidated, !category.isInvalidated else { return }
                             try await libraryManagerViewModel.duplicate(feed: ThreadSafeReference(to: feed), inCategory: ThreadSafeReference(to: category), overwriteExisting: false)
                         }
                     } label: {
-                        Text(libraryCategoryViewModel.category.title)
+                        Text(category.title)
                     }
                 }
             }
@@ -263,7 +527,7 @@ struct LibraryCategoryView: View {
     @ViewBuilder private var categoryLabel: some View {
         FeedCategoryButtonLabel(
             title: libraryCategoryViewModel.categoryTitle,
-            backgroundImageURL: libraryCategoryViewModel.category.backgroundImageUrl,
+            backgroundImageURL: libraryCategoryViewModel.categoryImageURL,
             isCompact: true
         )
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -276,7 +540,7 @@ struct LibraryCategoryView: View {
                 List {
                     categoryLabel
                     
-                    if let opmlURL = libraryCategoryViewModel.category.opmlURL {
+                    if let opmlURL = libraryCategoryViewModel.managedOPMLURL {
                         Section(header: Label("Managed", systemImage: "lock.fill")) {
                             if LibraryConfiguration.opmlURLs.contains(opmlURL) {
                                 Text("Official Manabi Reader categories cannot be edited.")
@@ -323,30 +587,32 @@ struct LibraryCategoryView: View {
                     }
                     
                     Section("Feeds") {
-                        // TODO: Cache feeds in subview structs
-                        ForEach(libraryCategoryViewModel.category.getFeeds() ?? []) { feed in
-                            let isFeedUserEditable = feed.isUserEditable()
-                            NavigationLink(value: feed) {
-                                FeedCell(feed: feed, includesDescription: false, horizontalSpacing: 5)
-                            }
-                            .deleteDisabled(!isFeedUserEditable)
-                            .contextMenu {
-                                duplicationMenu(feed: feed)
-                                if isFeedUserEditable {
-                                    Divider()
-                                    Button(role: .destructive) {
-                                        Task {
-                                            try await libraryCategoryViewModel.deleteFeed(feed)
+                        let rows = libraryCategoryViewModel.visibleFeedRows
+                        let displayedFeeds = rows.map(\.id)
+                        ForEach(rows) { row in
+                            let feed = row.feed
+                            if !feed.isInvalidated {
+                                let isFeedUserEditable = libraryCategoryViewModel.isUserEditable && feed.isUserEditable()
+                                NavigationLink(value: feed) {
+                                    FeedCell(feed: feed, includesDescription: false, horizontalSpacing: 5)
+                                }
+                                .deleteDisabled(!isFeedUserEditable)
+                                .contextMenu {
+                                    duplicationMenu(feed: feed)
+                                    if isFeedUserEditable {
+                                        Divider()
+                                        Button(role: .destructive) {
+                                            libraryCategoryViewModel.deleteFeeds([row.id])
+                                        } label: {
+                                            Text("Delete Feed")
                                         }
-                                    } label: {
-                                        Text("Delete Feed")
+                                        .tint(.red)
                                     }
-                                    .tint(.red)
                                 }
                             }
                         }
                         .onDelete {
-                            libraryCategoryViewModel.deleteFeed(at: $0)
+                            libraryCategoryViewModel.deleteFeed(at: $0, displayedFeeds: displayedFeeds)
                         }
                     }
                 }
@@ -393,31 +659,27 @@ struct LibraryCategoryView: View {
                 }
             }
         }
-        .task(id: libraryCategoryViewModel.category.id) { @MainActor in
+        .task(id: libraryCategoryViewModel.categoryID) { @MainActor in
             libraryCategoryViewModel.refresh()
         }
         .onChange(of: focusedField) { newValue in
-            libraryCategoryViewModel.isEditing = (newValue != nil)
             if newValue == nil {
-                libraryCategoryViewModel.refresh()
+                libraryCategoryViewModel.finishEditing()
+            } else {
+                libraryCategoryViewModel.isEditing = true
             }
+        }
+        .onDisappear {
+            libraryCategoryViewModel.retireFeedCreation()
+            libraryCategoryViewModel.finishEditing()
         }
     }
     
     @ViewBuilder private func addFeedButton(scrollProxy: ScrollViewProxy) -> some View {
         let button = Button {
-            Task { @MainActor in
-                let ref = ThreadSafeReference(to: libraryCategoryViewModel.category)
-                let createdFeedID: UUID? = try await { @RealmBackgroundActor in
-                    try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref)
-                }()
-                guard let feedID = createdFeedID else { return }
+            libraryCategoryViewModel.createFeed(didPublish: { feedID in
                 scrollProxy.scrollTo("library-sidebar-\(feedID.uuidString)")
-                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
-                    libraryCategoryViewModel.selectedFeed = feed
-                }
-            }
+            })
         } label: {
             Label("Add Feed", systemImage: "plus.circle")
                 .bold()
@@ -427,13 +689,13 @@ struct LibraryCategoryView: View {
             button
                 .labelStyle(.titleOnly)
                 .buttonStyle(.borderless)
-                .disabled(libraryCategoryViewModel.category.opmlURL != nil)
+                .disabled(!libraryCategoryViewModel.isUserEditable)
                 .keyboardShortcut("n", modifiers: [.command])
         } else {
             button
                 .labelStyle(.titleAndIcon)
                 .buttonStyle(.borderless)
-                .disabled(libraryCategoryViewModel.category.opmlURL != nil)
+                .disabled(!libraryCategoryViewModel.isUserEditable)
                 .keyboardShortcut("n", modifiers: [.command])
         }
     }

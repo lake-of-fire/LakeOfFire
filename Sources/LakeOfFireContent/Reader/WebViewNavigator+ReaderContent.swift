@@ -20,10 +20,14 @@ public extension WebViewNavigator {
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager = ReaderFileManager.shared,
         readerModeViewModel: (any ReaderModeLoadHandling)?,
-        forceReaderModeForSnippets: Bool = false
+        forceReaderModeForSnippets: Bool = false,
+        shouldLoad: @MainActor () -> Bool = { true }
     ) async throws {
+        guard shouldLoad() else { return }
         debugPrint("# FLASH WebViewNavigator.load begin", content.url)
-        if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+        let resolvedURL = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager)
+        guard shouldLoad() else { return }
+        if let url = resolvedURL {
             let navigationURL: URL
             if forceReaderModeForSnippets, content.url.isSnippetURL {
                 navigationURL = ReaderContentLoader.readerLoaderURL(for: content.url) ?? url
@@ -42,7 +46,9 @@ public extension WebViewNavigator {
                         countsAsHistoryVisit: false,
                         source: "WebViewNavigator.load.prefetchPrevious"
                     )
+                    guard shouldLoad() else { return }
                 }
+                guard shouldLoad() else { return }
                 if navigationURL.isHTTP || navigationURL.isFileURL || navigationURL.isSnippetURL || navigationURL.isReaderURLLoaderURL {
                     let trackingContent = (previouslyLoadedContent ?? content)
                     let loaderBaseURL = navigationURL.isReaderURLLoaderURL ? ReaderContentLoader.getContentURL(fromLoaderURL: navigationURL) : nil
@@ -82,6 +88,7 @@ public extension WebViewNavigator {
                     )
                 }
             }
+            guard shouldLoad() else { return }
             load(URLRequest(url: navigationURL))
             debugPrint("# FLASH WebViewNavigator.load request issued", navigationURL)
         } else {

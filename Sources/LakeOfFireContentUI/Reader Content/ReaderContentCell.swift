@@ -63,6 +63,24 @@ fileprivate actor ReaderContentCellActor {
     static let shared = ReaderContentCellActor()
 }
 
+/// Same-row metadata edits must restart the one generation-fenced loader.
+/// Progress stored in other models needs a separate upstream invalidation signal.
+struct ReaderContentCellLoadIdentity: Hashable {
+    let compoundKey: String
+    let includesSource: Bool
+    let url: URL
+    let modifiedAt: Date
+    let imageURL: URL?
+
+    init(item: any ReaderContentProtocol, includesSource: Bool) {
+        compoundKey = item.compoundKey
+        self.includesSource = includesSource
+        url = item.url
+        modifiedAt = item.modifiedAt
+        imageURL = item.imageUrl
+    }
+}
+
 private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
     guard let url, !url.isNativeReaderView else { return nil }
     return url
@@ -86,19 +104,41 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var hasLoadedDisplayState = false
     // Continue Reading menu is driven by an injected provider in the environment.
 
-    init() { }
+    private var loadGeneration: UInt64 = 0
+    private let imageURLLoader: @MainActor (C) async throws -> URL?
+    private let historyRealmConfiguration: Realm.Configuration?
+    private let syncStatusLoader: @Sendable (URL) async throws -> ReaderContentSyncStatusPresentation?
+
+    init(
+        imageURLLoader: @escaping @MainActor (C) async throws -> URL? = { try await $0.imageURLToDisplay() },
+        historyRealmConfiguration: Realm.Configuration? = nil,
+        syncStatusLoader: @escaping @Sendable (URL) async throws -> ReaderContentSyncStatusPresentation? = {
+            try await ReaderContentSyncStatusLoader.syncStatusLoader?($0)
+        }
+    ) {
+        self.imageURLLoader = imageURLLoader
+        self.historyRealmConfiguration = historyRealmConfiguration
+        self.syncStatusLoader = syncStatusLoader
+    }
 
     @MainActor
     func load(
         item: C,
         includeSource: Bool
     ) async throws {
+        try Task.checkCancellation()
+        loadGeneration &+= 1
+        let generation = loadGeneration
         hasLoadedDisplayState = false
         debugPrint("# loading", item.url.lastPathComponent)
 
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
-        let imageURL = try await item.imageURLToDisplay()
+        let historyRealmConfiguration = historyRealmConfiguration ?? ReaderContentLoader.historyRealmConfiguration
+        let syncStatusLoader = syncStatusLoader
+        let imageURL = try await imageURLLoader(item)
+        try Task.checkCancellation()
+        guard generation == loadGeneration else { throw CancellationError() }
         try await { @ReaderContentCellActor [weak self] in
             guard let self else { return }
             let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
@@ -121,9 +161,9 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let tracksReadingProgress = item.tracksReadingProgress
                 let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
                 let metadataResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL) : nil
-                let syncStatusPresentation = try await ReaderContentSyncStatusLoader.syncStatusLoader?(itemURL)
+                let syncStatusPresentation = try await syncStatusLoader(itemURL)
                 let historyRealm = try await Realm(
-                    configuration: ReaderContentLoader.historyRealmConfiguration,
+                    configuration: historyRealmConfiguration,
                     actor: ReaderContentCellActor.shared
                 )
                 let latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
@@ -167,6 +207,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 try await { @MainActor [weak self] in
                     guard let self else { return }
                     try Task.checkCancellation()
+                    guard generation == self.loadGeneration else { throw CancellationError() }
                     self.title = title
                     self.imageURL = imageURL
                     self.humanReadablePublicationDate = humanReadablePublicationDate
@@ -490,6 +531,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
     @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
+    @Environment(\.readerContentCellAnnotationStatusUpdates) private var readerContentCellAnnotationStatusUpdates
     @State private var annotationStatus = ReaderContentCellAnnotationStatus()
 
     // Match the parent card's rounding minus its padding and scale it with the actual thumbnail size.
@@ -926,8 +968,11 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         }
     }
 
+    // Keep menu entries in ViewBuilder's deployment-compatible representation.
+    // The SDK Menu builder receives one expression instead of exposing newer
+    // ContentBuilder tuple metadata from this generic cell to older runtimes.
     @ViewBuilder
-    private var trailingMenuButton: some View {
+    private var cellMenuItems: some View {
         let deletable = (self.item as? (any DeletableReaderContent))
         let menuSyncStatusPresentation = ReaderContentSyncStatusPresentationBuilder.menuPresentation(
             for: item.url,
@@ -939,34 +984,39 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             imageIsSystemSymbol: menuSyncStatusPresentation.imageIsSystemSymbol
         )
 
-        Menu {
-            ReaderContentSyncStatusLabel(presentation: menuSyncStatusLabelPresentation, iconOnly: false)
+        ReaderContentSyncStatusLabel(presentation: menuSyncStatusLabelPresentation, iconOnly: false)
+        Divider()
+
+        AnyView(self.item.bookmarkButtonView())
+
+        if let customMenuOptions {
+            customMenuOptions(self.item)
+        }
+
+        if let deletable {
             Divider()
-
-            AnyView(self.item.bookmarkButtonView())
-
-            if let customMenuOptions {
-                customMenuOptions(self.item)
+            Button(role: .destructive) {
+                readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
+                debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(ObjectIdentifier(readerContentListModalsModel))")
+            } label: {
+                Label(deletable.deleteActionTitle, systemImage: "trash")
             }
+            .task { kickOffContentFileLookupIfNeeded() }
+        }
 
-            if let deletable {
-                Divider()
-                Button(role: .destructive) {
-                    readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
-                    debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(ObjectIdentifier(readerContentListModalsModel))")
-                } label: {
-                    Label(deletable.deleteActionTitle, systemImage: "trash")
-                }
-                .task { kickOffContentFileLookupIfNeeded() }
+        if let contentFile = resolvedContentFile {
+            Button(role: .destructive) {
+                readerContentListModalsModel.presentDeleteConfirmation(for: [contentFile])
+            } label: {
+                Label(contentFile.deleteActionTitle, systemImage: "trash")
             }
+        }
+    }
 
-            if let contentFile = resolvedContentFile {
-                Button(role: .destructive) {
-                    readerContentListModalsModel.presentDeleteConfirmation(for: [contentFile])
-                } label: {
-                    Label(contentFile.deleteActionTitle, systemImage: "trash")
-                }
-            }
+    @ViewBuilder
+    private var trailingMenuButton: some View {
+        Menu {
+            cellMenuItems
         } label: {
             Label("More Options", systemImage: "ellipsis")
                 .labelStyle(.iconOnly)
@@ -1215,27 +1265,24 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
         }
-        .onAppear {
-            Task { @MainActor in
-                try? await viewModel.load(
-                    item: item,
-                    includeSource: appearance.includeSource
-                )
-                annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
-            }
+        .task(id: ReaderContentCellLoadIdentity(item: item, includesSource: appearance.includeSource)) {
+            try? await viewModel.load(
+                item: item,
+                includeSource: appearance.includeSource
+            )
         }
-        .task(id: item.compoundKey) {
-            annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
+        .task(id: "\(item.compoundKey)|\(item.url.absoluteString)") {
+            let url = item.url
+            let contentID = item.compoundKey
+            await observeReaderContentCellAnnotationStatus(
+                updates: { readerContentCellAnnotationStatusUpdates?(url, contentID) },
+                initialStatus: { await readerContentCellAnnotationStatusLoader(url, contentID) },
+                publish: { annotationStatus = $0 }
+            )
         }
         .onChange(of: item.compoundKey) { _ in
             resolvedContentFile = nil
             contentFileLookupStarted = false
-        }
-        .onChange(of: item.imageUrl) { newImageURL in
-            guard newImageURL != viewModel.imageURL else { return }
-            Task { @MainActor in
-                viewModel.imageURL = try await item.imageURLToDisplay()
-            }
         }
         // No provider-based onReceive; lists refresh via Realm publishers.
     }
@@ -1271,6 +1318,19 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     }
 }
 
+/// SwiftUI owns cancellation through .task(id:). A detached metadata read may
+/// finish afterward, so the result must still belong to the uncancelled caller.
+@MainActor
+func refreshReaderBookCoverWidth(
+    resolve: @MainActor () async -> CGFloat,
+    publish: @MainActor (CGFloat) -> Void
+) async {
+    guard !Task.isCancelled else { return }
+    let width = await resolve()
+    guard !Task.isCancelled else { return }
+    publish(width)
+}
+
 public struct BookCoverImageView: View {
     public let imageURL: URL
     public let dimension: CGFloat
@@ -1298,15 +1358,19 @@ public struct BookCoverImageView: View {
                 value: renderedCoverWidth
             )
             .task(id: "\(imageURL.absoluteString)|\(dimension)") {
-                let resolvedWidth = await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension)
-                guard abs(renderedCoverWidth - resolvedWidth) >= 0.5 else { return }
-                renderedCoverWidth = resolvedWidth
-                debugPrint(
-                    "# BOOKHORIZ",
-                    "event=coverPreferenceEmitResolved",
-                    "url=\(imageURL.absoluteString)",
-                    "dimension=\(dimension)",
-                    "renderedWidth=\(resolvedWidth)"
+                await refreshReaderBookCoverWidth(
+                    resolve: { await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension) },
+                    publish: { resolvedWidth in
+                        guard abs(renderedCoverWidth - resolvedWidth) >= 0.5 else { return }
+                        renderedCoverWidth = resolvedWidth
+                        debugPrint(
+                            "# BOOKHORIZ",
+                            "event=coverPreferenceEmitResolved",
+                            "url=\(imageURL.absoluteString)",
+                            "dimension=\(dimension)",
+                            "renderedWidth=\(resolvedWidth)"
+                        )
+                    }
                 )
             }
     }
@@ -1317,7 +1381,7 @@ public struct BookCoverImageView: View {
     }
 
     private func resolveRenderedCoverWidth(imageURL: URL, dimension: CGFloat) async -> CGFloat {
-        guard dimension > 0 else { return 0 }
+        guard dimension.isFinite, dimension > 0 else { return 0 }
         guard let pixelSize = await imagePixelSize(for: imageURL) else { return 0 }
         guard pixelSize.height > 0 else { return 0 }
 

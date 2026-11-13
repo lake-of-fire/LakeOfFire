@@ -681,6 +681,37 @@ final class FeedStateIndicatorTests: XCTestCase {
         )
     }
 
+    func testMarkOpenedHistoryRecordsDeletedUsesCanonicalIdentityAndSuppliedTimestamp() throws {
+        let realm = try Realm(configuration: makeConfiguration())
+        let targetURL = try XCTUnwrap(
+            URL(string: "https://example.com/articles/delete-canonical-history")
+        )
+        let loaderURL = try XCTUnwrap(
+            ReaderContentLoader.readerLoaderURL(for: targetURL)
+        )
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_400)
+
+        try realm.write {
+            let record = HistoryRecord()
+            record.url = loaderURL
+            record.updateCompoundKey()
+            realm.add(record)
+
+            XCTAssertEqual(
+                HistoryRecord.markOpenedRecordsDeleted(
+                    matching: targetURL,
+                    in: realm,
+                    at: timestamp
+                ),
+                1
+            )
+        }
+
+        let record = try XCTUnwrap(realm.objects(HistoryRecord.self).first)
+        XCTAssertTrue(record.isDeleted)
+        XCTAssertEqual(record.explicitlyModifiedAt, timestamp)
+    }
+
     @MainActor
     func testConcurrentHistoryVisitsConvergeOnOneCanonicalRecord() async throws {
         let configuration = makeConfiguration()

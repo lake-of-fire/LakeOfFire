@@ -77,7 +77,9 @@ struct ReaderDocStateUserScript {
                 showKnown: body?.dataset?.manabiShowKnown ?? null,
                 lookupHighlightMode: body?.dataset?.manabiLookupHighlightMode ?? null,
                 furiganaEnabled: body?.dataset?.manabiFuriganaEnabled ?? null,
-                readerRenderReady: body?.dataset?.mnbReaderRenderReady ?? html?.dataset?.mnbReaderRenderReady ?? null,
+                readerRenderReady: body?.dataset?.mnbReaderRenderReady ?? html?.dataset?.mnbReaderRenderReady
+                    ?? (isEbookDocument ? body?.dataset?.manabiReaderRenderReady ?? html?.dataset?.manabiReaderRenderReady : null)
+                    ?? null,
                 fontPending: html?.dataset?.mnbFontPending ?? null,
                 fontReady: html?.dataset?.manabiFontReady ?? null,
                 layoutComplete: html?.dataset?.manabiLayoutComplete ?? null,
@@ -185,7 +187,7 @@ struct ReaderDocStateUserScript {
                     href: window.location.href,
                     readyState: document.readyState,
                     state: {
-                        hasReaderContent: !!readerContent,
+                        hasReaderContent: !!state?.hasReaderContent,
                         hasReaderRenderReady: !!state?.hasReaderRenderReady,
                         bodyClassName: body?.className ?? null
                     },
@@ -200,16 +202,27 @@ struct ReaderDocStateUserScript {
             } catch (_error) {}
         }
         function currentState(reason) {
+            const html = document.documentElement;
+            const body = document.body;
+            const readerContent = document.getElementById('reader-content');
+            // Main's EPUB renderer uses its own host and marker. Keep the
+            // article contract unchanged rather than renaming either producer.
+            const foliateView = isEbookDocument ? document.querySelector('foliate-view') : null;
+            const hasReaderContent = !!readerContent || !!foliateView;
+            const hasRenderReadyMarker = html?.dataset?.mnbReaderRenderReady === '1'
+                || body?.dataset?.mnbReaderRenderReady === '1'
+                || (isEbookDocument && (html?.dataset?.manabiReaderRenderReady === '1'
+                    || body?.dataset?.manabiReaderRenderReady === '1'));
             return {
                 href: window.location.href,
                 readyState: document.readyState,
                 hasBody: !!document.body,
-                hasReaderContent: !!document.getElementById('reader-content'),
+                hasReaderContent,
                 hasReadabilityGlobal: typeof window.manabi_readability === 'function',
                 hasReaderRenderReady:
-                    (document.documentElement?.dataset?.mnbReaderRenderReady === '1'
-                    || document.body?.dataset?.mnbReaderRenderReady === '1')
-                    && !!document.getElementById('reader-content')
+                    hasRenderReadyMarker
+                    && hasReaderContent
+                    && !!body
                     && (document.documentElement?.dataset?.mnbFontPending ?? null) !== '1'
                     && window.getComputedStyle(document.body).visibility !== 'hidden'
                     && window.getComputedStyle(document.body).display !== 'none'
@@ -243,6 +256,17 @@ struct ReaderDocStateUserScript {
             return postState(reason || "event");
         };
         if (isEbookDocument) {
+            // A renderer event may precede native font completion. The font
+            // gate clears only this root attribute, with no further event.
+            // Do not poll or observe the EPUB subtree.
+            observer.disconnect();
+            observer = new MutationObserver(() => { postState("font-state"); });
+            if (document.documentElement) {
+                observer.observe(document.documentElement, {
+                    attributes: true,
+                    attributeFilter: ["data-mnb-font-pending"]
+                });
+            }
             return;
         }
         let attempts = 0;

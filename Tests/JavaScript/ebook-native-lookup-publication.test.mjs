@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+    makeNativeLookupPayloadGeneration,
     nativeLookupFramePublicationTransition,
     nativeLookupPublicationIdentityForDocument,
     shouldRunNativeLookupRefresh,
@@ -26,6 +27,20 @@ test('publication identity is stable for one document and distinct for same-URL 
     assert.notEqual(secondIdentity.frameIdentifier, firstIdentity.frameIdentifier)
     assert.notEqual(secondIdentity.frameKey, firstIdentity.frameKey)
     assert.equal(first.body.dataset.swiftuiwebviewFrameUuid, firstIdentity.frameIdentifier)
+})
+
+test('lookup payload publications receive bounded producer-owned generations', () => {
+    const first = makeNativeLookupPayloadGeneration(makeDocument(
+        'ebook://ebook/load/book/section.xhtml'
+    ))
+    const second = makeNativeLookupPayloadGeneration(makeDocument(
+        'ebook://ebook/load/book/section.xhtml'
+    ))
+
+    assert.match(first, /^lookup-index-[1-9][0-9]*$/)
+    assert.match(second, /^lookup-index-[1-9][0-9]*$/)
+    assert.notEqual(second, first)
+    assert.ok(Buffer.byteLength(first, 'utf8') <= 256)
 })
 
 test('publication identity preserves the content-script frame identifier', () => {

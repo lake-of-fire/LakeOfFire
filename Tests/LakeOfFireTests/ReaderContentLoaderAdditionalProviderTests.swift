@@ -6,6 +6,7 @@ import RealmSwiftGaps
 
 @objc(LakeOfFireTestsExternalBookContent)
 private final class ExternalBookContent: Bookmark {
+    override class func shouldIncludeInDefaultSchema() -> Bool { false }
     @Persisted var externalHTML: String?
 
     override var locationBarTitle: String? {
@@ -34,7 +35,8 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         }
     }
 
-    private func makeConfiguration() throws -> (Realm.Configuration, () -> Void) {
+    @MainActor
+    private func makeConfiguration() throws -> Realm.Configuration {
         let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
@@ -63,17 +65,27 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         ReaderContentLoader.feedEntryRealmConfiguration = configuration
         ReaderContentLoader.additionalContentProviders = []
 
-        return (
-            configuration,
-            {
-                ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
-                ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
-                ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
-                ReaderContentLoader.additionalContentProviders = originalAdditionalProviders
-                ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer = originalInlineHTMLAnalysisEnqueuer
-                try? FileManager.default.removeItem(at: directoryURL)
-            }
-        )
+        let capturedConfiguration = configuration
+        addTeardownBlock { @MainActor in
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.additionalContentProviders = originalAdditionalProviders
+            ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer = originalInlineHTMLAnalysisEnqueuer
+            // Test operations have completed and method-local managed values
+            // have left scope before async teardown releases the actor cache.
+            await ReaderContentLoader.resetTransientCachesForTesting()
+            let cacheReleased = await { @RealmBackgroundActor in
+                _ = RealmBackgroundActor.shared.removeCachedRealm(for: capturedConfiguration)
+                return await RealmBackgroundActor.shared.existingCachedRealm(
+                    for: capturedConfiguration
+                ) == nil
+            }()
+            XCTAssertTrue(cacheReleased, "Do not remove a file while its cached Realm is still owned")
+            guard cacheReleased else { return }
+            try FileManager.default.removeItem(at: directoryURL)
+        }
+        return configuration
     }
 
     private actor InlineHTMLAnalysisRecorder {
@@ -93,8 +105,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
 
     @MainActor
     func testAdditionalProviderParticipatesInLookupAndLoaderRouting() async throws {
-        let (configuration, restore) = try makeConfiguration()
-        defer { restore() }
+        let configuration = try makeConfiguration()
         await ReaderContentLoader.resetTransientCachesForTesting()
 
         let contentURL = try XCTUnwrap(URL(string: "ttsu:///book/provider-test"))
@@ -145,8 +156,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
 
     @MainActor
     func testReaderBookRoutingDoesNotRequireEagerHTMLProbe() async throws {
-        let (configuration, restore) = try makeConfiguration()
-        defer { restore() }
+        let configuration = try makeConfiguration()
         await ReaderContentLoader.resetTransientCachesForTesting()
 
         let contentURL = try XCTUnwrap(URL(string: "ttsu:///book/provider-test-no-cache"))
@@ -186,8 +196,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
 
     @MainActor
     func testCustomPayloadHooksKeepBookmarksAndHistoryLightweight() async throws {
-        let (configuration, restore) = try makeConfiguration()
-        defer { restore() }
+        let configuration = try makeConfiguration()
         await ReaderContentLoader.resetTransientCachesForTesting()
 
         let contentURL = try XCTUnwrap(URL(string: "ttsu:///book/lightweight"))
@@ -218,8 +227,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
 
     @MainActor
     func testBookmarkAndHistoryCreationEnqueueInlineHTMLAnalysis() async throws {
-        let (configuration, restore) = try makeConfiguration()
-        defer { restore() }
+        let configuration = try makeConfiguration()
         await ReaderContentLoader.resetTransientCachesForTesting()
 
         let recorder = InlineHTMLAnalysisRecorder()
@@ -254,6 +262,145 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         XCTAssertEqual(events.map(\.imageURL), [imageURL, imageURL])
         XCTAssertEqual(events.map(\.title), ["Inline Analysis", "Inline Analysis"])
         XCTAssertTrue(events.allSatisfy { $0.html == html })
+
+        let remainsBookmarked = try await threadSafeContent.toggleBookmark(realmConfiguration: configuration)
+        XCTAssertFalse(remainsBookmarked)
+        let eventsAfterRemoval = await recorder.events
+        XCTAssertEqual(eventsAfterRemoval.count, 2, "Removing a bookmark must not enqueue inline analysis")
+    }
+
+    @MainActor
+    func testRetiredBookmarkSourceDoesNotEnqueueInlineHTMLAnalysis() async throws {
+        let configuration = try makeConfiguration()
+        let recorder = InlineHTMLAnalysisRecorder()
+        ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer = { url, imageURL, title, html in
+            await recorder.append(url: url, imageURL: imageURL, title: title, html: html)
+        }
+        let contentURL = URL(string: "https://example.com/retired-analysis-source")!
+        let contentKey = try XCTUnwrap(HistoryRecord.makePrimaryKey(url: contentURL))
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await realm.asyncWritePreservingOwnership {
+                let source = HistoryRecord()
+                source.compoundKey = contentKey
+                source.url = contentURL
+                source.html = "<html><body><m-m>本文</m-m></body></html>"
+                realm.add(source)
+            }
+        }()
+        let realm = try await Realm(configuration: configuration)
+        let source = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: contentKey))
+        let retiredSource = source.freeze()
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await realm.asyncWritePreservingOwnership {
+                realm.delete(try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: contentKey)))
+            }
+        }()
+        XCTAssertFalse(retiredSource.isInvalidated, "The stale input still has readable HTML")
+        do {
+            try await retiredSource.addBookmark(realmConfiguration: configuration)
+            XCTFail("A retired physical source must reject the bookmark before analysis dispatch")
+        } catch is CancellationError { }
+        let events = await recorder.events
+        XCTAssertTrue(events.isEmpty)
+        await realm.asyncRefresh()
+        XCTAssertTrue(realm.objects(Bookmark.self).isEmpty)
+    }
+
+    private actor RequestedURLRecorder {
+        private(set) var urls = [URL]()
+
+        func append(_ url: URL) {
+            urls.append(url)
+        }
+    }
+
+    @MainActor
+    func testRejectedPrivateLoaderAliasesDoNotReachProvidersOrCreateHistory() async throws {
+        let (configuration, restore) = try makeConfiguration()
+        defer { restore() }
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let recorder = RequestedURLRecorder()
+        ReaderContentLoader.registerAdditionalContentProvider(
+            .init(id: "rejected-loader-probe") { url in
+                await recorder.append(url)
+                return []
+            }
+        )
+
+        for value in [
+            "internal://local/load/reader?reader-url=",
+            "INTERNAL://LOCAL/load/unknown",
+            "internal://local/LOAD/reader",
+            "internal://other/load/reader?reader-url=https://example.com/article",
+            "internal://local/load",
+            "internal://user@local/load/reader?reader-url=https://example.com/article",
+            "internal://local:443/load/reader?reader-url=https://example.com/article",
+            "internal://local/load/reader?reader-url=https://example.com/first&reader-url=https://example.com/second",
+        ] {
+            let url = try XCTUnwrap(URL(string: value))
+            let stored = try await ReaderContentLoader.lookupStoredContent(url: url)
+            XCTAssertNil(stored, value)
+            let loaded = try await ReaderContentLoader.getContent(
+                forURL: url,
+                countsAsHistoryVisit: true,
+                source: "testRejectedPrivateLoaderAliases"
+            )
+            XCTAssertNil(loaded, value)
+            let direct = try await ReaderContentLoader.load(
+                url: url,
+                persist: true,
+                countsAsHistoryVisit: true,
+                source: "testRejectedPrivateLoaderAliases.direct"
+            )
+            XCTAssertNil(direct, value)
+        }
+
+        let requests = await recorder.urls
+        XCTAssertTrue(requests.isEmpty)
+        let verificationRealm = try await Realm(configuration: configuration)
+        verificationRealm.refresh()
+        XCTAssertEqual(verificationRealm.objects(HistoryRecord.self).count, 0)
+
+        // Confirm the isolated store can persist an ordinary source URL.
+        let source = try XCTUnwrap(URL(string: "https://example.com/accepted-source"))
+        let accepted = try await ReaderContentLoader.load(
+            url: source,
+            persist: true,
+            countsAsHistoryVisit: true,
+            source: "testRejectedPrivateLoaderAliases.control"
+        )
+        XCTAssertEqual(accepted?.url, source)
+        verificationRealm.refresh()
+        XCTAssertEqual(verificationRealm.objects(HistoryRecord.self).count, 1)
+    }
+
+    @MainActor
+    func testTranscriptPageFactoryRetainsLoaderRoundTripCapability() async throws {
+        let registry = TranscriptPageRegistry()
+        let source = try XCTUnwrap(URL(string: "https://example.com/video?value=a%26b"))
+        let asset = TranscriptPageAsset(
+            key: "canonical-url-probe",
+            canonicalContentURL: source,
+            title: "Transcript",
+            html: "<p>Example</p>"
+        )
+        await registry.register(asset)
+        let pageURL = try XCTUnwrap(asset.pageURL)
+        let resolved = await registry.makeReaderContent(for: pageURL)
+        let content = try XCTUnwrap(resolved)
+        XCTAssertEqual(content.url, pageURL)
+        XCTAssertTrue(content.hasHTML)
+        XCTAssertNil(content.realm)
+
+        // This protects the selected page producer's builder compatibility;
+        // it does not assert persistence or stored offline restore behavior.
+        let loader = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: content.url))
+        XCTAssertEqual(loader.readerContentURL, pageURL)
+        XCTAssertEqual(ReaderContentLoader.getContentURL(fromLoaderURL: loader), pageURL)
+        let vttURL = try XCTUnwrap(asset.webVTTURL)
+        XCTAssertNil(ReaderContentLoader.readerLoaderURL(for: vttURL))
     }
 
     @RealmBackgroundActor

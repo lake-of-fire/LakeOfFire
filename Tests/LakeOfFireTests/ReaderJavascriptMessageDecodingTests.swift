@@ -177,12 +177,19 @@ final class ReaderJavascriptMessageDecodingTests: XCTestCase {
         }
     }
 
-    func testFractionalCompletionDropsUnsafeIntegerMetadataWithoutTrapping() throws {
-        let unsafeValues = [
+    // #50's bounded decoder rejects a malformed present integer field;
+    // it does not drop that field or truncate/coerce legacy scalar values.
+    func testFractionalCompletionRejectsMalformedIntegerMetadata() {
+        let invalidValues: [Any] = [
             Double.nan,
             Double.infinity,
             -Double.infinity,
             Double.greatestFiniteMagnitude,
+            2.9,
+            "4",
+            -1,
+            true,
+            9_007_199_254_740_992.0,
         ]
         let integerFields = [
             "sectionIndex",
@@ -191,53 +198,34 @@ final class ReaderJavascriptMessageDecodingTests: XCTestCase {
             "visibleSegmentCount",
             "observedSegmentCount",
         ]
-
         for field in integerFields {
-            for unsafeValue in unsafeValues {
-                let decoded = try XCTUnwrap(
-                    FractionalCompletionMessage(
-                        body: [
-                            "fractionalCompletion": 0.5,
-                            "cfi": "epubcfi(/6/2!)",
-                            "reason": "navigation",
-                            field: unsafeValue,
-                        ]
-                    )
+            for invalidValue in invalidValues {
+                XCTAssertNil(
+                    FractionalCompletionMessage(body: [
+                        "fractionalCompletion": 0.5,
+                        "cfi": "epubcfi(/6/2!)",
+                        "reason": "navigation",
+                        field: invalidValue,
+                    ]),
+                    "Malformed present field \(field) must reject the payload"
                 )
-                switch field {
-                case "sectionIndex":
-                    XCTAssertNil(decoded.sectionIndex)
-                case "currentPageNumber":
-                    XCTAssertNil(decoded.currentPageNumber)
-                case "totalPages":
-                    XCTAssertNil(decoded.totalPages)
-                case "visibleSegmentCount":
-                    XCTAssertNil(decoded.visibleSegmentCount)
-                case "observedSegmentCount":
-                    XCTAssertNil(decoded.observedSegmentCount)
-                default:
-                    XCTFail("Unexpected field: \(field)")
-                }
             }
         }
     }
 
-    func testFractionalCompletionPreservesFiniteNumericConversionBehavior() throws {
+    func testFractionalCompletionPreservesExactNonnegativeNumericMetadata() throws {
         let decoded = try XCTUnwrap(
-            FractionalCompletionMessage(
-                body: [
-                    "fractionalCompletion": 0.625,
-                    "cfi": "epubcfi(/6/2!)",
-                    "reason": "navigation",
-                    "sectionIndex": 2.9,
-                    "currentPageNumber": "4",
-                    "totalPages": 10.9,
-                    "visibleSegmentCount": 3.7,
-                    "observedSegmentCount": "8",
-                ]
-            )
+            FractionalCompletionMessage(body: [
+                "fractionalCompletion": 0.625,
+                "cfi": "epubcfi(/6/2!)",
+                "reason": "navigation",
+                "sectionIndex": 2.0,
+                "currentPageNumber": 4,
+                "totalPages": 10.0,
+                "visibleSegmentCount": 3,
+                "observedSegmentCount": 8.0,
+            ])
         )
-
         XCTAssertEqual(decoded.fractionalCompletion, 0.625)
         XCTAssertEqual(decoded.sectionIndex, 2)
         XCTAssertEqual(decoded.currentPageNumber, 4)
