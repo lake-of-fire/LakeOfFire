@@ -631,7 +631,7 @@ public extension ReaderContentProtocol {
                     bookmark.refreshChangeMetadata(explicitlyModified: true)
                     return false
                 }
-                _ = Bookmark.add(
+                _ = Bookmark.addInOwnedWrite(
                     url: url,
                     title: title,
                     imageUrl: imageURL,
@@ -639,11 +639,6 @@ public extension ReaderContentProtocol {
                     html: html,
                     content: content,
                     publicationDate: publicationDate,
-                    readerContentKind: readerContentKind,
-                    feedEntryCollectionKey: feedEntryCollectionKey,
-                    feedEntryCollectionScheme: feedEntryCollectionScheme,
-                    feedEntryCollectionTerm: feedEntryCollectionTerm,
-                    feedEntryCollectionTitle: feedEntryCollectionTitle,
                     isFromClipboard: isFromClipboard,
                     isTitlePrefixOfContent: isTitlePrefixOfContent,
                     rssContainsFullContent: rssContainsFullContent,
@@ -651,6 +646,11 @@ public extension ReaderContentProtocol {
                     isReaderModeAvailable: isReaderModeAvailable,
                     isReaderModeOfferHidden: isReaderModeOfferHidden,
                     autoOpenMediaPlayer: autoOpenMediaPlayer,
+                    readerContentKind: readerContentKind,
+                    feedEntryCollectionKey: feedEntryCollectionKey,
+                    feedEntryCollectionScheme: feedEntryCollectionScheme,
+                    feedEntryCollectionTerm: feedEntryCollectionTerm,
+                    feedEntryCollectionTitle: feedEntryCollectionTitle,
                     realm: realm,
                     configure: { managedBookmark in
                         if let sourceContent {
@@ -693,6 +693,27 @@ public extension ReaderContentProtocol {
                     current.isDemoted = false
                     current.refreshChangeMetadata(explicitlyModified: true)
                 }
+            }
+            if let html {
+                // Notify only after the admitted writes have committed. Refresh
+                // and revalidate before crossing into the analysis consumer.
+                if realm != historyRealm { realm.refresh() }
+                if let sourceRealm, sourceRealm != realm, sourceRealm != historyRealm { sourceRealm.refresh() }
+                try sourceReference?.validateStorage()
+                if let sourceReference, let sourceRealm {
+                    guard let source = sourceReference.resolve(in: sourceRealm), !source.isDeleted else {
+                        throw CancellationError()
+                    }
+                }
+                try Task.checkCancellation()
+                guard admission.matchesCurrentStorageIdentity({
+                    RealmBackgroundActor.shared.realmCacheKey(for: realmConfiguration)
+                }), historyAdmission.matchesCurrentStorageIdentity({
+                    RealmBackgroundActor.shared.realmCacheKey(for: historyRealmConfiguration)
+                }) else {
+                    throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                }
+                await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(url, imageURL, title, html)
             }
             return true
         }()

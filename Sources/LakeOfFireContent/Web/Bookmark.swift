@@ -223,6 +223,28 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
 
 extension Bookmark: SyncSkippablePropertiesModel {}
 
+/// Compare the bookmark's scalar columns and value lists around a configure hook.
+/// Detach lists before the hook mutates them; never compare live Realm collections.
+@RealmBackgroundActor
+private func bookmarkMutationValues(_ bookmark: Bookmark) -> [String: AnyHashable] {
+    Dictionary(uniqueKeysWithValues: bookmark.objectSchema.properties.map { property in
+        let value: AnyHashable
+        switch bookmark[property.name] {
+        case let list as RealmSwift.List<URL>:
+            value = AnyHashable(Array(list))
+        case let list as RealmSwift.List<String>:
+            value = AnyHashable(Array(list))
+        case nil:
+            value = AnyHashable(NSNull())
+        case let scalar as AnyHashable:
+            value = scalar
+        default:
+            preconditionFailure("Unsupported bookmark configure value: \(property.name)")
+        }
+        return (property.name, value)
+    })
+}
+
 public extension Bookmark {
     static func get(forURL url: URL, realm: Realm) -> Self? {
         return realm.objects(Self.self)
@@ -313,7 +335,8 @@ public extension Bookmark {
         feedEntryCollectionTerm: String? = nil,
         feedEntryCollectionTitle: String? = nil,
         realm: Realm,
-        at timestamp: Date = Date()
+        at timestamp: Date = Date(),
+        configure: (@RealmBackgroundActor (Bookmark) -> Void)? = nil
     ) -> Bookmark {
         precondition(realm.isInWriteTransaction)
         let primaryKey = url.flatMap { $0.snippetKey ?? Bookmark.makePrimaryKey(url: $0) }
@@ -365,6 +388,15 @@ public extension Bookmark {
                 bookmark.url = ReaderContentLoader.snippetURL(key: bookmark.compoundKey) ?? bookmark.url
             }
             realm.add(bookmark)
+        }
+        if let configure {
+            // The hook needs the managed row, and its final values must be in
+            // the same journal generation as the base bookmark changes.
+            let previousValues = didChange ? nil : bookmarkMutationValues(bookmark)
+            configure(bookmark)
+            if let previousValues, previousValues != bookmarkMutationValues(bookmark) {
+                didChange = true
+            }
         }
         if didChange { bookmark.refreshChangeMetadata(explicitlyModified: true, at: timestamp) }
         return bookmark

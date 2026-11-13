@@ -1,3 +1,4 @@
+import BigSyncKit
 import XCTest
 import AVFoundation
 @testable import LakeOfFireCore
@@ -375,6 +376,48 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertEqual(bookmark.audioSubtitlesURL, entry.audioSubtitlesURL)
         XCTAssertEqual(bookmark.audioSubtitlesRole, .content)
         XCTAssertEqual(bookmark.rssContainsFullContent, false)
+        let mutationKey = "Bookmark." + bookmark.compoundKey
+        let initialGeneration = try XCTUnwrap(
+            realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey)
+        ).generation
+        let entryKey = managedEntry.compoundKey
+        let updatedAudioURL = URL(string: "https://example.com/updated-audio.m4a")!
+        let updatedSubtitlesURL = URL(string: "https://example.com/updated-subtitles.vtt")!
+        try await { @RealmBackgroundActor in
+            let sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await sourceRealm.asyncWritePreservingOwnership {
+                let current = try XCTUnwrap(
+                    sourceRealm.object(ofType: FeedEntry.self, forPrimaryKey: entryKey)
+                )
+                current.voiceAudioURL = updatedAudioURL
+                current.voiceAudioURLs.removeAll()
+                current.voiceAudioURLs.append(updatedAudioURL)
+                current.audioSubtitlesURL = updatedSubtitlesURL
+                current.audioSubtitlesRoleRawValue = AudioSubtitlesRole.media.rawValue
+                current.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }()
+        await realm.asyncRefresh()
+        try await managedEntry.addBookmark(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(bookmark.voiceAudioURL, updatedAudioURL)
+        XCTAssertEqual(Array(bookmark.voiceAudioURLs), [updatedAudioURL])
+        XCTAssertEqual(bookmark.audioSubtitlesURL, updatedSubtitlesURL)
+        XCTAssertEqual(bookmark.audioSubtitlesRole, .media)
+        let updatedMutation = try XCTUnwrap(
+            realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: mutationKey)
+        )
+        let updatedGeneration = updatedMutation.generation
+        let updatedAt = bookmark.modifiedAt
+        XCTAssertNotEqual(updatedGeneration, initialGeneration,
+                          "A configure-only media change must create a new journal generation")
+        XCTAssertEqual(updatedMutation.changedAt, updatedAt)
+
+        try await managedEntry.addBookmark(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(updatedMutation.generation, updatedGeneration,
+                       "Rebuilding identical value lists must not journal the bookmark again")
+        XCTAssertEqual(bookmark.modifiedAt, updatedAt)
     }
 
     @MainActor

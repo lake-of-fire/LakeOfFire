@@ -262,6 +262,50 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         XCTAssertEqual(events.map(\.imageURL), [imageURL, imageURL])
         XCTAssertEqual(events.map(\.title), ["Inline Analysis", "Inline Analysis"])
         XCTAssertTrue(events.allSatisfy { $0.html == html })
+
+        let remainsBookmarked = try await threadSafeContent.toggleBookmark(realmConfiguration: configuration)
+        XCTAssertFalse(remainsBookmarked)
+        let eventsAfterRemoval = await recorder.events
+        XCTAssertEqual(eventsAfterRemoval.count, 2, "Removing a bookmark must not enqueue inline analysis")
+    }
+
+    @MainActor
+    func testRetiredBookmarkSourceDoesNotEnqueueInlineHTMLAnalysis() async throws {
+        let configuration = try makeConfiguration()
+        let recorder = InlineHTMLAnalysisRecorder()
+        ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer = { url, imageURL, title, html in
+            await recorder.append(url: url, imageURL: imageURL, title: title, html: html)
+        }
+        let contentURL = URL(string: "https://example.com/retired-analysis-source")!
+        let contentKey = try XCTUnwrap(HistoryRecord.makePrimaryKey(url: contentURL))
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await realm.asyncWritePreservingOwnership {
+                let source = HistoryRecord()
+                source.compoundKey = contentKey
+                source.url = contentURL
+                source.html = "<html><body><m-m>本文</m-m></body></html>"
+                realm.add(source)
+            }
+        }()
+        let realm = try await Realm(configuration: configuration)
+        let source = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: contentKey))
+        let retiredSource = source.freeze()
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await realm.asyncWritePreservingOwnership {
+                realm.delete(try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: contentKey)))
+            }
+        }()
+        XCTAssertFalse(retiredSource.isInvalidated, "The stale input still has readable HTML")
+        do {
+            try await retiredSource.addBookmark(realmConfiguration: configuration)
+            XCTFail("A retired physical source must reject the bookmark before analysis dispatch")
+        } catch is CancellationError { }
+        let events = await recorder.events
+        XCTAssertTrue(events.isEmpty)
+        await realm.asyncRefresh()
+        XCTAssertTrue(realm.objects(Bookmark.self).isEmpty)
     }
 
     private actor RequestedURLRecorder {
