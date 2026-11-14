@@ -877,6 +877,13 @@ fileprivate actor FeedEntryActor {
 
 public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, ChangeMetadataRecordable {
     @Persisted(primaryKey: true) public var compoundKey = ""
+    /// Keep the legacy stored column without changing the current presentation API.
+    @Persisted public var retainedLegacyReaderModeOfferHidden = false
+
+    public override class func propertiesMapping() -> [String: String] {
+        ["retainedLegacyReaderModeOfferHidden": "isReaderModeOfferHidden"]
+    }
+
     public var keyPrefix: String? {
         return feedID?.uuidString
     }
@@ -2466,6 +2473,12 @@ fileprivate func syncRelatedReaderContent(
                 object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
             }
         }
+    }
+}
+
+extension FeedEntry: SyncSkippablePropertiesModel {
+    public func skipSyncingProperties() -> Set<String>? {
+        ["retainedLegacyReaderModeOfferHidden"]
     }
 }
 
