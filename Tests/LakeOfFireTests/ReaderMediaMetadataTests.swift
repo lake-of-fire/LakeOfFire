@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+@testable import SwiftUIWebView
 @testable import LakeOfFireCore
 import Combine
 import RealmSwift
@@ -45,6 +46,118 @@ private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
 }
 
 final class ReaderMediaMetadataTests: XCTestCase {
+
+    @MainActor
+    func testSameArticleCommitPreservesRecordedPresentationAndTransientAudioMetadata() async throws {
+        for remainsOpen in [false, true] {
+            let model = ReaderMediaPlayerViewModel()
+            let content = HistoryRecord()
+            content.url = URL(string: "https://example.com/recorded-session")!
+            content.updateCompoundKey()
+            let audio = URL(string: "https://example.com/recorded-session.m4a")!
+            content.voiceAudioURL = audio
+            content.autoOpenMediaPlayer = true
+            var state = WebViewState.empty
+            state.pageURL = content.url
+            try await model.onNavigationCommitted(content: content, newState: state)
+            let load = model.currentContentLoadID
+            model.registerPlaybackStart(contentKey: content.compoundKey, contentLoadID: load)
+            if !remainsOpen { model.closePlaybackPresentation() }
+            model.isPlaying = false
+            // Opposite auto-open metadata must not override the user's current
+            // choice during either a synthetic commit or automatic refresh.
+            content.autoOpenMediaPlayer = !remainsOpen
+            try await model.onNavigationCommitted(content: content, newState: state, startsNewDocument: false)
+            XCTAssertEqual(model.isMediaPlayerPresented, remainsOpen)
+            XCTAssertEqual(model.shouldShowMinimizedPlaybackControls, remainsOpen)
+            XCTAssertEqual(model.playbackSource, .recordedAudio)
+            XCTAssertFalse(model.isPlaying)
+            content.voiceAudioURL = nil
+            state.pageURL = URL(string: "about:blank")!
+            try await model.onNavigationCommitted(content: content, newState: state, startsNewDocument: false)
+            XCTAssertEqual(model.audioURLs, [audio])
+            XCTAssertEqual(model.currentContentLoadID, load)
+            XCTAssertTrue(model.hasStartedPlaybackForCurrentContent)
+            XCTAssertEqual(model.isMediaPlayerPresented, remainsOpen)
+            XCTAssertEqual(model.playbackSource, .recordedAudio)
+            model.closePlaybackPresentation()
+        }
+    }
+
+    @MainActor
+    func testSameDocumentURLChangeKeepsPlaybackUseButReloadDoesNot() async throws {
+        let model = ReaderMediaPlayerViewModel()
+        let content = HistoryRecord()
+        content.url = URL(string: "https://example.com/audio-anchor")!
+        content.updateCompoundKey()
+        try await model.onNavigationCommitted(content: content, newState: .empty)
+        let load = model.currentContentLoadID
+        model.registerPlaybackStart(contentKey: content.compoundKey, contentLoadID: load)
+        try await model.onNavigationCommitted(content: content, newState: .empty, startsNewDocument: false)
+        XCTAssertEqual(model.currentContentLoadID, load)
+        XCTAssertTrue(model.hasStartedPlaybackForCurrentContent)
+        try await model.onNavigationCommitted(content: content, newState: .empty)
+        XCTAssertNotEqual(model.currentContentLoadID, load)
+        XCTAssertFalse(model.hasStartedPlaybackForCurrentContent)
+    }
+
+
+    @MainActor
+    func testMinimizedControlsRequireFirstPlaybackForCurrentDocument() {
+        let model = ReaderMediaPlayerViewModel()
+        let url = URL(string: "https://example.com/audio-current")!
+        model.beginPlaybackContentLoad(contentKey: "current", contentURL: url)
+        model.audioURLs = [URL(string: "https://example.com/audio.m4a")!]
+        model.isMediaPlayerPresented = true
+        XCTAssertTrue(model.hasAnyPlayableMedia)
+        XCTAssertFalse(model.shouldShowMinimizedPlaybackControls)
+        model.registerPlaybackStart(contentKey: "current", contentLoadID: model.currentContentLoadID)
+        XCTAssertTrue(model.shouldShowMinimizedPlaybackControls)
+        model.isPlaying = false
+        XCTAssertTrue(model.shouldShowMinimizedPlaybackControls, "Pause retains current-document first use")
+        let nextLaunch = ReaderMediaPlayerViewModel()
+        XCTAssertFalse(nextLaunch.shouldShowMinimizedPlaybackControls)
+    }
+
+    @MainActor
+    func testSameURLReloadWithdrawsPlaybackAndRejectsPriorLoadCallback() async throws {
+        let model = ReaderMediaPlayerViewModel()
+        let content = HistoryRecord()
+        content.url = URL(string: "https://example.com/reloaded-audio")!
+        content.updateCompoundKey()
+        try await model.onNavigationCommitted(content: content, newState: .empty)
+        let previous = model.currentContentLoadID
+        model.registerPlaybackStart(contentKey: content.compoundKey, contentLoadID: previous)
+        XCTAssertTrue(model.hasStartedPlaybackForCurrentContent)
+        try await model.onNavigationCommitted(content: content, newState: .empty)
+        XCTAssertNotEqual(model.currentContentLoadID, previous)
+        XCTAssertFalse(model.hasStartedPlaybackForCurrentContent)
+        model.isMediaPlayerPresented = true
+        model.registerPlaybackStart(contentKey: content.compoundKey, contentLoadID: previous)
+        XCTAssertFalse(model.shouldShowMinimizedPlaybackControls)
+        model.registerPlaybackStart(contentKey: content.compoundKey, contentLoadID: model.currentContentLoadID)
+        XCTAssertTrue(model.shouldShowMinimizedPlaybackControls)
+    }
+
+    @MainActor
+    func testStalePlaybackCannotRetargetReplacementOrPendingDocument() {
+        let model = ReaderMediaPlayerViewModel()
+        let url = URL(string: "https://example.com/audio")!
+        model.beginPlaybackContentLoad(contentKey: "old", contentURL: url)
+        let old = model.currentContentLoadID
+        model.invalidatePlaybackForDocumentLoad()
+        model.registerPlaybackStart(contentKey: "old", contentLoadID: old)
+        XCTAssertFalse(model.hasStartedPlaybackForCurrentContent)
+        model.beginPlaybackContentLoad(contentKey: "new", contentURL: url)
+        let current = model.currentContentLoadID
+        model.registerPlaybackStart(contentKey: "old", contentLoadID: current)
+        model.registerPlaybackStart(contentKey: "old", contentLoadID: old)
+        XCTAssertFalse(model.hasStartedPlaybackForCurrentContent)
+        XCTAssertTrue(model.isCurrentPlaybackContent(contentKey: "new", contentLoadID: current))
+        model.registerPlaybackStart(contentKey: "new", contentLoadID: current)
+        XCTAssertTrue(model.hasStartedPlaybackForCurrentContent)
+    }
+
     func testAudioAvailabilitySnapshotKeepsRecordedAndReadAloudIndependent() {
         let ebookURL = URL(string: "ebook://book/section.epub")!
         let ebook = ReaderAudioAvailabilitySnapshot(
@@ -418,7 +531,8 @@ final class ReaderMediaMetadataTests: XCTestCase {
     @MainActor
     func testSeekingReadAloudToEndClearsSavedResumePosition() {
         let viewModel = ReaderMediaPlayerViewModel()
-        viewModel.registerPlaybackStart(contentKey: "read-aloud-end-\(UUID().uuidString)")
+        viewModel.beginPlaybackContentLoad(contentKey: "read-aloud-end-\(UUID().uuidString)",
+                                           contentURL: URL(string: "https://example.com/read-aloud-end")!)
         let utterances = [
             ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One."),
             ReaderTTSUtterance(sentenceIdentifier: "s2", text: "Two."),
