@@ -452,7 +452,7 @@ final class ReaderReadAloudSpeechOwnershipTests: XCTestCase {
         let lease = SpeechOwnershipTestAudioSessionLease()
         let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
         defer { viewModel.clearAITTSPlaybackQueue() }
-        viewModel.registerPlaybackStart(contentKey: contentKey)
+        viewModel.beginPlaybackContentLoad(contentKey: contentKey, contentURL: URL(string: "https://example.com/speech")!)
         let queue = utterances + [
             ReaderTTSUtterance(sentenceIdentifier: "checkpoint-3", text: "三文目です。"),
             ReaderTTSUtterance(sentenceIdentifier: "checkpoint-4", text: "最後の文章です。"),
@@ -473,7 +473,7 @@ final class ReaderReadAloudSpeechOwnershipTests: XCTestCase {
         let restoredLease = SpeechOwnershipTestAudioSessionLease()
         let restored = makeModel(synthesizer: restoredSynthesizer, lease: restoredLease)
         defer { restored.clearAITTSPlaybackQueue() }
-        restored.registerPlaybackStart(contentKey: contentKey)
+        restored.beginPlaybackContentLoad(contentKey: contentKey, contentURL: URL(string: "https://example.com/speech")!)
         XCTAssertTrue(restored.presentAITTS(utterances: queue, autoplay: false))
         XCTAssertEqual(restored.ttsCurrentSentenceIdentifier, "admission-2")
         XCTAssertEqual(restored.ttsProgressValue, 1)

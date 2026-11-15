@@ -57,6 +57,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public var audioURLs = [URL]()
     @Published public var isPlaying = false
     @Published public private(set) var hasStartedPlaybackForCurrentContent = false
+    @Published public private(set) var currentContentLoadID = UUID()
     @Published public var isTemporarilySuspendedForLoading = false
     @Published public private(set) var isRecordedAudioSuspendedForLookup = false
     @Published public private(set) var shouldResumeRecordedAudioAfterLookupDismissal = false
@@ -151,6 +152,10 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     public var hasAnyPlayableMedia: Bool {
         !audioURLs.isEmpty || hasPreparedAITTS
+    }
+
+    public var shouldShowMinimizedPlaybackControls: Bool {
+        isMediaPlayerPresented && hasStartedPlaybackForCurrentContent
     }
 
     public var hasRecordedAudio: Bool {
@@ -297,13 +302,11 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
+    public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState, startsNewDocument: Bool = true) async throws {
         let incomingContentKey = content.compoundKey
-        if currentContentKey != incomingContentKey {
-            currentContentKey = incomingContentKey
-            resetPlaybackStateForIncomingContent()
+        if startsNewDocument || currentContentKey != incomingContentKey {
+            beginPlaybackContentLoad(contentKey: incomingContentKey, contentURL: content.url)
         }
-        currentContentURL = content.url
         let voiceAudioURLs = content.resolvedVoiceAudioURLs
         if !newState.pageURL.isNativeReaderView, newState.pageURL.host != nil, !newState.pageURL.isFileURL {
             if voiceAudioURLs != audioURLs {
@@ -580,7 +583,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 fillAITTSQueueWindow()
             }
             isPlaying = true
-            registerPlaybackStart(contentKey: currentContentKey)
+            registerPlaybackStart(contentKey: currentContentKey, contentLoadID: currentContentLoadID)
             mediaDebugPrint("# READALOUD ai.play.resumed")
             return
         }
@@ -646,14 +649,32 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    public func registerPlaybackStart(contentKey: String?) {
-        guard let key = contentKey else { return }
-        if currentContentKey != key {
-            currentContentKey = key
-        }
-        if !hasStartedPlaybackForCurrentContent {
-            hasStartedPlaybackForCurrentContent = true
-        }
+    public func isCurrentPlaybackContent(contentKey: String?, contentLoadID: UUID) -> Bool {
+        contentKey != nil && contentKey == currentContentKey && contentLoadID == currentContentLoadID
+    }
+
+    @MainActor
+    public func registerPlaybackStart(contentKey: String?, contentLoadID: UUID) {
+        guard isCurrentPlaybackContent(contentKey: contentKey, contentLoadID: contentLoadID) else { return }
+        hasStartedPlaybackForCurrentContent = true
+    }
+
+    @MainActor
+    func beginPlaybackContentLoad(contentKey: String, contentURL: URL) {
+        invalidatePlaybackForDocumentLoad()
+        currentContentKey = contentKey
+        currentContentURL = contentURL
+    }
+
+    @MainActor
+    public func invalidatePlaybackForDocumentLoad() {
+        currentContentLoadID = UUID()
+        currentContentKey = nil
+        currentContentURL = nil
+        audioURLs = []
+        isMediaPlayerPresented = false
+        isPlaying = false
+        resetPlaybackStateForIncomingContent()
     }
 
     @MainActor
@@ -715,7 +736,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
         guard shouldEnqueueSpeechSynthesizerUtterances else {
             isPlaying = true
-            registerPlaybackStart(contentKey: currentContentKey)
+            registerPlaybackStart(contentKey: currentContentKey, contentLoadID: currentContentLoadID)
             updateAITTSProgress()
             mediaDebugPrint(
                 "# READALOUD ai.speak.queued",
@@ -734,7 +755,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         fillAITTSQueueWindow(voice: voice)
 
         isPlaying = true
-        registerPlaybackStart(contentKey: currentContentKey)
+        // Real speech unlocks minimized controls from its owned didStart callback.
         updateAITTSProgress()
         persistReadAloudPosition()
         mediaDebugPrint(
@@ -1010,7 +1031,7 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         if !isPlaying {
             isPlaying = true
         }
-        registerPlaybackStart(contentKey: currentContentKey)
+        registerPlaybackStart(contentKey: currentContentKey, contentLoadID: currentContentLoadID)
         updateAITTSProgress()
         persistReadAloudPosition()
         mediaDebugPrint(
@@ -1032,7 +1053,7 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         if !isPlaying {
             isPlaying = true
         }
-        registerPlaybackStart(contentKey: currentContentKey)
+        registerPlaybackStart(contentKey: currentContentKey, contentLoadID: currentContentLoadID)
         updateAITTSProgress()
     }
 
@@ -1046,7 +1067,7 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         guard ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)] != nil,
               readAloudAudioSessionLease != nil else { return }
         isPlaying = true
-        registerPlaybackStart(contentKey: currentContentKey)
+        registerPlaybackStart(contentKey: currentContentKey, contentLoadID: currentContentLoadID)
         mediaDebugPrint("# READALOUD ai.delegate.didContinue")
     }
 

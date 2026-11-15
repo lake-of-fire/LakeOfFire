@@ -204,7 +204,8 @@ final class ReaderWebViewHandler {
             }
             try await readerMediaPlayerViewModel.onNavigationCommitted(
                 content: currentContent,
-                newState: state
+                newState: state,
+                startsNewDocument: urlChangeContext == nil
             )
             try Task.checkCancellation()
         } catch is CancellationError {

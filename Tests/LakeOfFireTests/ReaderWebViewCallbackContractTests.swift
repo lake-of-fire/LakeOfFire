@@ -147,11 +147,25 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
         self.nativeIsReady = nativeIsReady
     }
 
+    var stylesheetFailuresRemaining = 0
+    private(set) var stylesheetRequests: [URL] = []
+    var onStylesheetRequest: ((URL) -> Void)?
+    var onFontLoadPending: (() -> Void)?
+
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         let url = urlSchemeTask.request.url!
         // Exercise the real local-scheme injection with a deterministic system
         // font stylesheet. No bundled font file or network access is needed.
         let isStylesheet = url.path == "/manabi-fonts.css"
+        if isStylesheet {
+            stylesheetRequests.append(url)
+            onStylesheetRequest?(url)
+            if stylesheetFailuresRemaining > 0 {
+                stylesheetFailuresRemaining -= 1
+                urlSchemeTask.didFailWithError(URLError(.resourceUnavailable))
+                return
+            }
+        }
         let payload = isStylesheet ? Data("html { font-family: serif; }".utf8) : html
         urlSchemeTask.didReceive(URLResponse(
             url: url, mimeType: isStylesheet ? "text/css" : "text/html",
@@ -169,6 +183,10 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any] else { return }
+        if body["fontLoadPending"] as? Bool == true {
+            onFontLoadPending?()
+            return
+        }
         let receipt = WebViewMessage(
             frameInfo: message.frameInfo, uuid: UUID(), name: message.name, body: body
         )
@@ -204,6 +222,135 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
 
 @MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
+
+    private func withSharedFontWebView(
+        _ operation: @MainActor (ReaderModeViewModel, WebViewScriptCaller, WKWebView, ReaderGeneratedReadinessFixture, URL) async throws -> Void
+    ) async throws {
+        let loaded = expectation(description: "Font test document loads")
+        let fixture = ReaderGeneratedReadinessFixture(
+            html: Data("<html><head></head><body>Readable fallback 日本語.</body></html>".utf8),
+            loaded: loaded, pending: loaded, ready: loaded, receive: { _ in }, nativeIsReady: { false })
+        let controller = WKUserContentController()
+        controller.add(fixture, name: "readerDocState")
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController = controller
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(fixture, forURLScheme: "internal")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 430, height: 932), configuration: configuration)
+        webView.navigationDelegate = fixture
+#if os(iOS)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }, "Requires the native app-hosted test plan")
+        weak var previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let host = UIViewController()
+        host.view.frame = webView.frame
+        host.view.addSubview(webView)
+        window.rootViewController = host
+        window.frame = webView.frame
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+#endif
+        let caller = WebViewScriptCaller()
+        let bindingOwner = UUID()
+        caller.installBinding(ownedBy: bindingOwner, asyncCaller: { source, arguments, frame, world in
+            let result = try await webView.callAsyncJavaScript(source,
+                arguments: arguments?.mapValues { $0 as Any } ?? [:], in: frame, contentWorld: world ?? .page)
+            return .init(result)
+        }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil })
+        defer {
+            _ = caller.clearBinding(ownedBy: bindingOwner)
+            webView.stopLoading()
+            webView.navigationDelegate = nil
+            controller.removeScriptMessageHandler(forName: "readerDocState")
+            fixture.stop()
+#if os(iOS)
+            webView.removeFromSuperview()
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKeyAndVisible()
+#endif
+        }
+        let url = URL(string: "internal://local/snippet?key=font-revision-fixture")!
+        webView.load(URLRequest(url: url))
+        await fulfillment(of: [loaded], timeout: 10)
+        try await operation(ReaderModeViewModel(), caller, webView, fixture, url)
+    }
+
+    func testSharedFontInjectionRetriesFailedStylesheetWithCurrentRevisionAndRejectsDowngrade() async throws {
+        try await withSharedFontWebView { mode, caller, webView, fixture, url in
+            var revision: UInt64 = 7
+            mode.readerFontAvailabilityRevisionProvider = { revision }
+            fixture.stylesheetFailuresRemaining = 1
+            let firstRequest = self.expectation(description: "Initial font stylesheet requested")
+            let refreshRequest = self.expectation(description: "Available font revision requests a fresh stylesheet")
+            fixture.onStylesheetRequest = { requestedURL in
+                let requestedRevision = URLComponents(url: requestedURL, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "revision" })?.value
+                if requestedRevision == "7" { firstRequest.fulfill() }
+                if requestedRevision == "8" { refreshRequest.fulfill() }
+            }
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
+            await self.fulfillment(of: [firstRequest], timeout: 5)
+            revision = 8
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
+            await self.fulfillment(of: [refreshRequest], timeout: 5)
+            revision = 0
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
+            let href = try await webView.evaluateJavaScript("document.getElementById('mnb-custom-fonts-inline').href") as? String
+            let stylesheetURL = try XCTUnwrap(href.flatMap(URL.init(string:)))
+            XCTAssertEqual(URLComponents(url: stylesheetURL, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "revision" })?.value, "8")
+            let retainedRevision = try await webView.evaluateJavaScript("globalThis.manabiReaderFontAvailabilityRevision")
+            XCTAssertEqual(retainedRevision as? String, "8")
+            let styleRevision = try await webView.evaluateJavaScript("document.getElementById('mnb-custom-fonts-inline').dataset.mnbFontRevision")
+            XCTAssertEqual(styleRevision as? String, "8")
+        }
+    }
+
+    func testLateFontReadinessCannotClearNewerRevisionGate() async throws {
+        try await withSharedFontWebView { mode, caller, webView, fixture, url in
+            _ = try await webView.evaluateJavaScript("""
+                window.__fontLoadReleases = [];
+                Object.defineProperty(document, 'fonts', { configurable: true, value: {
+                    status: 'loading', ready: Promise.resolve(),
+                    load: () => new Promise(resolve => {
+                        window.__fontLoadReleases.push(resolve);
+                        window.webkit.messageHandlers.readerDocState.postMessage({ fontLoadPending: true });
+                    })
+                }});
+                null;
+                """)
+            let firstPending = self.expectation(description: "First font readiness is suspended")
+            let secondPending = self.expectation(description: "New font revision readiness is suspended")
+            var loadCount = 0
+            fixture.onFontLoadPending = {
+                loadCount += 1
+                if loadCount == 1 { firstPending.fulfill() }
+                if loadCount == 2 { secondPending.fulfill() }
+            }
+            var revision: UInt64 = 1
+            mode.readerFontAvailabilityRevisionProvider = { revision }
+            let first = Task { @MainActor in await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url) }
+            defer { first.cancel() }
+            await self.fulfillment(of: [firstPending], timeout: 2)
+            revision = 2
+            let second = Task { @MainActor in await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url) }
+            defer { second.cancel() }
+            await self.fulfillment(of: [secondPending], timeout: 2)
+            _ = try await webView.evaluateJavaScript("window.__fontLoadReleases[0]([]); null;")
+            await first.value
+            let pending = try await webView.evaluateJavaScript("document.documentElement.dataset.mnbFontPending")
+            XCTAssertEqual(pending as? String, "1", "Retired font completion must not settle its successor")
+            let currentRevision = try await webView.evaluateJavaScript("globalThis.manabiReaderFontAvailabilityRevision")
+            XCTAssertEqual(currentRevision as? String, "2")
+            _ = try await webView.evaluateJavaScript("window.__fontLoadReleases[1]([]); null;")
+            await second.value
+            let ready = try await webView.evaluateJavaScript("document.documentElement.dataset.mnbFontReady")
+            XCTAssertEqual(ready as? String, "1")
+        }
+    }
+
 
     func testGeneratedReadableDocumentFontSettlementPublishesNativeReadiness() async throws {
         let fixture = makeReaderWebViewHandlerFixture()

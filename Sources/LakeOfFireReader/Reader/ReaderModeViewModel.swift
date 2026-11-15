@@ -1544,6 +1544,8 @@ public class ReaderModeViewModel: ObservableObject {
     public var defaultFontSize: Double?
     /// In-memory presentation state supplied by the app's settings owner.
     public var readerFontFamilyName = "YuKyokasho"
+    /// Host-owned availability revision, read at injection rather than at view construction.
+    public var readerFontAvailabilityRevisionProvider: @MainActor () -> UInt64 = { 0 }
     @Published public var sharedFontCSSBase64: String?
     @Published public var sharedFontCSSBase64Provider: (() async -> String?)?
     @Published public var sharedReaderFontAsset: SharedReaderFontAsset?
@@ -2013,10 +2015,20 @@ public class ReaderModeViewModel: ObservableObject {
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
             let js = """
             (function() {
+                const revision = String(typeof fontRevision !== 'undefined' ? fontRevision : '0');
+                const rootAtInstallation = document.documentElement;
+                if (!rootAtInstallation) return;
+                const currentRevision = String(globalThis.manabiReaderFontAvailabilityRevision || '0');
+                if (BigInt(revision) < BigInt(currentRevision)) return;
+                const installation = {};
+                globalThis.manabiReaderFontAvailabilityRevision = revision;
+                globalThis.manabiReaderFontStyleInstallation = installation;
+                const ownsInstallation = () => document.documentElement === rootAtInstallation
+                    && globalThis.manabiReaderFontStyleInstallation === installation;
                 const postLog = (_message) => {};
                 const setFontPendingState = (pending) => {
                     const root = document.documentElement;
-                    if (!root) return;
+                    if (!ownsInstallation() || !root) return;
                     if (pending) {
                         root.dataset.mnbFontPending = '1';
                         root.dataset.mnbFontReady = '0';
@@ -2031,11 +2043,12 @@ public class ReaderModeViewModel: ObservableObject {
                 };
                 const resolveInitialStylesheetURL = (desiredFamily) => {
                     const family = desiredFamily || 'YuKyokasho';
-                    return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family));
+                    return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family))
+                        + '&revision=' + encodeURIComponent(revision);
                 };
                 const ensureReaderFontStyle = (desiredFamily) => {
                     const root = document.documentElement;
-                    if (!root) return null;
+                    if (!ownsInstallation() || !root) return null;
                     const family = desiredFamily
                         || root?.dataset?.mnbHorizontalFontFamily
                         || globalThis.manabiHorizontalFontFamilyName
@@ -2048,7 +2061,8 @@ public class ReaderModeViewModel: ObservableObject {
                         style.rel = 'stylesheet';
                         (document.head || document.documentElement).appendChild(style);
                     }
-                    style.href = stylesheetURL;
+                    if (style.href !== stylesheetURL) style.href = stylesheetURL;
+                    style.dataset.mnbFontRevision = revision;
                     style.dataset.mnbInjectedFontFamily = family;
                     style.dataset.mnbFontSource = 'local-scheme';
                     root.dataset.mnbInjectedFontFamily = family;
@@ -2064,15 +2078,14 @@ public class ReaderModeViewModel: ObservableObject {
                 globalThis.manabiReaderFontInjectionMode = 'local-scheme';
                 globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
                 let gateTimeout = null;
-                const scheduleGateTimeout = () => {
-                    if (gateTimeout) {
-                        clearTimeout(gateTimeout);
-                    }
+                const scheduleGateTimeout = () => new Promise((resolve) => {
+                    if (gateTimeout) clearTimeout(gateTimeout);
                     gateTimeout = setTimeout(() => {
                         postLog('timeoutClear mode=local-scheme href=' + window.location.href);
                         setFontPendingState(false);
+                        resolve();
                     }, 4000);
-                };
+                });
                 const waitForFontReady = async (desiredFamily) => {
                     const fontSet = document.fonts;
                     if (!fontSet) return;
@@ -2116,7 +2129,7 @@ public class ReaderModeViewModel: ObservableObject {
                         || globalThis.manabiHorizontalFontFamilyName
                         || 'YuKyokasho');
                     setFontPendingState(true);
-                    scheduleGateTimeout();
+                    const gateDeadline = scheduleGateTimeout();
                     ensureReaderFontStyle(desiredFamily);
                     try { globalThis.manabiForwardReaderFontToEbookDocuments?.('readerMode-local-scheme-inject'); } catch (_) {}
                     try { window.parent?.manabiForwardReaderFontToEbookDocuments?.('readerMode-local-scheme-inject-child'); } catch (_) {}
@@ -2127,11 +2140,12 @@ public class ReaderModeViewModel: ObservableObject {
                         document.documentElement?.dataset?.mnbInjectedFontFamily
                         || desiredFamily
                         || null;
-                    await waitForFontReady(resolvedFamily);
+                    await Promise.race([waitForFontReady(resolvedFamily), gateDeadline]);
                     if (gateTimeout) {
                         clearTimeout(gateTimeout);
                         gateTimeout = null;
                     }
+                    if (!ownsInstallation()) return;
                     postLog('fontsReady mode=local-scheme family=' + (resolvedFamily || 'nil') + ' href=' + window.location.href);
                     setFontPendingState(false);
                 })().catch((e) => {
@@ -2149,6 +2163,7 @@ public class ReaderModeViewModel: ObservableObject {
                 js,
                 arguments: [
                     "stylesheetURLTemplate": stylesheetURLTemplate,
+                    "fontRevision": String(readerFontAvailabilityRevisionProvider()),
                     "horizontalFontFamily": fontValues.horizontalFamily,
                     "verticalFontFamily": fontValues.verticalFamily,
                 ],
