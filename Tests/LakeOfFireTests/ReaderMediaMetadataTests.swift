@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+@testable import SwiftUIWebView
 @testable import LakeOfFireCore
 import Combine
 import RealmSwift
@@ -45,6 +46,43 @@ private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
 }
 
 final class ReaderMediaMetadataTests: XCTestCase {
+
+    @MainActor
+    func testSameArticleCommitPreservesRecordedPresentationAndTransientAudioMetadata() async throws {
+        for remainsOpen in [false, true] {
+            let model = ReaderMediaPlayerViewModel()
+            let content = HistoryRecord()
+            content.url = URL(string: "https://example.com/recorded-session")!
+            content.updateCompoundKey()
+            let audio = URL(string: "https://example.com/recorded-session.m4a")!
+            content.voiceAudioURL = audio
+            content.autoOpenMediaPlayer = true
+            var state = WebViewState.empty
+            state.pageURL = content.url
+            try await model.onNavigationCommitted(content: content, newState: state)
+            let load = model.currentContentLoadID
+            model.registerPlaybackStart(contentKey: content.compoundKey, contentLoadID: load)
+            if !remainsOpen { model.closePlaybackPresentation() }
+            model.isPlaying = false
+            // Opposite auto-open metadata must not override the user's current
+            // choice during either a synthetic commit or automatic refresh.
+            content.autoOpenMediaPlayer = !remainsOpen
+            try await model.onNavigationCommitted(content: content, newState: state, startsNewDocument: false)
+            XCTAssertEqual(model.isMediaPlayerPresented, remainsOpen)
+            XCTAssertEqual(model.shouldShowMinimizedPlaybackControls, remainsOpen)
+            XCTAssertEqual(model.playbackSource, .recordedAudio)
+            XCTAssertFalse(model.isPlaying)
+            content.voiceAudioURL = nil
+            state.pageURL = URL(string: "about:blank")!
+            try await model.onNavigationCommitted(content: content, newState: state, startsNewDocument: false)
+            XCTAssertEqual(model.audioURLs, [audio])
+            XCTAssertEqual(model.currentContentLoadID, load)
+            XCTAssertTrue(model.hasStartedPlaybackForCurrentContent)
+            XCTAssertEqual(model.isMediaPlayerPresented, remainsOpen)
+            XCTAssertEqual(model.playbackSource, .recordedAudio)
+            model.closePlaybackPresentation()
+        }
+    }
 
     @MainActor
     func testSameDocumentURLChangeKeepsPlaybackUseButReloadDoesNot() async throws {

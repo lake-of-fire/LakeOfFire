@@ -86,6 +86,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     private let readAloudController: ReaderReadAloudController
     private let readAloudVoiceResolver: (String, String) -> AVSpeechSynthesisVoice?
+    private var automaticRefreshPlayback: (contentKey: String, loadID: UUID, intent: WebViewNavigator.IssuedNavigationIdentity, contentIsCurrent: @Sendable () -> Bool)?
     private var currentContentKey: String?
     private var currentContentURL: URL?
     private var ttsUtterances = [ReaderTTSUtterance]()
@@ -304,10 +305,19 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState, startsNewDocument: Bool = true) async throws {
         let incomingContentKey = content.compoundKey
-        if startsNewDocument || currentContentKey != incomingContentKey {
+        let beginsNewPlaybackLoad = startsNewDocument || currentContentKey != incomingContentKey
+        if beginsNewPlaybackLoad {
             beginPlaybackContentLoad(contentKey: incomingContentKey, contentURL: content.url)
         }
         let voiceAudioURLs = content.resolvedVoiceAudioURLs
+        if !beginsNewPlaybackLoad {
+            // A transient loader/render can omit metadata. Preserve the active
+            // queue and the user's open/closed presentation within this article.
+            if !voiceAudioURLs.isEmpty, voiceAudioURLs != audioURLs {
+                audioURLs = voiceAudioURLs
+            }
+            return
+        }
         if !newState.pageURL.isNativeReaderView, newState.pageURL.host != nil, !newState.pageURL.isFileURL {
             if voiceAudioURLs != audioURLs {
                 audioURLs = voiceAudioURLs
@@ -666,8 +676,37 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         currentContentURL = contentURL
     }
 
+    /// Automatic reprocessing retains the article's native playback session.
+    /// The exact dispatched navigator intent prevents a later same-URL reload
+    /// from inheriting this permission.
+    @MainActor
+    public func retainPlaybackForAutomaticRefresh(
+        contentKey: String, navigator: WebViewNavigator,
+        contentIsCurrent: @escaping @Sendable () -> Bool
+    ) {
+        guard isCurrentPlaybackContent(contentKey: contentKey, contentLoadID: currentContentLoadID),
+              contentIsCurrent(), let issued = navigator.issuedNavigationIdentity else { return }
+        automaticRefreshPlayback = (contentKey, currentContentLoadID, issued, contentIsCurrent)
+    }
+
+    @MainActor
+    func isAutomaticPlaybackRefresh(contentKey: String?, navigator: WebViewNavigator) -> Bool {
+        guard let refresh = automaticRefreshPlayback else { return false }
+        return refresh.contentKey == contentKey
+            && isCurrentPlaybackContent(contentKey: contentKey, contentLoadID: refresh.loadID)
+            && navigator.isCurrent(refresh.intent) && refresh.contentIsCurrent()
+    }
+
+    @MainActor
+    func consumeAutomaticPlaybackRefresh(contentKey: String?, navigator: WebViewNavigator) -> Bool {
+        let preservesPlayback = isAutomaticPlaybackRefresh(contentKey: contentKey, navigator: navigator)
+        automaticRefreshPlayback = nil
+        return preservesPlayback
+    }
+
     @MainActor
     public func invalidatePlaybackForDocumentLoad() {
+        automaticRefreshPlayback = nil
         currentContentLoadID = UUID()
         currentContentKey = nil
         currentContentURL = nil

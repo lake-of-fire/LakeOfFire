@@ -1521,6 +1521,175 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         return (realm, record)
     }
 
+    func testRecordedPlayerPresentationSurvivesSyntheticAndAutomaticCommits() async throws {
+        for synthetic in [false, true] {
+            for remainsOpen in [false, true] {
+                let fixture = makeReaderWebViewHandlerFixture()
+                fixture.handler.readerViewModel = ReaderCallbackViewModel(
+                    realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
+                let url = URL(string: "https://example.com/recorded-presentation")!
+                let (realm, record) = try cachedHistoryRecord(url: url)
+                let audio = URL(string: "https://example.com/recorded-presentation.m4a")!
+                try realm.write {
+                    record.voiceAudioURL = audio
+                    record.autoOpenMediaPlayer = true
+                }
+                fixture.readerContent.pageURL = url
+                fixture.readerContent.preloadResolvedContent(record, for: url)
+                try await fixture.readerContent.load(url: url)
+                let media = fixture.handler.readerMediaPlayerViewModel
+                var state = WebViewState.empty
+                state.pageURL = url
+                try await media.onNavigationCommitted(content: record, newState: state)
+                let loadID = media.currentContentLoadID
+                media.registerPlaybackStart(contentKey: record.compoundKey, contentLoadID: loadID)
+                if !remainsOpen { media.closePlaybackPresentation() }
+                media.isPlaying = false
+                try realm.write { record.autoOpenMediaPlayer = !remainsOpen }
+                if synthetic {
+                    fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+                    fixture.readerModeViewModel.expectSyntheticReaderLoaderCommit(for: url)
+                } else {
+                    let fence = try XCTUnwrap(fixture.readerContent.makeNativeContentCommitFence(for: url))
+                    let navigator = fixture.handler.navigator
+                    try await navigator.loadResolvedContent(content: record, readerModeViewModel: fixture.readerModeViewModel,
+                        shouldLoad: { true }, didDispatchLoad: {
+                            media.retainPlaybackForAutomaticRefresh(contentKey: record.compoundKey,
+                                navigator: navigator, contentIsCurrent: fence)
+                        }, resolveURL: { url })
+                }
+                fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+                try await fixture.handler.handleNavigationCommitted(state: state)
+                XCTAssertEqual(media.currentContentLoadID, loadID)
+                XCTAssertEqual(media.isMediaPlayerPresented, remainsOpen)
+                XCTAssertEqual(media.shouldShowMinimizedPlaybackControls, remainsOpen)
+                XCTAssertTrue(media.hasStartedPlaybackForCurrentContent)
+                XCTAssertEqual(media.audioURLs, [audio])
+                XCTAssertEqual(media.playbackSource, .recordedAudio)
+                XCTAssertFalse(media.isPlaying)
+                media.closePlaybackPresentation()
+                withExtendedLifetime(realm) {}
+            }
+        }
+    }
+
+    func testAutomaticRefreshCommitRetainsPlaybackAndConsumesOnlyFinalArticleAdmission() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        fixture.handler.readerViewModel = ReaderCallbackViewModel(
+            realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
+        let url = URL(string: "https://example.com/playback-automatic-refresh")!
+        let (realm, record) = try cachedHistoryRecord(url: url)
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.preloadResolvedContent(record, for: url)
+        try await fixture.readerContent.load(url: url)
+        let media = fixture.handler.readerMediaPlayerViewModel
+        media.beginPlaybackContentLoad(contentKey: record.compoundKey, contentURL: url)
+        let loadID = media.currentContentLoadID
+        XCTAssertTrue(media.presentAITTS(utterances: [
+            ReaderTTSUtterance(sentenceIdentifier: "sentence", text: "日本語")], autoplay: false))
+        media.registerPlaybackStart(contentKey: record.compoundKey, contentLoadID: loadID)
+        let fence = try XCTUnwrap(fixture.readerContent.makeNativeContentCommitFence(for: url))
+        let navigator = fixture.handler.navigator
+        try await navigator.loadResolvedContent(content: record, readerModeViewModel: fixture.readerModeViewModel,
+            shouldLoad: { true }, didDispatchLoad: {
+                media.retainPlaybackForAutomaticRefresh(contentKey: record.compoundKey,
+                    navigator: navigator, contentIsCurrent: fence)
+            }, resolveURL: { url })
+        XCTAssertTrue(media.isAutomaticPlaybackRefresh(contentKey: record.compoundKey, navigator: navigator))
+        var blankState = WebViewState.empty
+        blankState.pageURL = URL(string: "about:blank")!
+        fixture.handler.onDocumentContextInvalidated(state: blankState, reason: .navigationCommitted)
+        _ = try? await fixture.handler.handleNavigationCommitted(state: blankState)
+        XCTAssertEqual(media.currentContentLoadID, loadID)
+        XCTAssertTrue(media.isAutomaticPlaybackRefresh(contentKey: record.compoundKey, navigator: navigator))
+        var state = WebViewState.empty
+        state.pageURL = url
+        fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+        try await fixture.handler.handleNavigationCommitted(state: state)
+        XCTAssertEqual(media.currentContentLoadID, loadID)
+        XCTAssertTrue(media.shouldShowMinimizedPlaybackControls)
+        XCTAssertTrue(media.isMediaPlayerPresented)
+        XCTAssertTrue(media.hasPreparedAITTS)
+        XCTAssertFalse(media.isAutomaticPlaybackRefresh(contentKey: record.compoundKey, navigator: navigator))
+        media.closePlaybackPresentation()
+        withExtendedLifetime(realm) {}
+    }
+
+    func testSyntheticReaderCommitRetainsPlayedArticleAndNativePresentation() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        fixture.handler.readerViewModel = ReaderCallbackViewModel(
+            realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
+        let url = URL(string: "https://example.com/playback-synthetic")!
+        let (realm, record) = try cachedHistoryRecord(url: url)
+        fixture.readerContent.pageURL = url
+        fixture.readerContent.preloadResolvedContent(record, for: url)
+        try await fixture.readerContent.load(url: url)
+        let media = fixture.handler.readerMediaPlayerViewModel
+        media.beginPlaybackContentLoad(contentKey: record.compoundKey, contentURL: url)
+        let loadID = media.currentContentLoadID
+        XCTAssertTrue(media.presentAITTS(utterances: [
+            ReaderTTSUtterance(sentenceIdentifier: "sentence", text: "日本語")], autoplay: false))
+        media.registerPlaybackStart(contentKey: record.compoundKey, contentLoadID: loadID)
+        fixture.readerModeViewModel.beginReaderModeLoad(for: url)
+        fixture.readerModeViewModel.expectSyntheticReaderLoaderCommit(for: url)
+        var state = WebViewState.empty
+        state.pageURL = url
+
+        fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+        XCTAssertEqual(media.currentContentLoadID, loadID)
+        XCTAssertTrue(media.isMediaPlayerPresented)
+        try await fixture.handler.handleNavigationCommitted(state: state)
+
+        XCTAssertNil(fixture.readerModeViewModel.expectedSyntheticReaderLoaderURL)
+        XCTAssertEqual(media.currentContentLoadID, loadID)
+        XCTAssertTrue(media.shouldShowMinimizedPlaybackControls)
+        XCTAssertTrue(media.isMediaPlayerPresented)
+        XCTAssertTrue(media.hasPreparedAITTS)
+        media.closePlaybackPresentation()
+        withExtendedLifetime(realm) {}
+    }
+
+    func testExplicitSameURLReloadAndNewArticleRetirePlayedArticle() async throws {
+        for changesArticle in [false, true] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            fixture.handler.readerViewModel = ReaderCallbackViewModel(
+                realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])
+            let url = URL(string: "https://example.com/playback-original")!
+            let (realm, record) = try cachedHistoryRecord(url: url)
+            fixture.readerContent.pageURL = url
+            fixture.readerContent.preloadResolvedContent(record, for: url)
+            try await fixture.readerContent.load(url: url)
+            let media = fixture.handler.readerMediaPlayerViewModel
+            media.beginPlaybackContentLoad(contentKey: record.compoundKey, contentURL: url)
+            let loadID = media.currentContentLoadID
+            XCTAssertTrue(media.presentAITTS(utterances: [
+                ReaderTTSUtterance(sentenceIdentifier: "sentence", text: "日本語")], autoplay: false))
+            media.registerPlaybackStart(contentKey: record.compoundKey, contentLoadID: loadID)
+            var state = WebViewState.empty
+            state.pageURL = url
+            let replacement: HistoryRecord?
+            if changesArticle {
+                let next = HistoryRecord()
+                next.compoundKey = UUID().uuidString
+                next.url = URL(string: "https://example.com/playback-next")!
+                replacement = next
+                state.pageURL = next.url
+                fixture.readerContent.preloadResolvedContent(next, for: next.url)
+            } else {
+                replacement = nil
+                fixture.handler.navigator.reload()
+            }
+            fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+            XCTAssertNotEqual(media.currentContentLoadID, loadID)
+            XCTAssertFalse(media.shouldShowMinimizedPlaybackControls)
+            XCTAssertFalse(media.isMediaPlayerPresented)
+            try await fixture.handler.handleNavigationCommitted(state: state)
+            XCTAssertFalse(media.hasStartedPlaybackForCurrentContent)
+            XCTAssertFalse(media.hasPreparedAITTS)
+            withExtendedLifetime((realm, replacement)) {}
+        }
+    }
+
     func testCommitRejectsCachedRowInvalidatedDuringLoadPublication() async throws {
         let fixture = makeReaderWebViewHandlerFixture()
         let reader = ReaderCallbackViewModel(realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: [])

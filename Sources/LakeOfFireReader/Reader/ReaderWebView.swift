@@ -135,9 +135,16 @@ final class ReaderWebViewHandler {
         if let urlChangeContext { try requireCurrentURLChange(urlChangeContext) }
         let navigationBinding = scriptCaller.currentJavaScriptBindingToken
         var loadedSelectionIsCurrent: (() -> Bool)?
-        if !readerModeViewModel.expectsSyntheticReaderLoaderCommit(
-            for: state.pageURL
-        ) {
+        let isSyntheticReaderCommit = readerModeViewModel.expectsSyntheticReaderLoaderCommit(for: state.pageURL)
+        // Owned about:blank staging is physical, not the final article commit.
+        let refreshCommitsCurrentArticle = state.pageURL.absoluteString != "about:blank"
+            && readerContent.validCachedContent?.url.matchesReaderURL(state.pageURL) == true
+        let isAutomaticPlaybackRefresh = !refreshCommitsCurrentArticle ? false
+            : readerMediaPlayerViewModel.consumeAutomaticPlaybackRefresh(
+                contentKey: readerContent.validCachedContent?.compoundKey, navigator: navigator)
+        let startsNewPlaybackLoad = urlChangeContext == nil
+            && !isSyntheticReaderCommit && !isAutomaticPlaybackRefresh
+        if !isSyntheticReaderCommit {
             // A different committed document no longer owns an older render
             // overlay. The expected processed-HTML commit keeps it until its
             // render-ready message arrives.
@@ -205,7 +212,7 @@ final class ReaderWebViewHandler {
             try await readerMediaPlayerViewModel.onNavigationCommitted(
                 content: currentContent,
                 newState: state,
-                startsNewDocument: urlChangeContext == nil
+                startsNewDocument: startsNewPlaybackLoad
             )
             try Task.checkCancellation()
         } catch is CancellationError {
@@ -340,6 +347,15 @@ final class ReaderWebViewHandler {
         // document, except for the final processed-HTML commit it just issued.
         let isExpectedReaderCommit = reason == .navigationCommitted
             && readerModeViewModel.expectsSyntheticReaderLoaderCommit(for: state.pageURL)
+        // A physical replacement retires script work, but an owned internal
+        // rendering/refresh still belongs to the same article playback session.
+        let refreshKeepsCurrentArticle = (state.pageURL.absoluteString == "about:blank"
+            || readerContent.validCachedContent?.url.matchesReaderURL(state.pageURL) == true)
+            && readerMediaPlayerViewModel.isAutomaticPlaybackRefresh(
+                contentKey: readerContent.validCachedContent?.compoundKey, navigator: navigator)
+        if reason == .navigationCommitted, !isExpectedReaderCommit, !refreshKeepsCurrentArticle {
+            readerMediaPlayerViewModel.invalidatePlaybackForDocumentLoad()
+        }
         if !isExpectedReaderCommit {
             readerContent.isRenderingReaderHTML = false
             readerModeViewModel.cancelReaderModeLoad()
