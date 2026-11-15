@@ -1218,6 +1218,10 @@ fileprivate final class AtomLinkBaseParser: NSObject, XMLParserDelegate {
     }
 
     private static func resolve(_ reference: String, relativeTo baseURL: URL?) -> URL? {
+        // An empty URI reference names the base document itself. Resolve it
+        // explicitly rather than relying on Foundation's empty-relative-URL
+        // behavior. An absent href is filtered before resolution.
+        if reference.isEmpty { return baseURL?.absoluteURL }
         let url = URL(string: reference, relativeTo: baseURL)
             ?? reference.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
                 .flatMap { URL(string: $0, relativeTo: baseURL) }

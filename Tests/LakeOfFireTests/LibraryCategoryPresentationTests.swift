@@ -650,8 +650,12 @@ final class LibraryCategoryPresentationTests: XCTestCase {
         try await model.refreshData().value
         XCTAssertEqual(
             model.userScripts?.map(\.id),
-            [secondID, lockedID, createdScriptID]
+            // Archived scripts are disabled, restorable library members.
+            // Consolidation repairs the removed relationship without enabling it.
+            [secondID, lockedID, firstID, createdScriptID]
         )
+        XCTAssertTrue(capturedFirst.isArchived)
+        XCTAssertFalse(capturedFirst.isDeleted)
         XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
     }
 

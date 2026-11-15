@@ -9,6 +9,23 @@ import XCTest
 import ZIPFoundation
 @testable import LakeOfFireContent
 
+private final class LibraryBoundaryDownloadProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "example.com" && request.url?.path == "/book.txt"
+    }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                             headerFields: ["Content-Type": "text/plain"]) else { return }
+        let text = url.query == "id=1" ? "first book" : "second book"
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(text.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 private actor LibraryBoundaryGate {
     private var opened = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -147,8 +164,16 @@ final class ReaderFileLibraryBoundaryTests: XCTestCase {
         try await withFixture { f in
             let first = try await self.download("https://example.com/book.txt?id=1", manager: f.manager)
             let second = try await self.download("https://example.com/book.txt?id=2", manager: f.manager)
-            try self.write("first book", to: first.localDestination)
-            try self.write("second book", to: second.localDestination)
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [LibraryBoundaryDownloadProtocol.self]
+            let session = URLSession(configuration: configuration)
+            defer { session.invalidateAndCancel() }
+            let controller = DownloadController(session: session)
+            for download in [first, second] {
+                await controller.download(download)
+                let ready = await ReaderFileManager.isDownloadReadyForImport(download)
+                XCTAssertTrue(ready, download.failureMessage ?? "Catalog fixture transfer was not admitted")
+            }
             let firstResult = try await f.manager.ensureImported(downloadable: first)
             let secondResult = try await f.manager.ensureImported(downloadable: second)
             let firstURL = try XCTUnwrap(firstResult)
