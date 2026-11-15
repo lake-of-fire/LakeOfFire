@@ -668,6 +668,9 @@ public struct ReaderContentLoader {
         let captures: [CapturedReaderPropagationRow]
         let references: [ContentReference]
         if scoped {
+            // Scoped propagation bypasses the coalesced reference path, but
+            // still crosses the same discovery suspension boundary.
+            await loadAllDiscoveryGateForTesting?()
             captures = try await discoverCapturedContent(
                 url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries,
                 storage: storage, capture: { CapturedReaderPropagationRow(content: $0, storage: storage) }

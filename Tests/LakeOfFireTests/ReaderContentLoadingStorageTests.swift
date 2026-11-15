@@ -1649,7 +1649,9 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         try await reader.load(url: successorURL, resolveContent: { _ in successor })
         XCTAssertFalse(fence())
         await gate.releaseAll()
-        try await propagation.value
+        do { try await propagation.value } catch is CancellationError {
+            // Selection retirement rejects the queued transaction.
+        }
         await realm.asyncRefresh()
 
         XCTAssertEqual(related.title, "Original related title")
