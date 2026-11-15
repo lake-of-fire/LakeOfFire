@@ -133,6 +133,13 @@ final class ReaderWebViewHandler {
 
         try Task.checkCancellation()
         if let urlChangeContext { try requireCurrentURLChange(urlChangeContext) }
+        // The owned blank stage replaces the physical renderer, but does not
+        // select content or consume the final article's playback admission.
+        if state.pageURL.absoluteString == "about:blank",
+           readerMediaPlayerViewModel.isAutomaticPlaybackRefresh(
+               contentKey: readerContent.validCachedContent?.compoundKey, navigator: navigator) {
+            return
+        }
         let navigationBinding = scriptCaller.currentJavaScriptBindingToken
         var loadedSelectionIsCurrent: (() -> Bool)?
         let isSyntheticReaderCommit = readerModeViewModel.expectsSyntheticReaderLoaderCommit(for: state.pageURL)

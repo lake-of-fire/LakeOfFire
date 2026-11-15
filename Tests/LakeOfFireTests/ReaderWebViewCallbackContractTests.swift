@@ -1596,10 +1596,14 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                     navigator: navigator, contentIsCurrent: fence)
             }, resolveURL: { url })
         XCTAssertTrue(media.isAutomaticPlaybackRefresh(contentKey: record.compoundKey, navigator: navigator))
+        let articleSelectionID = fixture.readerContent.currentSelectionID
         var blankState = WebViewState.empty
         blankState.pageURL = URL(string: "about:blank")!
         fixture.handler.onDocumentContextInvalidated(state: blankState, reason: .navigationCommitted)
-        _ = try? await fixture.handler.handleNavigationCommitted(state: blankState)
+        try await fixture.handler.handleNavigationCommitted(state: blankState)
+        XCTAssertEqual(fixture.readerContent.currentSelectionID, articleSelectionID)
+        XCTAssertEqual(fixture.readerContent.pageURL, url)
+        XCTAssertTrue(fixture.readerContent.validCachedContent === record)
         XCTAssertEqual(media.currentContentLoadID, loadID)
         XCTAssertTrue(media.isAutomaticPlaybackRefresh(contentKey: record.compoundKey, navigator: navigator))
         var state = WebViewState.empty
