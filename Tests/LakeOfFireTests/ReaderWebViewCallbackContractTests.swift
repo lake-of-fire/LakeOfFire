@@ -77,7 +77,11 @@ private final class ReaderCallbackViewModel: ReaderViewModel {
 private final class ReaderCallbackMediaViewModel: ReaderMediaPlayerViewModel {
     var committedContents: [ObjectIdentifier] = []
 
-    override func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
+    override func onNavigationCommitted(
+        content: any ReaderContentProtocol,
+        newState: WebViewState,
+        startsNewDocument: Bool
+    ) async throws {
         committedContents.append(ObjectIdentifier(content))
     }
 }
