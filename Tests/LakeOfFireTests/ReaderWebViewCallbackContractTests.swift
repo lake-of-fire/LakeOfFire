@@ -151,6 +151,7 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
         self.nativeIsReady = nativeIsReady
     }
 
+    var stylesheetCSS = "html { font-family: serif; }"
     var holdsStylesheets = false
     private var pendingStylesheets: [WKURLSchemeTask] = []
     var stylesheetFailuresRemaining = 0
@@ -177,7 +178,7 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
                 return
             }
         }
-        let payload = isStylesheet ? Data("html { font-family: serif; }".utf8) : html
+        let payload = isStylesheet ? Data(stylesheetCSS.utf8) : html
         urlSchemeTask.didReceive(URLResponse(
             url: url, mimeType: isStylesheet ? "text/css" : "text/html",
             expectedContentLength: payload.count, textEncodingName: "utf-8"
@@ -195,7 +196,7 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
         pendingStylesheets.removeAll()
         for task in tasks {
             if failing { task.didFailWithError(URLError(.resourceUnavailable)); continue }
-            let payload = Data("html { font-family: serif; }".utf8)
+            let payload = Data(stylesheetCSS.utf8)
             task.didReceive(URLResponse(url: task.request.url!, mimeType: "text/css",
                 expectedContentLength: payload.count, textEncodingName: "utf-8"))
             task.didReceive(payload)
@@ -387,6 +388,55 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             XCTAssertEqual(fixture.stylesheetRequests.count, requestCount)
             let reusedState = try await webView.evaluateJavaScript("globalThis.manabiReaderFontStyleInstallation.stylesheet.state")
             XCTAssertEqual(reusedState as? String, "loaded")
+        }
+    }
+
+    func testBlobFontInjectionRefreshesUnchangedCSSForNewAvailabilityRevision() async throws {
+        try await withSharedFontWebView { mode, caller, webView, fixture, _ in
+            _ = try await webView.evaluateJavaScript("""
+                window.__lateFontBlobCount = 0;
+                URL.createObjectURL = () => 'internal://local/manabi-fonts.css?late=' + (++window.__lateFontBlobCount);
+                URL.revokeObjectURL = () => {};
+                null;
+                """)
+            // Exercise real CSS FontFaces. The missing local face deterministically
+            // enters error; a revision must create another face even with identical CSS.
+            fixture.stylesheetCSS = "@font-face { font-family: 'YuKyokasho'; src: local('__ManabiMissingLateFont__'); }"
+            let css = fixture.stylesheetCSS
+            mode.sharedFontCSSBase64Provider = { Data(css.utf8).base64EncodedString() }
+            var revision: UInt64 = 1
+            mode.readerFontAvailabilityRevisionProvider = { revision }
+            let sourceURL = URL(string: "https://example.invalid/late-font")!
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
+            try await self.awaitCurrentFontGate(webView)
+            let failed = try await webView.callAsyncJavaScript("""
+                try { await document.fonts.load("1em 'YuKyokasho'"); } catch (_) {}
+                window.__failedLateFace = Array.from(document.fonts).find(face => face.family.includes('YuKyokasho'));
+                window.__lateFontReceipt = globalThis.manabiReaderFontStyleInstallation.stylesheet;
+                return window.__failedLateFace?.status;
+                """, arguments: [:], in: nil, contentWorld: .page)
+            XCTAssertEqual(failed as? String, "error")
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
+            try await self.awaitCurrentFontGate(webView)
+            let reused = try await webView.evaluateJavaScript("window.__lateFontReceipt === globalThis.manabiReaderFontStyleInstallation.stylesheet && window.__lateFontBlobCount === 1")
+            XCTAssertEqual(reused as? Bool, true)
+            fixture.holdsStylesheets = true
+            revision = 2
+            let requested = self.expectation(description: "New availability reparses unchanged blob CSS")
+            fixture.onStylesheetRequest = { _ in requested.fulfill() }
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
+            await self.fulfillment(of: [requested], timeout: 2)
+            let pending = try await webView.evaluateJavaScript("globalThis.manabiReaderFontStyleInstallation.stylesheet.state === 'pending' && document.documentElement.dataset.mnbFontReady === '0'")
+            XCTAssertEqual(pending as? Bool, true)
+            fixture.releaseStylesheets()
+            try await self.awaitCurrentFontGate(webView)
+            let refreshed = try await webView.evaluateJavaScript("Array.from(document.fonts).some(face => face.family.includes('YuKyokasho') && face !== window.__failedLateFace) && document.getElementById('mnb-custom-fonts-inline').dataset.mnbFontRevision === '2' && window.__lateFontBlobCount === 2")
+            XCTAssertEqual(refreshed as? Bool, true)
+            fixture.onStylesheetRequest = nil
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
+            try await self.awaitCurrentFontGate(webView)
+            let stable = try await webView.evaluateJavaScript("window.__lateFontBlobCount")
+            XCTAssertEqual(stable as? Int, 2)
         }
     }
 
