@@ -1037,6 +1037,10 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     func endReadAloudAudioInterruption(permitsResume: Bool) {
         if playbackSource == .aiTextToSpeech { playbackInteractionRevision &+= 1 }
+        if !permitsResume {
+            // Lookup dismissal must not restore resume permission denied by the interruption.
+            cancelLookupAITTSSuspension()
+        }
         let shouldResume = permitsResume && shouldResumeAITTSAfterAudioInterruption
             && playbackSource == .aiTextToSpeech && isMediaPlayerPresented && hasPreparedAITTS
         shouldResumeAITTSAfterAudioInterruption = false
