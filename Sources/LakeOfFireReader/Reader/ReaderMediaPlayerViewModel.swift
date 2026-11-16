@@ -53,7 +53,11 @@ private func resolveReaderReadAloudVoice(
 
 @MainActor
 public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
-    @Published public var isMediaPlayerPresented = false
+    /// Changes only for transport/presentation commands, never progress ticks.
+    public private(set) var playbackInteractionRevision: UInt64 = 0
+    @Published public var isMediaPlayerPresented = false {
+        didSet { if isMediaPlayerPresented != oldValue { playbackInteractionRevision &+= 1 } }
+    }
     @Published public var audioURLs = [URL]()
     @Published public var isPlaying = false
     @Published public private(set) var hasStartedPlaybackForCurrentContent = false
@@ -63,7 +67,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public private(set) var shouldResumeRecordedAudioAfterLookupDismissal = false
     @Published public private(set) var isAITTSSuspendedForLookup = false
     @Published public private(set) var shouldResumeAITTSAfterLookupDismissal = false
-    @Published public var playbackSource: ReaderPlaybackSource = .recordedAudio
+    @Published public var playbackSource: ReaderPlaybackSource = .recordedAudio {
+        didSet { if playbackSource != oldValue { playbackInteractionRevision &+= 1 } }
+    }
     @Published public var autoplayRequestToken: UUID?
     @Published private var ttsProgressPresentation = ReaderTTSProgressPresentation()
     public var ttsProgressValue: Double { ttsProgressPresentation.value }
@@ -191,6 +197,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func beginReadAloudPreparation() -> UUID? {
         guard !isPreparingReadAloud else { return nil }
+        playbackInteractionRevision &+= 1
         let id = UUID()
         readAloudPreparationID = id
         readAloudPreparationState = .preparing
@@ -204,6 +211,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func completeReadAloudPreparation(_ id: UUID) {
         guard readAloudPreparationID == id else { return }
+        playbackInteractionRevision &+= 1
         readAloudPreparationID = nil
         readAloudPreparationState = .idle
     }
@@ -211,12 +219,14 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func failReadAloudPreparation(_ id: UUID, message: String) {
         guard readAloudPreparationID == id else { return }
+        playbackInteractionRevision &+= 1
         readAloudPreparationID = nil
         readAloudPreparationState = .failed(message)
     }
 
     @MainActor
     public func cancelReadAloudPreparation() {
+        if readAloudPreparationID != nil { playbackInteractionRevision &+= 1 }
         readAloudPreparationID = nil
         readAloudPreparationState = .idle
     }
@@ -247,12 +257,14 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func recordLookupRecordedAudioSuspension(wasPlaying: Bool) {
         guard !isRecordedAudioSuspendedForLookup else { return }
+        playbackInteractionRevision &+= 1
         isRecordedAudioSuspendedForLookup = true
         shouldResumeRecordedAudioAfterLookupDismissal = wasPlaying
     }
 
     @MainActor
     public func consumeLookupRecordedAudioResumeRequest() -> Bool {
+        if isRecordedAudioSuspendedForLookup { playbackInteractionRevision &+= 1 }
         let shouldResume = isRecordedAudioSuspendedForLookup && shouldResumeRecordedAudioAfterLookupDismissal
         isRecordedAudioSuspendedForLookup = false
         shouldResumeRecordedAudioAfterLookupDismissal = false
@@ -261,6 +273,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func cancelLookupRecordedAudioSuspension() {
+        if isRecordedAudioSuspendedForLookup { playbackInteractionRevision &+= 1 }
         isRecordedAudioSuspendedForLookup = false
         shouldResumeRecordedAudioAfterLookupDismissal = false
     }
@@ -268,12 +281,14 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func recordLookupAITTSSuspension(wasPlaying: Bool) {
         guard !isAITTSSuspendedForLookup else { return }
+        playbackInteractionRevision &+= 1
         isAITTSSuspendedForLookup = true
         shouldResumeAITTSAfterLookupDismissal = wasPlaying
     }
 
     @MainActor
     public func consumeLookupAITTSResumeRequest() -> Bool {
+        if isAITTSSuspendedForLookup { playbackInteractionRevision &+= 1 }
         let shouldResume = isAITTSSuspendedForLookup && shouldResumeAITTSAfterLookupDismissal
         isAITTSSuspendedForLookup = false
         shouldResumeAITTSAfterLookupDismissal = false
@@ -282,6 +297,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func cancelLookupAITTSSuspension() {
+        if isAITTSSuspendedForLookup { playbackInteractionRevision &+= 1 }
         isAITTSSuspendedForLookup = false
         shouldResumeAITTSAfterLookupDismissal = false
     }
@@ -345,6 +361,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func requestAutoplay() {
+        playbackInteractionRevision &+= 1
         let token = UUID()
         autoplayRequestToken = token
         mediaDebugPrint(
@@ -436,6 +453,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     public func pauseReadAloudForBackgroundIfNeeded() {
         shouldResumeAITTSAfterAudioInterruption = false
         guard playbackSource == .aiTextToSpeech else { return }
+        playbackInteractionRevision &+= 1
         if isPlaying || readAloudController.isSpeaking {
             pauseAITTS()
         }
@@ -575,6 +593,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             mediaDebugPrint("# READALOUD ai.play.skip", "reason=emptyQueue")
             return
         }
+        playbackInteractionRevision &+= 1
         // An explicit replay supersedes a pending next-section preparation.
         // A prepared result also retires its own request at this playback
         // handoff; cancellation after that handoff cannot undo the new queue.
@@ -614,6 +633,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func pauseAITTS() {
+        playbackInteractionRevision &+= 1
         shouldResumeAITTSAfterAudioInterruption = false
         pauseAITTSPlayback()
     }
@@ -719,6 +739,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     private func seekAITTS(toUtteranceIndex index: Int, shouldPlay: Bool) {
         guard !ttsUtterances.isEmpty else { return }
+        playbackInteractionRevision &+= 1
         shouldResumeAITTSAfterAudioInterruption = false
         // A valid seek is a newer playback intent, including a seek back to
         // this sentence. An older section advance must not replace it.
@@ -743,6 +764,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     private func seekAITTSToEnd() {
         guard !ttsUtterances.isEmpty else { return }
+        playbackInteractionRevision &+= 1
         shouldResumeAITTSAfterAudioInterruption = false
         cancelReadAloudPreparation()
         ttsPlaybackCompletedQueueGeneration = nil
@@ -809,6 +831,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     private func stopAITTSPlayback(clearQueue: Bool) {
+        playbackInteractionRevision &+= 1
         shouldResumeAITTSAfterAudioInterruption = false
         stopAITTSSynthesizerForQueueSwap()
         deactivateReadAloudAudioSession()
@@ -1000,12 +1023,14 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     func beginReadAloudAudioInterruption() {
         guard playbackSource == .aiTextToSpeech else { return }
+        playbackInteractionRevision &+= 1
         shouldResumeAITTSAfterAudioInterruption = isPlaying
         pauseAITTSPlayback()
         isPlaying = false
     }
 
     func endReadAloudAudioInterruption(permitsResume: Bool) {
+        if playbackSource == .aiTextToSpeech { playbackInteractionRevision &+= 1 }
         let shouldResume = permitsResume && shouldResumeAITTSAfterAudioInterruption
             && playbackSource == .aiTextToSpeech && isMediaPlayerPresented && hasPreparedAITTS
         shouldResumeAITTSAfterAudioInterruption = false
