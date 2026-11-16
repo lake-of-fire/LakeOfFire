@@ -454,15 +454,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func pauseReadAloudForBackgroundIfNeeded() {
-        // Lookup may already have stopped speech, but its deferred resume must end.
-        cancelLookupAITTSSuspension()
-        shouldResumeAITTSAfterAudioInterruption = false
+        cancelActiveReadAloudPreparationForSystemPause()
         guard playbackSource == .aiTextToSpeech else { return }
-        playbackInteractionRevision &+= 1
-        if isPlaying || readAloudController.isSpeaking {
-            pauseAITTS()
-        }
-        isPlaying = false
+        suspendReadAloudForSystemPause()
     }
 
     @MainActor
@@ -646,23 +640,44 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         // Pause withdraws an outstanding section/initial preparation even when
         // no utterance is speaking yet. Its late result must not autoplay.
         cancelReadAloudPreparation()
+        revokeReadAloudResumeIntent()
+        pauseAITTSPlayback()
+    }
+
+    private func cancelActiveReadAloudPreparationForSystemPause() {
+        guard isPreparingReadAloud else { return }
+        cancelReadAloudPreparation()
+    }
+
+    private func revokeReadAloudResumeIntent() {
         cancelLookupAITTSSuspension()
         shouldResumeAITTSAfterAudioInterruption = false
+    }
+
+    private func suspendReadAloudForSystemPause() {
+        playbackInteractionRevision &+= 1
+        revokeReadAloudResumeIntent()
         pauseAITTSPlayback()
     }
 
     private func pauseAITTSPlayback() {
-        guard readAloudController.isSpeaking else {
-            mediaDebugPrint("# READALOUD ai.pause.skip", "reason=notSpeaking")
-            return
-        }
-        guard readAloudController.pauseSpeaking(at: .immediate) else {
-            mediaDebugPrint("# READALOUD ai.pause.failed")
-            return
-        }
+        // Withdraw callback authority before native pause/stop can synchronously
+        // call the delegate. Keep the physical session active until that call
+        // returns, then release the detached lease.
+        let lease = readAloudAudioSessionLease
+        readAloudAudioSessionLease = nil
         isPlaying = false
         persistReadAloudPosition()
-        deactivateReadAloudAudioSession()
+        defer { releaseReadAloudAudioSessionLease(lease) }
+
+        let nativeQueuePaused = readAloudController.isPaused
+            || (readAloudController.isSpeaking && readAloudController.pauseSpeaking(at: .immediate))
+        if !nativeQueuePaused && !ttsUtteranceObjectIdentifierToIndex.isEmpty {
+            // Some synthesizer states cannot be paused (for example, speech
+            // queued but not started). Retire native callbacks while keeping
+            // the prepared logical queue available for a later explicit play.
+            stopAITTSSynthesizerForQueueSwap()
+        }
         mediaDebugPrint("# READALOUD ai.pause")
     }
 
@@ -1014,6 +1029,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     private func activateReadAloudAudioSession() -> Bool {
+        guard !isReadAloudAudioInterruptionActive else { return false }
         guard readAloudAudioSessionLease == nil else { return true }
         do {
             readAloudAudioSessionLease = try readAloudAudioSessionLeaseFactory()
@@ -1027,6 +1043,11 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private func deactivateReadAloudAudioSession() {
         guard let lease = readAloudAudioSessionLease else { return }
         readAloudAudioSessionLease = nil
+        releaseReadAloudAudioSessionLease(lease)
+    }
+
+    private func releaseReadAloudAudioSessionLease(_ lease: (any ReaderReadAloudAudioSessionLease)?) {
+        guard let lease else { return }
         do {
             try lease.release()
         } catch {
@@ -1076,10 +1097,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     /// transition. Initial preparation may still show the recorded source.
     func pauseReadAloudForDisconnectedRoute() {
         guard playbackSource == .aiTextToSpeech || isPreparingReadAloud else { return }
-        cancelReadAloudPreparation()
+        cancelActiveReadAloudPreparationForSystemPause()
         guard playbackSource == .aiTextToSpeech else { return }
-        pauseAITTS()
-        isPlaying = false
+        suspendReadAloudForSystemPause()
     }
 
 #if os(iOS)
@@ -1178,7 +1198,8 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         let key = ObjectIdentifier(utterance)
-        guard let index = ttsUtteranceObjectIdentifierToIndex[key] else { return }
+        guard readAloudAudioSessionLease != nil,
+              let index = ttsUtteranceObjectIdentifierToIndex[key] else { return }
         ttsUtteranceObjectIdentifierToIndex.removeValue(forKey: key)
         fillAITTSQueueWindow()
         if index >= (ttsUtterances.count - 1) {
