@@ -1029,7 +1029,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     func beginReadAloudAudioInterruption() {
         // Retire pre-interruption work before it can install and autoplay a new queue.
-        cancelReadAloudPreparation()
+        if isPreparingReadAloud { cancelReadAloudPreparation() }
         guard playbackSource == .aiTextToSpeech else { return }
         playbackInteractionRevision &+= 1
         shouldResumeAITTSAfterAudioInterruption = isPlaying
