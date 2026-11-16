@@ -634,6 +634,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func pauseAITTS() {
         playbackInteractionRevision &+= 1
+        // Pause withdraws an outstanding section/initial preparation even when
+        // no utterance is speaking yet. Its late result must not autoplay.
+        cancelReadAloudPreparation()
         shouldResumeAITTSAfterAudioInterruption = false
         pauseAITTSPlayback()
     }
@@ -1039,6 +1042,16 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         }
     }
 
+    /// The platform route notification and native regression tests share this
+    /// transition. Initial preparation may still show the recorded source.
+    func pauseReadAloudForDisconnectedRoute() {
+        guard playbackSource == .aiTextToSpeech || isPreparingReadAloud else { return }
+        cancelReadAloudPreparation()
+        guard playbackSource == .aiTextToSpeech else { return }
+        pauseAITTS()
+        isPlaying = false
+    }
+
 #if os(iOS)
     @objc nonisolated private func handleAudioSessionInterruption(_ notification: Notification) {
         let typeRawValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
@@ -1063,12 +1076,10 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @objc nonisolated private func handleAudioSessionRouteChange(_ notification: Notification) {
         let reasonRawValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
         Task { @MainActor [weak self] in
-            guard let self, self.playbackSource == .aiTextToSpeech,
-                  let reasonRawValue,
+            guard let self, let reasonRawValue,
                   AVAudioSession.RouteChangeReason(rawValue: reasonRawValue) == .oldDeviceUnavailable
             else { return }
-            self.pauseAITTS()
-            self.isPlaying = false
+            self.pauseReadAloudForDisconnectedRoute()
         }
     }
 #endif
