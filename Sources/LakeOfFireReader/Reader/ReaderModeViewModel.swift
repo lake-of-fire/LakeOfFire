@@ -2281,7 +2281,8 @@ public class ReaderModeViewModel: ObservableObject {
                     if (style.tagName === 'LINK') {
                         let href = style.href;
                         let previousBlobURL = null;
-                        if (!href || style.dataset.mnbFontHash !== fontHash) {
+                        if (!href || style.dataset.mnbFontHash !== fontHash
+                            || style.dataset.mnbFontRevision !== revision) {
                             href = URL.createObjectURL(new Blob([css], { type: 'text/css' }));
                             previousBlobURL = globalThis.manabiReaderFontCSSBlobURL;
                             globalThis.manabiReaderFontCSSBlobURL = href;
@@ -2295,6 +2296,7 @@ public class ReaderModeViewModel: ObservableObject {
                         previousInstallation?.stylesheet?.cancel();
                     }
                     style.dataset.mnbFontHash = fontHash;
+                    style.dataset.mnbFontRevision = revision;
                     if (desiredFamily) style.dataset.mnbInjectedFontFamily = desiredFamily;
                     if (!style.isConnected) (document.head || root).appendChild(style);
                     root.dataset.mnbFontInjected = '1';
