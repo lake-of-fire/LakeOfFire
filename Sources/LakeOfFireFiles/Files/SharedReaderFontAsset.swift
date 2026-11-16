@@ -68,6 +68,86 @@ public struct SharedReaderFontAsset: Hashable, Sendable {
     }
 }
 
+
+/// Publishes the existing installation's dependency before a native CSS provider
+/// can suspend. Completion is still fenced by this exact receipt and document.
+public let sharedReaderFontSourcePreparationJavaScript = #"""
+(function(sourceID, revision) {
+    const root = document.documentElement;
+    if (!root || BigInt(String(revision)) < BigInt(String(globalThis.manabiReaderFontAvailabilityRevision || '0'))) return false;
+    const previous = globalThis.manabiReaderFontStyleInstallation;
+    let resolve;
+    const previousStylesheet = previous?.stylesheet?.sourceID
+        ? previous.stylesheet.previousStylesheet : previous?.stylesheet;
+    const receipt = { sourceID, root, previousStylesheet, state: 'pending',
+        ready: new Promise(done => { resolve = done; }) };
+    const settle = state => {
+        if (receipt.state !== 'pending') return;
+        receipt.state = state;
+        window.removeEventListener('pagehide', cancelled);
+        resolve(state);
+    };
+    const cancelled = () => settle('cancelled');
+    receipt.cancel = cancelled;
+    receipt.complete = settle;
+    const installation = { stylesheet: receipt };
+    globalThis.manabiReaderFontStyleInstallation = installation;
+    window.addEventListener('pagehide', cancelled, { once: true });
+    // Retire another source attempt, but keep a valid physical sheet alive
+    // while the replacement provider is deciding whether it has CSS at all.
+    if (previous?.stylesheet?.sourceID) previous.stylesheet.cancel();
+    return true;
+})
+"""#
+
+/// Emitted by both reader font installers. A receipt describes one physical
+/// stylesheet request; it grants no document or reading-progress authority.
+public let sharedReaderFontStylesheetInstallerJavaScript = #"""
+(function installReaderFontStylesheet(installation, previousInstallation, style, href) {
+    const root = document.documentElement;
+    const previous = previousInstallation?.stylesheet;
+    installation.installStylesheet = (nextStyle, nextHref) => {
+        if (globalThis.manabiReaderFontStyleInstallation !== installation
+            || document.documentElement !== root) return null;
+        return installReaderFontStylesheet(installation, installation, nextStyle, nextHref);
+    };
+    let receipt = style.__manabiReaderFontStylesheetReceipt;
+    if (!receipt || receipt.root !== root || receipt.href !== href
+        || style.href !== href || receipt.state === 'cancelled') {
+        receipt?.cancel();
+        let resolve;
+        receipt = { root, style, href, state: 'pending',
+            ready: new Promise(done => { resolve = done; }) };
+        const settle = state => {
+            if (receipt.state !== 'pending') return;
+            receipt.state = state;
+            style.removeEventListener('load', loaded);
+            style.removeEventListener('error', failed);
+            window.removeEventListener('pagehide', cancelled);
+            resolve(state);
+        };
+        const current = () => style.__manabiReaderFontStylesheetReceipt === receipt
+            && document.documentElement === root && style.href === href;
+        const loaded = () => settle(current() ? 'loaded' : 'cancelled');
+        const failed = () => settle(current() ? 'failed' : 'cancelled');
+        const cancelled = () => settle('cancelled');
+        receipt.cancel = cancelled;
+        style.__manabiReaderFontStylesheetReceipt = receipt;
+        installation.stylesheet = receipt;
+        try {
+            style.addEventListener('load', loaded);
+            style.addEventListener('error', failed);
+            window.addEventListener('pagehide', cancelled, { once: true });
+            if (style.href === href && style.sheet) settle('loaded');
+            else if (style.href !== href) style.href = href;
+        } catch (_) { settle('failed'); }
+    }
+    installation.stylesheet = receipt;
+    if (previous && previous !== receipt) previous.cancel();
+    return receipt;
+})
+"""#
+
 // The endpoint encodes logical identity only, never a filesystem path. Each
 // registered PostScript name retains its route across downloads and file changes.
 private func sharedReaderFontRuntimeFilename(postScriptName: String) -> String {
