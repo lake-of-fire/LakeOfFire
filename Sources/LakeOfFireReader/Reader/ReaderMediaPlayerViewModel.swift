@@ -451,6 +451,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func pauseReadAloudForBackgroundIfNeeded() {
+        // Lookup may already have stopped speech, but its deferred resume must end.
+        cancelLookupAITTSSuspension()
         shouldResumeAITTSAfterAudioInterruption = false
         guard playbackSource == .aiTextToSpeech else { return }
         playbackInteractionRevision &+= 1
@@ -637,6 +639,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         // Pause withdraws an outstanding section/initial preparation even when
         // no utterance is speaking yet. Its late result must not autoplay.
         cancelReadAloudPreparation()
+        cancelLookupAITTSSuspension()
         shouldResumeAITTSAfterAudioInterruption = false
         pauseAITTSPlayback()
     }
