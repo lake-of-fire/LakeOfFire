@@ -109,6 +109,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private var nextAITTSUtteranceIndexToEnqueue = 0
     private let aittsQueueWindowSize = 8
     private var shouldResumeAITTSAfterAudioInterruption = false
+    private var isReadAloudAudioInterruptionActive = false
     private var didPublishCompletionForCurrentQueue = false
     private static let readAloudPositionsKey = "readerReadAloudPlaybackPositions"
 
@@ -292,7 +293,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         let shouldResume = isAITTSSuspendedForLookup && shouldResumeAITTSAfterLookupDismissal
         isAITTSSuspendedForLookup = false
         shouldResumeAITTSAfterLookupDismissal = false
-        return shouldResume
+        guard isReadAloudAudioInterruptionActive else { return shouldResume }
+        if shouldResume { shouldResumeAITTSAfterAudioInterruption = true }
+        return false
     }
 
     @MainActor
@@ -586,6 +589,10 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func playAITTS() {
+        guard !isReadAloudAudioInterruptionActive else {
+            mediaDebugPrint("# READALOUD ai.play.skip", "reason=audioInterruptionActive")
+            return
+        }
         shouldResumeAITTSAfterAudioInterruption = false
         guard hasPreparedAITTS else {
             mediaDebugPrint("# READALOUD ai.play.skip", "reason=queueNotPrepared")
@@ -1030,6 +1037,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     func beginReadAloudAudioInterruption() {
         // Retire pre-interruption work before it can install and autoplay a new queue.
         if isPreparingReadAloud { cancelReadAloudPreparation() }
+        guard !isReadAloudAudioInterruptionActive else { return }
+        isReadAloudAudioInterruptionActive = true
         guard playbackSource == .aiTextToSpeech else { return }
         playbackInteractionRevision &+= 1
         shouldResumeAITTSAfterAudioInterruption = isPlaying
@@ -1038,17 +1047,29 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     func endReadAloudAudioInterruption(permitsResume: Bool) {
+        guard isReadAloudAudioInterruptionActive else { return }
+        isReadAloudAudioInterruptionActive = false
         if playbackSource == .aiTextToSpeech { playbackInteractionRevision &+= 1 }
-        if !permitsResume {
+        guard permitsResume else {
             // Lookup dismissal must not restore resume permission denied by the interruption.
+            shouldResumeAITTSAfterAudioInterruption = false
             cancelLookupAITTSSuspension()
+            return
         }
-        let shouldResume = permitsResume && shouldResumeAITTSAfterAudioInterruption
+        let hasCurrentPlayback = shouldResumeAITTSAfterAudioInterruption
             && playbackSource == .aiTextToSpeech && isMediaPlayerPresented && hasPreparedAITTS
-        shouldResumeAITTSAfterAudioInterruption = false
-        if shouldResume {
-            playAITTS()
+        guard hasCurrentPlayback else {
+            shouldResumeAITTSAfterAudioInterruption = false
+            return
         }
+        if isAITTSSuspendedForLookup {
+            // Keep the earlier playback intent behind the lookup until its dismissal.
+            shouldResumeAITTSAfterLookupDismissal = true
+            shouldResumeAITTSAfterAudioInterruption = false
+            return
+        }
+        shouldResumeAITTSAfterAudioInterruption = false
+        playAITTS()
     }
 
     /// The platform route notification and native regression tests share this
