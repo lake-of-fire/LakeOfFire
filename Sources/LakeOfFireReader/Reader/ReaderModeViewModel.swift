@@ -1995,10 +1995,35 @@ public class ReaderModeViewModel: ObservableObject {
         return scriptCaller.currentJavaScriptBindingToken == bindingToken
     }
 
-    func injectSharedFontIfNeeded(
+    /// Publish the blob font dependency before initial progress without making
+    /// optional provider delivery a prerequisite for tracking or readable UI.
+    public func beginSharedFontInjection(
         scriptCaller: WebViewScriptCaller,
         pageURL: URL,
         requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil
+    ) async {
+        guard !sharedReaderFontUsesLocalScheme(for: pageURL), !pageURL.isReaderURLLoaderURL else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Task { @MainActor in
+                var resumed = false
+                let prepared = {
+                    guard !resumed else { return }
+                    resumed = true
+                    continuation.resume()
+                }
+                await self.injectSharedFontIfNeeded(
+                    scriptCaller: scriptCaller, pageURL: pageURL, requiring: bindingToken,
+                    sourcePrepared: prepared)
+                prepared()
+            }
+        }
+    }
+
+    func injectSharedFontIfNeeded(
+        scriptCaller: WebViewScriptCaller,
+        pageURL: URL,
+        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil,
+        sourcePrepared: (@MainActor () -> Void)? = nil
     ) async {
         let bindingToken = bindingToken ?? scriptCaller.currentJavaScriptBindingToken
         let accountSession = readerAccountSessionAccess?.snapshot
@@ -2020,7 +2045,9 @@ public class ReaderModeViewModel: ObservableObject {
                 if (!rootAtInstallation) return;
                 const currentRevision = String(globalThis.manabiReaderFontAvailabilityRevision || '0');
                 if (BigInt(revision) < BigInt(currentRevision)) return;
+                const previousInstallation = globalThis.manabiReaderFontStyleInstallation;
                 const installation = {};
+                const installStylesheet = \(sharedReaderFontStylesheetInstallerJavaScript);
                 globalThis.manabiReaderFontAvailabilityRevision = revision;
                 globalThis.manabiReaderFontStyleInstallation = installation;
                 const ownsInstallation = () => document.documentElement === rootAtInstallation
@@ -2061,7 +2088,7 @@ public class ReaderModeViewModel: ObservableObject {
                         style.rel = 'stylesheet';
                         (document.head || document.documentElement).appendChild(style);
                     }
-                    if (style.href !== stylesheetURL) style.href = stylesheetURL;
+                    installStylesheet(installation, previousInstallation, style, stylesheetURL);
                     style.dataset.mnbFontRevision = revision;
                     style.dataset.mnbInjectedFontFamily = family;
                     style.dataset.mnbFontSource = 'local-scheme';
@@ -2082,22 +2109,31 @@ public class ReaderModeViewModel: ObservableObject {
                     if (gateTimeout) clearTimeout(gateTimeout);
                     gateTimeout = setTimeout(() => {
                         postLog('timeoutClear mode=local-scheme href=' + window.location.href);
+                        // Readable UI fallback is not stylesheet settlement.
+                        // Recall and late font activation still await load/error.
                         setFontPendingState(false);
                         resolve();
                     }, 4000);
                 });
                 const waitForFontReady = async (desiredFamily) => {
-                    const fontSet = document.fonts;
-                    if (!fontSet) return;
-                    if (desiredFamily && typeof fontSet.load === 'function') {
-                        try {
-                            await fontSet.load("1em '" + desiredFamily + "'");
-                        } catch (_) {}
-                    }
-                    if (typeof fontSet.ready === 'object' && fontSet.ready && typeof fontSet.ready.then === 'function') {
-                        try {
-                            await fontSet.ready;
-                        } catch (_) {}
+                    while (ownsInstallation()) {
+                        const sheet = installation.stylesheet;
+                        if (sheet) {
+                            const state = await sheet.ready;
+                            if (!ownsInstallation() || state === 'cancelled') return;
+                            if (installation.stylesheet !== sheet) continue;
+                        }
+                        const fontSet = document.fonts;
+                        if (!fontSet) return;
+                        if (desiredFamily && typeof fontSet.load === 'function') {
+                            try { await fontSet.load("1em '" + desiredFamily + "'"); } catch (_) {}
+                        }
+                        if (!ownsInstallation()) return;
+                        const ready = fontSet.ready;
+                        try { await ready; } catch (_) {}
+                        if (!ownsInstallation()) return;
+                        if (installation.stylesheet !== sheet || document.fonts?.ready !== ready) continue;
+                        return;
                     }
                 };
                 return (async () => {
@@ -2177,185 +2213,165 @@ public class ReaderModeViewModel: ObservableObject {
         guard !pageURL.isReaderURLLoaderURL else {
             return
         }
-        guard let blobPayload = readerModeSharedFontBlobPayloadCache.payload(
-            base64CSS: await resolveSharedReaderFontCSSBase64()
-        ) else {
+        let sourceID = UUID().uuidString
+        guard accountIsCurrent(), !Task.isCancelled else { return }
+        let preparationResult = try? await evaluateReaderDocumentJavaScript(
+            "return (\(sharedReaderFontSourcePreparationJavaScript))(sourceID, fontRevision);",
+            arguments: ["sourceID": sourceID, "fontRevision": String(readerFontAvailabilityRevisionProvider())],
+            duplicateInMultiTargetFrames: true,
+            scriptCaller: scriptCaller, requiring: bindingToken)
+        guard preparationResult as? Bool == true else { return }
+        sourcePrepared?()
+        let base64CSS = await resolveSharedReaderFontCSSBase64()
+        guard accountIsCurrent(), !Task.isCancelled,
+              ownsReaderDocumentBinding(bindingToken, scriptCaller: scriptCaller),
+              let blobPayload = readerModeSharedFontBlobPayloadCache.payload(base64CSS: base64CSS) else {
+            _ = try? await evaluateReaderDocumentJavaScript(
+                """
+                const receipt = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
+                if (receipt?.sourceID === sourceID) {
+                    if (receipt.previousStylesheet) {
+                        globalThis.manabiReaderFontStyleInstallation.stylesheet = receipt.previousStylesheet;
+                    }
+                    receipt.complete('failed');
+                }
+                """,
+                arguments: ["sourceID": sourceID], duplicateInMultiTargetFrames: true,
+                scriptCaller: scriptCaller, requiring: bindingToken)
             return
         }
         let fontHash = blobPayload.identity
         let js = """
             (function() {
-                const postLog = (_message) => {};
-                const isLoaderShellDocument = () => {
-                    const href = window.location.href || '';
-                    return href.startsWith('internal://local/load/reader');
+                const root = document.documentElement;
+                if (!root || window.location.href.startsWith('internal://local/load/reader')) return;
+                const sourceReceipt = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
+                if (sourceReceipt?.sourceID !== fontSourceID || sourceReceipt.root !== root) return;
+                const revision = String(fontRevision);
+                if (BigInt(revision) < BigInt(String(globalThis.manabiReaderFontAvailabilityRevision || '0'))) return;
+                const previousInstallation = globalThis.manabiReaderFontStyleInstallation;
+                const installation = {};
+                const installStylesheet = \(sharedReaderFontStylesheetInstallerJavaScript);
+                globalThis.manabiReaderFontStyleInstallation = installation;
+                globalThis.manabiReaderFontAvailabilityRevision = revision;
+                const ownsInstallation = () => document.documentElement === root
+                    && globalThis.manabiReaderFontStyleInstallation === installation;
+                const setFontPendingState = pending => {
+                    if (!ownsInstallation()) return;
+                    if (pending) {
+                        root.dataset.mnbFontPending = '1';
+                        root.dataset.mnbFontReady = '0';
+                    } else {
+                        delete root.dataset.mnbFontPending;
+                        root.dataset.mnbFontReady = '1';
+                    }
                 };
-                const setFontPendingState = (pending) => {
-                    const root = document.documentElement;
-                    if (!root) return;
-                if (pending) {
-                    root.dataset.mnbFontPending = '1';
-                    root.dataset.mnbFontReady = '0';
-                } else {
-                    delete root.dataset.mnbFontPending;
-                    root.dataset.mnbFontReady = '1';
-                }
-                postLog('pending=' + (pending ? '1' : '0')
-                    + ' mode=blob'
-                    + ' href=' + window.location.href
-                    + ' fontsStatus=' + (document.fonts?.status || 'nil'));
-            };
-            const replaceFontBlob = (css, fontHash, desiredFamily) => {
-                if (!css) return null;
-                const resolvedCSS = css;
-                const blob = new Blob([resolvedCSS], { type: 'text/css' });
-                const nextBlobURL = URL.createObjectURL(blob);
-                const previousBlobURL = globalThis.manabiReaderFontCSSBlobURL || null;
-                globalThis.manabiReaderFontCSSBlobURL = nextBlobURL;
+                const css = atob(fontCSSBase64);
+                globalThis.manabiReaderFontCSSText = css;
                 globalThis.manabiReaderFontCSSHash = fontHash;
                 globalThis.manabiReaderFontInjectionMode = 'blob';
-                if (previousBlobURL && previousBlobURL !== nextBlobURL) {
-                    try { URL.revokeObjectURL(previousBlobURL); } catch (_) {}
-                }
-                return nextBlobURL;
-                };
-                const ensureReaderFontStyle = (desiredFamily) => {
-                    if (isLoaderShellDocument()) {
-                        postLog('skipLoaderShell mode=blob href=' + window.location.href);
-                        return null;
+                const ensureReaderFontStyle = desiredFamily => {
+                    if (!ownsInstallation()) return null;
+                    let style = document.getElementById('mnb-custom-fonts-inline');
+                    if (!style) {
+                        style = document.createElement('link');
+                        style.id = 'mnb-custom-fonts-inline';
+                        style.rel = 'stylesheet';
                     }
-                    const root = document.documentElement;
-                    if (!root) return null;
-                let style = document.getElementById('mnb-custom-fonts-inline');
-                if (style) return style;
-                const css = globalThis.manabiReaderFontCSSText || '';
-                if (!css) return null;
-                const blobURL = replaceFontBlob(css, fontHash, desiredFamily);
-                if (!blobURL) return null;
-                style = document.createElement('link');
-                style.id = 'mnb-custom-fonts-inline';
-                style.rel = 'stylesheet';
-                style.href = blobURL;
-                style.dataset.mnbFontHash = fontHash;
-                if (desiredFamily) {
-                    style.dataset.mnbInjectedFontFamily = desiredFamily;
-                }
-                style.onload = () => postLog('stylesheetLoaded mode=blob family=' + (desiredFamily || 'nil') + ' href=' + window.location.href);
-                style.onerror = () => {
-                    postLog('stylesheetError mode=blob family=' + (desiredFamily || 'nil') + ' href=' + window.location.href);
-                    setFontPendingState(false);
+                    if (style.tagName === 'LINK') {
+                        let href = style.href;
+                        let previousBlobURL = null;
+                        if (!href || style.dataset.mnbFontHash !== fontHash) {
+                            href = URL.createObjectURL(new Blob([css], { type: 'text/css' }));
+                            previousBlobURL = globalThis.manabiReaderFontCSSBlobURL;
+                            globalThis.manabiReaderFontCSSBlobURL = href;
+                        }
+                        installStylesheet(installation, previousInstallation, style, href);
+                        if (previousBlobURL && previousBlobURL !== href) {
+                            try { URL.revokeObjectURL(previousBlobURL); } catch (_) {}
+                        }
+                    } else {
+                        style.textContent = css;
+                        previousInstallation?.stylesheet?.cancel();
+                    }
+                    style.dataset.mnbFontHash = fontHash;
+                    if (desiredFamily) style.dataset.mnbInjectedFontFamily = desiredFamily;
+                    if (!style.isConnected) (document.head || root).appendChild(style);
+                    root.dataset.mnbFontInjected = '1';
+                    return style;
                 };
-                (document.head || document.documentElement).appendChild(style);
-                postLog('stylesheetPrepared mode=blob family=' + (desiredFamily || 'nil') + ' href=' + window.location.href);
-                return style;
-                };
-                if (isLoaderShellDocument()) {
-                    postLog('skipLoaderShell mode=blob href=' + window.location.href);
-                    return;
-                }
                 globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
                 let gateTimeout = null;
-            const scheduleGateTimeout = () => {
-                if (gateTimeout) {
-                    clearTimeout(gateTimeout);
-                }
-                gateTimeout = setTimeout(() => {
-                    postLog('timeoutClear mode=blob href=' + window.location.href);
-                    setFontPendingState(false);
-                }, 4000);
-            };
-            const waitForFontReady = async (desiredFamily) => {
-                const fontSet = document.fonts;
-                if (!fontSet) return;
-                if (desiredFamily && typeof fontSet.load === 'function') {
-                    try {
-                        await fontSet.load("1em '" + desiredFamily + "'");
-                    } catch (_) {}
-                }
-                if (typeof fontSet.ready === 'object' && fontSet.ready && typeof fontSet.ready.then === 'function') {
-                    try {
-                        await fontSet.ready;
-                    } catch (_) {}
-                }
-            };
-            return (async () => {
-                const root = document.documentElement;
-                const horizontalFamily =
-                    typeof horizontalFontFamily !== 'undefined'
-                    ? horizontalFontFamily
-                    : arguments?.horizontalFontFamily;
-                const verticalFamily =
-                    typeof verticalFontFamily !== 'undefined'
-                    ? verticalFontFamily
-                    : arguments?.verticalFontFamily;
-                if (horizontalFamily) {
-                    globalThis.manabiHorizontalFontFamilyName = horizontalFamily;
-                    root.dataset.mnbHorizontalFontFamily = horizontalFamily;
-                }
-                if (verticalFamily) {
-                    globalThis.manabiVerticalFontFamilyName = verticalFamily;
-                    root.dataset.mnbVerticalFontFamily = verticalFamily;
-                }
-                const writingDirection =
-                    document.body?.dataset?.mnbWritingDirection
-                    || root.dataset.mnbWritingDirection
-                    || null;
-                const desiredFamily =
-                    writingDirection === 'vertical'
-                    ? (root.dataset.mnbVerticalFontFamily || verticalFamily)
-                    : (root.dataset.mnbHorizontalFontFamily
-                    || globalThis.manabiHorizontalFontFamilyName
-                    || null);
-                setFontPendingState(true);
-                scheduleGateTimeout();
-                let style = ensureReaderFontStyle(desiredFamily);
-                if (!style) {
-                    const css = atob(fontCSSBase64);
-                    globalThis.manabiReaderFontCSSText = css;
-                    const blobURL = replaceFontBlob(css, fontHash, desiredFamily);
-                    style = document.createElement('link');
-                    style.id = 'mnb-custom-fonts-inline';
-                    style.rel = 'stylesheet';
-                    style.href = blobURL;
-                    style.dataset.mnbFontHash = fontHash;
-                    if (desiredFamily) {
-                        style.dataset.mnbInjectedFontFamily = desiredFamily;
+                const gateDeadline = new Promise(resolve => {
+                    gateTimeout = setTimeout(() => {
+                        // Readable fallback does not settle a valid stylesheet.
+                        setFontPendingState(false);
+                        resolve();
+                    }, 4000);
+                });
+                const waitForFontReady = async desiredFamily => {
+                    while (ownsInstallation()) {
+                        const sheet = installation.stylesheet;
+                        if (sheet) {
+                            const state = await sheet.ready;
+                            if (!ownsInstallation() || state === 'cancelled') return;
+                            if (installation.stylesheet !== sheet) continue;
+                        }
+                        const fontSet = document.fonts;
+                        if (!fontSet) return;
+                        if (desiredFamily && typeof fontSet.load === 'function') {
+                            try { await fontSet.load("1em '" + desiredFamily + "'"); } catch (_) {}
+                        }
+                        if (!ownsInstallation()) return;
+                        const ready = fontSet.ready;
+                        try { await ready; } catch (_) {}
+                        if (!ownsInstallation()) return;
+                        if (installation.stylesheet !== sheet || document.fonts?.ready !== ready) continue;
+                        return;
                     }
-                    (document.head || document.documentElement).appendChild(style);
-                    root.dataset.mnbFontInjected = '1';
-                }
-                if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
-                    window.manabiApplyDirectionalInjectedFont();
-                }
-                try { globalThis.manabiForwardReaderFontToEbookDocuments?.('readerMode-blob-inject'); } catch (_) {}
-                try { window.parent?.manabiForwardReaderFontToEbookDocuments?.('readerMode-blob-inject-child'); } catch (_) {}
-                const resolvedFamily =
-                    document.documentElement?.dataset?.mnbInjectedFontFamily
-                    || desiredFamily
-                    || null;
-                await waitForFontReady(resolvedFamily);
-                if (gateTimeout) {
+                };
+                return (async () => {
+                    // Settings can change while native CSS acquisition awaits.
+                    // The shared asset serves every family; retain that latest
+                    // published choice instead of restoring the captured one.
+                    const currentHorizontalFamily = root.dataset.mnbHorizontalFontFamily
+                        || globalThis.manabiHorizontalFontFamilyName || horizontalFontFamily;
+                    const currentVerticalFamily = root.dataset.mnbVerticalFontFamily
+                        || globalThis.manabiVerticalFontFamilyName || verticalFontFamily;
+                    if (currentHorizontalFamily) {
+                        globalThis.manabiHorizontalFontFamilyName = currentHorizontalFamily;
+                        root.dataset.mnbHorizontalFontFamily = currentHorizontalFamily;
+                    }
+                    if (currentVerticalFamily) {
+                        globalThis.manabiVerticalFontFamilyName = currentVerticalFamily;
+                        root.dataset.mnbVerticalFontFamily = currentVerticalFamily;
+                    }
+                    const direction = document.body?.dataset?.mnbWritingDirection || root.dataset.mnbWritingDirection;
+                    const family = direction === 'vertical' ? currentVerticalFamily : currentHorizontalFamily;
+                    setFontPendingState(true);
+                    ensureReaderFontStyle(family);
+                    window.manabiApplyDirectionalInjectedFont?.();
+                    try { globalThis.manabiForwardReaderFontToEbookDocuments?.('readerMode-blob-inject'); } catch (_) {}
+                    try { window.parent?.manabiForwardReaderFontToEbookDocuments?.('readerMode-blob-inject-child'); } catch (_) {}
+                    await Promise.race([waitForFontReady(root.dataset.mnbInjectedFontFamily || family), gateDeadline]);
                     clearTimeout(gateTimeout);
                     gateTimeout = null;
-                }
-                postLog('fontsReady mode=blob family=' + (resolvedFamily || 'nil') + ' href=' + window.location.href);
-                setFontPendingState(false);
-            })().catch((e) => {
-                if (gateTimeout) {
-                    clearTimeout(gateTimeout);
+                    setFontPendingState(false);
+                })().catch(() => {
+                    if (gateTimeout) clearTimeout(gateTimeout);
                     gateTimeout = null;
-                }
-                postLog('error mode=blob href=' + window.location.href + ' error=' + String(e));
-                setFontPendingState(false);
-            });
-        })();
-        """
+                    setFontPendingState(false);
+                });
+            })();
+            """
         guard accountIsCurrent() else { return }
         _ = try? await evaluateReaderDocumentJavaScript(
             js,
             arguments: [
                 "fontCSSBase64": blobPayload.base64CSS,
                 "fontHash": fontHash,
+                "fontSourceID": sourceID,
+                "fontRevision": String(readerFontAvailabilityRevisionProvider()),
                 "horizontalFontFamily": fontValues.horizontalFamily,
                 "verticalFontFamily": fontValues.verticalFamily,
             ],

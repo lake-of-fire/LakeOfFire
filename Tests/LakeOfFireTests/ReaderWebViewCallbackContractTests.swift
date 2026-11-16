@@ -151,6 +151,8 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
         self.nativeIsReady = nativeIsReady
     }
 
+    var holdsStylesheets = false
+    private var pendingStylesheets: [WKURLSchemeTask] = []
     var stylesheetFailuresRemaining = 0
     private(set) var stylesheetRequests: [URL] = []
     var onStylesheetRequest: ((URL) -> Void)?
@@ -163,6 +165,11 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
         let isStylesheet = url.path == "/manabi-fonts.css"
         if isStylesheet {
             stylesheetRequests.append(url)
+            if holdsStylesheets {
+                pendingStylesheets.append(urlSchemeTask)
+                onStylesheetRequest?(url)
+                return
+            }
             onStylesheetRequest?(url)
             if stylesheetFailuresRemaining > 0 {
                 stylesheetFailuresRemaining -= 1
@@ -179,7 +186,22 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
         urlSchemeTask.didFinish()
     }
 
-    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        pendingStylesheets.removeAll { ($0 as AnyObject) === (urlSchemeTask as AnyObject) }
+    }
+
+    func releaseStylesheets(failing: Bool = false) {
+        let tasks = pendingStylesheets
+        pendingStylesheets.removeAll()
+        for task in tasks {
+            if failing { task.didFailWithError(URLError(.resourceUnavailable)); continue }
+            let payload = Data("html { font-family: serif; }".utf8)
+            task.didReceive(URLResponse(url: task.request.url!, mimeType: "text/css",
+                expectedContentLength: payload.count, textEncodingName: "utf-8"))
+            task.didReceive(payload)
+            task.didFinish()
+        }
+    }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loaded.fulfill()
@@ -219,6 +241,7 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
     }
 
     func stop() {
+        pendingStylesheets.removeAll()
         messageTasks.forEach { $0.cancel() }
         messageTasks.removeAll()
     }
@@ -281,6 +304,24 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         try await operation(ReaderModeViewModel(), caller, webView, fixture, url)
     }
 
+    private func awaitCurrentFontGate(_ webView: WKWebView) async throws {
+        _ = try await webView.callAsyncJavaScript("""
+            const installation = globalThis.manabiReaderFontStyleInstallation;
+            await installation.stylesheet.ready;
+            if (globalThis.manabiReaderFontStyleInstallation !== installation) throw new Error('Font gate owner replaced');
+            const root = document.documentElement;
+            if (root.dataset.mnbFontReady !== '1') {
+                await new Promise(resolve => {
+                    const observer = new MutationObserver(() => {
+                        if (root.dataset.mnbFontReady === '1') { observer.disconnect(); resolve(); }
+                    });
+                    observer.observe(root, { attributes: true, attributeFilter: ['data-mnb-font-ready'] });
+                });
+            }
+            return true;
+            """, arguments: [:], in: nil, contentWorld: .page)
+    }
+
     func testSharedFontInjectionRetriesFailedStylesheetWithCurrentRevisionAndRejectsDowngrade() async throws {
         try await withSharedFontWebView { mode, caller, webView, fixture, url in
             var revision: UInt64 = 7
@@ -309,6 +350,198 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             XCTAssertEqual(retainedRevision as? String, "8")
             let styleRevision = try await webView.evaluateJavaScript("document.getElementById('mnb-custom-fonts-inline').dataset.mnbFontRevision")
             XCTAssertEqual(styleRevision as? String, "8")
+        }
+    }
+
+    func testSharedFontGateWaitsForStylesheetBeforeRequestingFontsAndReusesLoadedSheet() async throws {
+        try await withSharedFontWebView { mode, caller, webView, fixture, url in
+            _ = try await webView.evaluateJavaScript("""
+                window.__fontLoadCalls = 0;
+                Object.defineProperty(document, 'fonts', { configurable: true, value: {
+                    ready: Promise.resolve(),
+                    load: () => { window.__fontLoadCalls++; return Promise.resolve([]); }
+                }});
+                null;
+                """)
+            fixture.holdsStylesheets = true
+            let requested = self.expectation(description: "Stylesheet request is suspended")
+            fixture.onStylesheetRequest = { _ in requested.fulfill() }
+            let injection = Task { @MainActor in
+                await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
+            }
+            defer { injection.cancel() }
+            await self.fulfillment(of: [requested], timeout: 2)
+            let callsBeforeCSS = try await webView.evaluateJavaScript("window.__fontLoadCalls")
+            XCTAssertEqual(callsBeforeCSS as? Int, 0)
+            let stateBeforeCSS = try await webView.evaluateJavaScript("globalThis.manabiReaderFontStyleInstallation.stylesheet.state")
+            XCTAssertEqual(stateBeforeCSS as? String, "pending")
+            fixture.releaseStylesheets()
+            try await self.awaitCurrentFontGate(webView)
+            let callsAfterCSS = try await webView.evaluateJavaScript("window.__fontLoadCalls")
+            XCTAssertEqual(callsAfterCSS as? Int, 1)
+            let stateAfterCSS = try await webView.evaluateJavaScript("globalThis.manabiReaderFontStyleInstallation.stylesheet.state")
+            XCTAssertEqual(stateAfterCSS as? String, "loaded")
+            fixture.onStylesheetRequest = nil
+            let requestCount = fixture.stylesheetRequests.count
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
+            XCTAssertEqual(fixture.stylesheetRequests.count, requestCount)
+            let reusedState = try await webView.evaluateJavaScript("globalThis.manabiReaderFontStyleInstallation.stylesheet.state")
+            XCTAssertEqual(reusedState as? String, "loaded")
+        }
+    }
+
+    func testMissingBlobProviderReleasesSourceWaitAndPreservesExistingSheet() async throws {
+        try await withSharedFontWebView { mode, caller, webView, fixture, _ in
+            let sourceURL = URL(string: "https://example.invalid/blob-font-fallback")!
+            mode.sharedFontCSSBase64Provider = { nil }
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
+            let missing = try await webView.callAsyncJavaScript(
+                "return await globalThis.manabiReaderFontStyleInstallation.stylesheet.ready;",
+                arguments: [:], in: nil, contentWorld: .page)
+            XCTAssertEqual(missing as? String, "failed")
+            _ = try await webView.evaluateJavaScript("""
+                URL.createObjectURL = () => 'internal://local/manabi-fonts.css?blob=existing';
+                URL.revokeObjectURL = () => {};
+                null;
+                """)
+            mode.sharedFontCSSBase64Provider = { Data("html { font-family: serif; }".utf8).base64EncodedString() }
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
+            try await self.awaitCurrentFontGate(webView)
+            _ = try await webView.evaluateJavaScript("window.__retainedFontSheet = globalThis.manabiReaderFontStyleInstallation.stylesheet; null;")
+            let requests = fixture.stylesheetRequests.count
+            mode.sharedFontCSSBase64Provider = { nil }
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
+            let retained = try await webView.evaluateJavaScript("window.__retainedFontSheet === globalThis.manabiReaderFontStyleInstallation.stylesheet && window.__retainedFontSheet.state === 'loaded'")
+            XCTAssertEqual(retained as? Bool, true)
+            XCTAssertEqual(fixture.stylesheetRequests.count, requests)
+        }
+    }
+
+    func testBlobFontGateWaitsForCSSAndReplacesChangedBlobWithCurrentReceipt() async throws {
+        try await withSharedFontWebView { mode, caller, webView, fixture, _ in
+            _ = try await webView.evaluateJavaScript("""
+                window.__createdFontBlobs = [];
+                window.__revokedFontBlobs = [];
+                // Serve generated blob requests through the controlled scheme
+                // transport so the actual emitter's CSS load can be suspended.
+                URL.createObjectURL = blob => {
+                    window.__createdFontBlobs.push(blob);
+                    return 'internal://local/manabi-fonts.css?blob=' + window.__createdFontBlobs.length;
+                };
+                URL.revokeObjectURL = url => window.__revokedFontBlobs.push(url);
+                window.__fontLoadCalls = 0;
+                Object.defineProperty(document, 'fonts', { configurable: true, value: {
+                    ready: Promise.resolve(),
+                    load: () => { window.__fontLoadCalls++; return Promise.resolve([]); }
+                }});
+                null;
+                """)
+            var css = "html { font-family: serif; }"
+            mode.sharedFontCSSBase64Provider = { Data(css.utf8).base64EncodedString() }
+            let sourceURL = URL(string: "https://example.invalid/blob-font-document")!
+            fixture.holdsStylesheets = true
+            let requested = self.expectation(description: "Generated blob stylesheet is held")
+            fixture.onStylesheetRequest = { _ in requested.fulfill() }
+            let first = Task { @MainActor in await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL) }
+            defer { first.cancel() }
+            await self.fulfillment(of: [requested], timeout: 2)
+            let callsBeforeCSS = try await webView.evaluateJavaScript("window.__fontLoadCalls")
+            XCTAssertEqual(callsBeforeCSS as? Int, 0)
+            let modeName = try await webView.evaluateJavaScript("globalThis.manabiReaderFontInjectionMode")
+            XCTAssertEqual(modeName as? String, "blob")
+            _ = try await webView.evaluateJavaScript("window.__firstBlobReceipt = globalThis.manabiReaderFontStyleInstallation.stylesheet; null;")
+            css = "html { font-family: sans-serif; }"
+            let replaced = self.expectation(description: "Changed CSS replaces generated blob")
+            fixture.onStylesheetRequest = { _ in replaced.fulfill() }
+            let second = Task { @MainActor in await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL) }
+            defer { second.cancel() }
+            await self.fulfillment(of: [replaced], timeout: 2)
+            let retired = try await webView.callAsyncJavaScript(
+                "return await window.__firstBlobReceipt.ready;", arguments: [:], in: nil, contentWorld: .page)
+            XCTAssertEqual(retired as? String, "cancelled")
+            fixture.releaseStylesheets()
+            try await self.awaitCurrentFontGate(webView)
+            let loaded = try await webView.evaluateJavaScript("globalThis.manabiReaderFontStyleInstallation.stylesheet.state")
+            XCTAssertEqual(loaded as? String, "loaded")
+            let revoked = try await webView.evaluateJavaScript("window.__revokedFontBlobs.length")
+            XCTAssertEqual(revoked as? Int, 1)
+            fixture.onStylesheetRequest = nil
+            let requests = fixture.stylesheetRequests.count
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
+            XCTAssertEqual(fixture.stylesheetRequests.count, requests, "Unchanged blob CSS retains its loaded sheet")
+        }
+    }
+
+    func testReadableFontGateTimeoutDoesNotSettleStillPendingStylesheet() async throws {
+        try await withSharedFontWebView { mode, caller, webView, fixture, url in
+            _ = try await webView.evaluateJavaScript("""
+                const originalSetTimeout = window.setTimeout.bind(window);
+                window.setTimeout = (callback, delay, ...args) => {
+                    if (delay === 4000) { window.__releaseFontGateDeadline = callback; return -1; }
+                    return originalSetTimeout(callback, delay, ...args);
+                };
+                window.__fontLoadCalls = 0;
+                Object.defineProperty(document, 'fonts', { configurable: true, value: {
+                    ready: Promise.resolve(),
+                    load: () => { window.__fontLoadCalls++; return Promise.resolve([]); }
+                }});
+                null;
+                """)
+            fixture.holdsStylesheets = true
+            let requested = self.expectation(description: "CSS remains pending beyond readable gate")
+            fixture.onStylesheetRequest = { _ in requested.fulfill() }
+            let injection = Task { @MainActor in await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url) }
+            defer { injection.cancel() }
+            await self.fulfillment(of: [requested], timeout: 2)
+            _ = try await webView.evaluateJavaScript("window.__releaseFontGateDeadline(); null;")
+            await injection.value
+            let ready = try await webView.evaluateJavaScript("document.documentElement.dataset.mnbFontReady")
+            XCTAssertEqual(ready as? String, "1")
+            let pending = try await webView.evaluateJavaScript("globalThis.manabiReaderFontStyleInstallation.stylesheet.state")
+            XCTAssertEqual(pending as? String, "pending", "UI fallback must not claim CSS failed or loaded")
+            let calls = try await webView.evaluateJavaScript("window.__fontLoadCalls")
+            XCTAssertEqual(calls as? Int, 0)
+            fixture.releaseStylesheets()
+            let loaded = try await webView.callAsyncJavaScript(
+                "return await globalThis.manabiReaderFontStyleInstallation.stylesheet.ready;",
+                arguments: [:], in: nil, contentWorld: .page)
+            XCTAssertEqual(loaded as? String, "loaded")
+            let lateFontCalls = try await webView.evaluateJavaScript("window.__fontLoadCalls")
+            XCTAssertEqual(lateFontCalls as? Int, 1)
+        }
+    }
+
+    func testSharedFontGateReusesPendingSheetAndReleasesFailedFallback() async throws {
+        try await withSharedFontWebView { mode, caller, webView, fixture, url in
+            fixture.holdsStylesheets = true
+            let requested = self.expectation(description: "Shared pending stylesheet")
+            fixture.onStylesheetRequest = { _ in requested.fulfill() }
+            let first = Task { @MainActor in await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url) }
+            defer { first.cancel() }
+            await self.fulfillment(of: [requested], timeout: 2)
+            _ = try await webView.evaluateJavaScript("window.__firstSheetReceipt = globalThis.manabiReaderFontStyleInstallation.stylesheet; null;")
+            let reinstalled = self.expectation(description: "Second installer publishes its pending state")
+            fixture.onFontLoadPending = { reinstalled.fulfill() }
+            _ = try await webView.evaluateJavaScript("""
+                const observer = new MutationObserver(() => {
+                    observer.disconnect();
+                    window.webkit.messageHandlers.readerDocState.postMessage({ fontLoadPending: true });
+                });
+                observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-mnb-font-pending'] });
+                null;
+                """)
+            let second = Task { @MainActor in await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url) }
+            defer { second.cancel() }
+            await self.fulfillment(of: [reinstalled], timeout: 2)
+            let reused = try await webView.evaluateJavaScript("window.__firstSheetReceipt === globalThis.manabiReaderFontStyleInstallation.stylesheet")
+            XCTAssertEqual(reused as? Bool, true)
+            fixture.releaseStylesheets(failing: true)
+            try await self.awaitCurrentFontGate(webView)
+            let ready = try await webView.evaluateJavaScript("document.documentElement.dataset.mnbFontReady")
+            XCTAssertEqual(ready as? String, "1")
+            let failed = try await webView.evaluateJavaScript("globalThis.manabiReaderFontStyleInstallation.stylesheet.state")
+            XCTAssertEqual(failed as? String, "failed")
+            XCTAssertEqual(fixture.stylesheetRequests.count, 1)
         }
     }
 
