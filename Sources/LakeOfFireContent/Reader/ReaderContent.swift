@@ -3,6 +3,8 @@ import LakeOfFireCore
 import Combine
 import SwiftUIWebView
 import Foundation
+import struct LakeKit.AccountSessionAccess
+import struct LakeKit.AccountSessionSnapshot
 
 /// A selection can only lose authority. The fence retains this tiny token,
 /// never its MainActor content owner or a replacement selection.
@@ -89,6 +91,15 @@ public struct ReaderContentLoadReceipt: Sendable {
     fileprivate static var rejected: Self { .init(admission: { false }) }
 }
 
+/// Retains no managed row across the Realm writer; presentation alone uses the
+/// original MainActor instance when it is still alive.
+@MainActor
+fileprivate final class ReaderContentTitleEditOrigin {
+    weak var content: (any ReaderContentProtocol)?
+
+    init(_ content: any ReaderContentProtocol) { self.content = content }
+}
+
 @MainActor
 public class ReaderContent: ObservableObject {
     public typealias ContentResolver = @MainActor (_ url: URL, _ countsAsHistoryVisit: Bool, _ source: String) async throws -> (any ReaderContentProtocol)?
@@ -97,6 +108,7 @@ public class ReaderContent: ObservableObject {
 
     @ReaderContentPublication public var content: (any ReaderContentProtocol)?
     private var contentPublicationID = UUID()
+    private let titleEditOwnerID = UUID()
     // Invalidation belongs to the stored row's owner, even while a successor
     // publication still exposes this predecessor through will-set callbacks.
     private var cachedContentLifetime: ReaderContentSelectionLifetime?
@@ -791,6 +803,133 @@ public class ReaderContent: ObservableObject {
               let resolvedContent, !resolvedContent.isInvalidated,
               content === resolvedContent else { return nil }
         return resolvedContent
+    }
+
+    /// The original snippet accepted by a native title action. Selection changes
+    /// do not retarget this command, and unmanaged content is never promoted.
+    @MainActor
+    public struct TitleEditTarget {
+        public struct Identity: Hashable, Sendable {
+            fileprivate let contentType: ObjectIdentifier
+            fileprivate let contentKey: String
+            fileprivate let contentURL: URL
+            fileprivate let createdAt: Date
+            fileprivate let storage: String?
+            fileprivate let physicalRowID: UInt64?
+            fileprivate let unmanagedObject: ObjectIdentifier?
+        }
+
+        public let identity: Identity
+        public let initialTitle: String
+        fileprivate let owner: UUID
+        fileprivate let origin: ReaderContentTitleEditOrigin
+        fileprivate let reference: ReaderContentLoader.ContentReference?
+        fileprivate let storage: ReaderContentLoader.SnippetStorage?
+
+        fileprivate func originalContent() -> (any ReaderContentProtocol)? {
+            guard let content = origin.content, !content.isInvalidated, !content.isDeleted,
+                  ObjectIdentifier(content.objectSchema.objectClass) == identity.contentType,
+                  content.compoundKey == identity.contentKey, content.url == identity.contentURL,
+                  content.createdAt == identity.createdAt else { return nil }
+            if let reference {
+                guard reference.matchesStoredIdentity(of: content) else { return nil }
+            } else {
+                guard content.realm == nil, ObjectIdentifier(content) == identity.unmanagedObject else { return nil }
+            }
+            return content
+        }
+    }
+
+    /// Capture before a modal callback or debounce can yield. A later same-key
+    /// row or a different ReaderContent owner cannot inherit this target.
+    public func captureTitleEditTarget() -> TitleEditTarget? {
+        guard let content = validCachedContent, content.url.isSnippetURL else { return nil }
+        let reference = ReaderContentLoader.ContentReference(content: content)
+        let storage = ReaderContentLoader.SnippetStorage(content: content)
+        guard content.realm == nil || (reference != nil && storage != nil) else { return nil }
+        return TitleEditTarget(
+            identity: TitleEditTarget.Identity(
+                contentType: ObjectIdentifier(content.objectSchema.objectClass),
+                contentKey: content.compoundKey, contentURL: content.url, createdAt: content.createdAt,
+                storage: reference?.storageAdmission.scopeIdentity,
+                physicalRowID: reference == nil ? nil : content.id,
+                unmanagedObject: reference == nil ? ObjectIdentifier(content) : nil
+            ),
+            initialTitle: content.title, owner: titleEditOwnerID,
+            origin: ReaderContentTitleEditOrigin(content), reference: reference, storage: storage
+        )
+    }
+
+    /// Persist only the captured destination. Account admission surrounds the
+    /// durable commit; the callback also carries the caller's current input revision.
+    @discardableResult
+    public func updateContentTitle(
+        _ newTitle: String,
+        target: TitleEditTarget,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
+        permitsCommit: @escaping @Sendable () -> Bool
+    ) async throws -> Bool {
+        try Task.checkCancellation()
+        guard target.owner == titleEditOwnerID, permitsCommit() else { return false }
+        let trimmedTitle = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return false }
+        let didChange: Bool
+        if let storage = target.storage {
+            didChange = try await ReaderContentLoader.updateSnippetTitle(
+                contentURL: target.identity.contentURL, title: trimmedTitle,
+                storage: storage, account: account, permitsCommit: permitsCommit
+            )
+        } else {
+            // Local drafts have no Realm authority. Mutate only the original
+            // object and never discover or save a managed row by its URL.
+            guard let original = target.originalContent() else { return false }
+            let prefix = ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
+                trimmedTitle, sourceHTML: original.html
+            )
+            var changed = false
+            let applyChange = {
+                guard target.originalContent() === original,
+                      original.title != trimmedTitle || original.isTitlePrefixOfContent != prefix else { return }
+                original.title = trimmedTitle
+                original.isTitlePrefixOfContent = prefix
+                changed = true
+            }
+            try Task.checkCancellation()
+            guard permitsCommit() else { return false }
+            if let account {
+                // No permitsCommit/Session read inside the publication lock.
+                guard try account.access.publish(ifCurrent: account.snapshot, applyChange) else {
+                    throw CancellationError()
+                }
+            } else {
+                applyChange()
+            }
+            didChange = changed
+        }
+
+        // A durable rename remains successful when optional presentation retires.
+        // Resolve only the original physical row; never reload a successor by URL.
+        guard !Task.isCancelled, permitsCommit(),
+              let original = target.originalContent(), content === original else { return didChange }
+        let refreshed: any ReaderContentProtocol
+        if let reference = target.reference {
+            do {
+                guard let resolved = try await reference.resolveOnMainActor(), !resolved.isDeleted else {
+                    return didChange
+                }
+                refreshed = resolved
+            } catch {
+                return didChange
+            }
+        } else {
+            refreshed = original
+        }
+        guard !Task.isCancelled, permitsCommit(), target.originalContent() === original,
+              content === original else { return didChange }
+        setContent(refreshed, permitsPublication: {
+            !Task.isCancelled && permitsCommit() && target.originalContent() === original
+        })
+        return didChange
     }
 
     /// Compatibility for hosts that do not need the captured rename outcome.

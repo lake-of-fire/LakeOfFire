@@ -3,6 +3,7 @@ import RealmSwift
 import RealmSwiftGaps
 import BigSyncKit
 @testable import LakeOfFireContent
+@testable import LakeKit
 
 /// Production ReaderContent and Realm writer; only temporary storage is configured.
 final class ReaderSnippetRenameCommandTests: XCTestCase {
@@ -63,6 +64,152 @@ final class ReaderSnippetRenameCommandTests: XCTestCase {
     @MainActor
     private func updatedSnippetHTML(token: String) -> String {
         "<article><h1>Changed persisted heading</h1><p>\(token)</p></article>"
+    }
+
+    @MainActor
+    func testCapturedRenameUsesOriginalStorageAndKeepsNoOpJournalStable() async throws {
+        try await withSnippetRealm { _ in
+            let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "captured-storage"))
+            let snippet = try XCTUnwrap(loaded)
+            let realm = try XCTUnwrap(snippet.realm)
+            let html = snippet.html
+            let reader = ReaderContent()
+            reader.replaceSelection(with: snippet)
+            let target = try XCTUnwrap(reader.captureTitleEditTarget())
+            let identity = target.identity
+            let otherConfiguration = self.makeRealmConfiguration()
+            ReaderContentLoader.bookmarkRealmConfiguration = otherConfiguration
+            ReaderContentLoader.historyRealmConfiguration = otherConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = otherConfiguration
+
+            let changed = try await reader.updateContentTitle(
+                "  Captured title  ", target: target, permitsCommit: { true }
+            )
+            XCTAssertTrue(changed)
+            XCTAssertEqual(reader.content?.title, "Captured title")
+            XCTAssertEqual(reader.locationBarTitle, "Captured title")
+            XCTAssertEqual(reader.content?.html, html)
+            XCTAssertEqual(try XCTUnwrap(reader.captureTitleEditTarget()).identity, identity)
+            let recordName = snippet.objectSchema.className + "." + snippet.compoundKey
+            let generation = try XCTUnwrap(
+                realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation
+            )
+            let modifiedAt = snippet.explicitlyModifiedAt
+            let repeated = try await reader.updateContentTitle(
+                "Captured title", target: target, permitsCommit: { true }
+            )
+            XCTAssertFalse(repeated)
+            XCTAssertEqual(snippet.explicitlyModifiedAt, modifiedAt)
+            XCTAssertEqual(
+                realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation, generation
+            )
+        }
+    }
+
+    @MainActor
+    func testCapturedRenameRejectsSameKeyAndCreationDatePhysicalReplacement() async throws {
+        try await withSnippetRealm { configuration in
+            let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "captured-replacement"))
+            let snippet = try XCTUnwrap(loaded as? HistoryRecord)
+            let realm = try XCTUnwrap(snippet.realm)
+            let key = snippet.compoundKey
+            let url = snippet.url
+            let createdAt = snippet.createdAt
+            let title = snippet.title
+            let html = snippet.html
+            let reader = ReaderContent()
+            reader.replaceSelection(with: snippet)
+            let target = try XCTUnwrap(reader.captureTitleEditTarget())
+            try await { @RealmBackgroundActor in
+                let writer = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try await writer.asyncWritePreservingOwnership {
+                    let original = try XCTUnwrap(writer.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+                    writer.delete(original)
+                    let replacement = HistoryRecord()
+                    replacement.url = url
+                    replacement.createdAt = createdAt
+                    replacement.title = title
+                    replacement.html = html
+                    replacement.updateCompoundKey()
+                    writer.add(replacement)
+                }
+            }()
+            await realm.asyncRefresh()
+            let replacement = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
+            reader.replaceSelection(with: replacement)
+            XCTAssertNotEqual(try XCTUnwrap(reader.captureTitleEditTarget()).identity, target.identity)
+            let recordName = replacement.objectSchema.className + "." + key
+            let generation = realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation
+            let modifiedAt = replacement.modifiedAt
+
+            let changed = try await reader.updateContentTitle("Stale editor", target: target, permitsCommit: { true })
+
+            XCTAssertFalse(changed)
+            await realm.asyncRefresh()
+            XCTAssertEqual(replacement.title, title)
+            XCTAssertEqual(replacement.html, html)
+            XCTAssertEqual(replacement.modifiedAt, modifiedAt)
+            XCTAssertEqual(
+                realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation, generation
+            )
+        }
+    }
+
+    @MainActor
+    func testCapturedRenameAccountFenceRollsBackWithAnOtherwiseAllowedRevision() async throws {
+        try await withSnippetRealm { _ in
+            let loaded = try await ReaderContentLoader.load(html: self.snippetHTML(token: "captured-account"))
+            let snippet = try XCTUnwrap(loaded)
+            let realm = try XCTUnwrap(snippet.realm)
+            let title = snippet.title
+            let modifiedAt = snippet.modifiedAt
+            let recordName = snippet.objectSchema.className + "." + snippet.compoundKey
+            let generation = realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation
+            let reader = ReaderContent()
+            reader.replaceSelection(with: snippet)
+            let target = try XCTUnwrap(reader.captureTitleEditTarget())
+            let captured = AccountSessionSnapshot(identity: .authenticated(userID: 42), generation: 1)
+            var current = captured
+            let access = AccountSessionAccess(testSnapshotProvider: { current })
+            current = AccountSessionSnapshot(identity: .authenticated(userID: 42), generation: 2)
+            do {
+                _ = try await reader.updateContentTitle(
+                    "Retired credentials", target: target, account: (access, captured), permitsCommit: { true }
+                )
+                XCTFail("The original account must own COMMIT even when the caller's revision is allowed")
+            } catch is CancellationError {
+            }
+            await realm.asyncRefresh()
+            XCTAssertEqual(snippet.title, title)
+            XCTAssertEqual(snippet.modifiedAt, modifiedAt)
+            XCTAssertEqual(
+                realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation, generation
+            )
+        }
+    }
+
+    @MainActor
+    func testCapturedLocalRenameRejectsAnotherOwnerAndRetargetedObject() async throws {
+        let content = Bookmark()
+        content.url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "local-owner"))
+        content.title = "Original local title"
+        content.updateCompoundKey()
+        let reader = ReaderContent()
+        reader.replaceSelection(with: content)
+        let target = try XCTUnwrap(reader.captureTitleEditTarget())
+        let otherReader = ReaderContent()
+        otherReader.replaceSelection(with: content)
+        let foreign = try await otherReader.updateContentTitle("Foreign owner", target: target, permitsCommit: { true })
+        XCTAssertFalse(foreign)
+        let retired = try await reader.updateContentTitle("Old revision", target: target, permitsCommit: { false })
+        XCTAssertFalse(retired)
+        XCTAssertEqual(content.title, "Original local title")
+        content.url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "local-replacement"))
+        content.updateCompoundKey()
+        let retargeted = try await reader.updateContentTitle("Old target", target: target, permitsCommit: { true })
+        XCTAssertFalse(retargeted)
+        XCTAssertEqual(content.title, "Original local title")
+        XCTAssertNil(content.realm)
     }
 
     @MainActor

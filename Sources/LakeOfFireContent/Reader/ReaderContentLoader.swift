@@ -341,36 +341,20 @@ public struct ReaderContentLoader {
     /// The storage selected when a snippet edit began. A delayed save must not
     /// follow mutable global configurations into another account's Realm.
     /// Immutable capture passed to RealmBackgroundActor: configurations are value
-    /// snapshots, admissions are synchronized, and the optional row is frozen.
+    /// snapshots, admissions are synchronized, and optional row identity is detached.
     public struct SnippetStorage: @unchecked Sendable {
         public let bookmarkConfiguration: Realm.Configuration
         public let historyConfiguration: Realm.Configuration
 
         fileprivate let bookmarkAdmission: RealmStorageAdmission
         fileprivate let historyAdmission: RealmStorageAdmission
-        // Frozen rows are immutable and cross-actor safe. Recreate a one-use
-        // reference per operation so repeated saves retain the original ObjKey,
-        // even if a row is deleted and recreated with the same primary key.
-        private let target: CapturedSnippetTarget?
-
-        private final class CapturedSnippetTarget: @unchecked Sendable {
-            let row: any ReaderContentProtocol
-            init(_ content: any ReaderContentProtocol) { row = content.freeze() }
-        }
+        // Immutable physical-row identity is resolved on each operation's owner.
+        // Repeated saves never retain a frozen Realm version or adopt a recreated key.
+        private let target: ContentReference?
 
         fileprivate func containsCapturedTarget(in realm: Realm) -> Bool {
             guard let target else { return true } // Legacy multi-store API.
-            return Self.containsFrozenTarget(target.row, in: realm)
-        }
-
-        // Open the existential only within this generic call. The invariant
-        // ThreadSafeReference<T> stays local; no erased reference escapes.
-        private static func containsFrozenTarget<T: ReaderContentProtocol>(
-            _ target: T, in realm: Realm
-        ) -> Bool {
-            guard let row = realm.resolve(ThreadSafeReference(to: target)),
-                  !row.isInvalidated, !row.isDeleted,
-                  row.url.matchesReaderURL(target.url) else { return false }
+            guard let row = target.resolve(in: realm), !row.isDeleted else { return false }
             return true
         }
 
@@ -378,9 +362,9 @@ public struct ReaderContentLoader {
         private init(
             bookmarkConfiguration: Realm.Configuration,
             historyConfiguration: Realm.Configuration,
-            target: (any ReaderContentProtocol)? = nil
+            target: ContentReference? = nil
         ) {
-            self.target = target.map(CapturedSnippetTarget.init)
+            self.target = target
             self.bookmarkConfiguration = bookmarkConfiguration
             self.historyConfiguration = historyConfiguration
             bookmarkAdmission = RealmBackgroundActor.shared.captureStorageAdmission(for: bookmarkConfiguration)
@@ -392,8 +376,9 @@ public struct ReaderContentLoader {
         @MainActor
         public init?(content: any ReaderContentProtocol) {
             guard !content.isInvalidated, !content.isDeleted,
-                  let configuration = content.realm?.configuration else { return nil }
-            self.init(bookmarkConfiguration: configuration, historyConfiguration: configuration, target: content)
+                  let configuration = content.realm?.configuration,
+                  let reference = ContentReference(content: content) else { return nil }
+            self.init(bookmarkConfiguration: configuration, historyConfiguration: configuration, target: reference)
         }
 
         @MainActor
