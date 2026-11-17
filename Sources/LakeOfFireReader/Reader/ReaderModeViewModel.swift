@@ -4801,3 +4801,9 @@ nonisolated public func processForReaderMode(
     }
 }
 
+
+extension ReaderModeViewModel: ReaderModeLoadHandling {
+    public func cancelReaderModeLoad(for url: URL?) {
+        cancelReaderModeLoad(for: url, reason: "unspecified")
+    }
+}

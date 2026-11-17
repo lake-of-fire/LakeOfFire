@@ -121,7 +121,7 @@ fileprivate struct DownloadableBookGridCell: View {
     }
 
     private func buttonPress() {
-        importOperation.start(operation: {
+        importOperation.start(operation: { () async -> (ReaderFileImportResult, Bool)? in
             let wasAlreadyDownloaded = await ReaderFileManager.isDownloadReadyForImport(downloadable)
             guard !Task.isCancelled else { return nil }
             if !wasAlreadyDownloaded {
