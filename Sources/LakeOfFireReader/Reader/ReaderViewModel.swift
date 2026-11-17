@@ -6,6 +6,7 @@ import Combine
 import RealmSwiftGaps
 import WebKit
 import LakeOfFireContent
+import LakeOfFireCore
 import LakeOfFireFiles
 
 let readerViewModelQueue = DispatchQueue(label: "ReaderViewModelQueue")
