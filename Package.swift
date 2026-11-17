@@ -204,9 +204,11 @@ let package = Package(
                 .product(name: "SwiftUtilities", package: "SwiftUtilities"),
             ]
         ),
+        .target(name: "LakeOfFireFileLock"),
         .target(
             name: "LakeOfFireReader",
             dependencies: [
+                "LakeOfFireFileLock",
                 "LakeOfFireOPDS",
                 "LakeOfFireContent",
                 "LakeOfFireContentUI",

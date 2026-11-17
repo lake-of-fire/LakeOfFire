@@ -1,5 +1,6 @@
 import CryptoKit
 import Darwin
+import LakeOfFireFileLock
 import CoreFoundation
 import Foundation
 import SwiftSoup
@@ -1022,10 +1023,10 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         defer { _ = Darwin.close(descriptor) }
         var status: Int32
         repeat {
-            status = Darwin.flock(descriptor, LOCK_EX)
+            status = lake_reader_file_lock(descriptor, LOCK_EX)
         } while status != 0 && errno == EINTR
         guard status == 0 else { return false }
-        defer { _ = Darwin.flock(descriptor, LOCK_UN) }
+        defer { _ = lake_reader_file_lock(descriptor, LOCK_UN) }
         return operation()
     }
 
