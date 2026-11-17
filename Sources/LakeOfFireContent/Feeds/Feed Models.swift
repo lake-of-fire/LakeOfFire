@@ -1356,7 +1356,7 @@ fileprivate final class ManabiAtomCollectionParser: NSObject, XMLParserDelegate 
                 imageUrl: imageUrl,
                 url: url,
                 publicationDate: publicationDate,
-                order: attributeDict["order"].flatMap(Double.init)
+                order: attributeDict["order"].flatMap(Int.init)
             )
         )
     }

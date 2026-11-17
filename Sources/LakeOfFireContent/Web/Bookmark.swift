@@ -158,7 +158,7 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
                 for reference in historyReferences {
                     guard let historyRecord = reference.resolve(in: realm) as? HistoryRecord,
                           !historyRecord.isDeleted, historyRecord.bookmarkID != targetBookmarkID,
-                          historyRecord.bookmarkID == nil || historyRecord.bookmarkID.in(deletedBookmarkIDs) else { continue }
+                          historyRecord.bookmarkID.map({ deletedBookmarkIDs.contains($0) }) ?? true else { continue }
                     historyRecord.bookmarkID = targetBookmarkID
                     historyRecord.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
                 }

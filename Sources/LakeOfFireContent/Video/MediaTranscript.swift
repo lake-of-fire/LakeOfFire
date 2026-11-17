@@ -175,7 +175,8 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
 
     public static func decodeWebVTT(_ value: Data) throws -> String {
         let data = try decodeWebVTTData(value)
-        guard let string = String(validating: data, as: UTF8.self) else {
+        let string = String(decoding: data, as: UTF8.self)
+        guard string.utf8.elementsEqual(data) else {
             throw MediaTranscriptCodecError.invalidFrame
         }
         return string
