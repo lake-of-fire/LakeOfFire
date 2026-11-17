@@ -886,6 +886,7 @@ public typealias ReaderModeRuntimeAuthorityRepublisher = @ReaderViewModelActor @
     SwiftSoup.Document, URL, URL?
 ) async -> Bool
 
+@ReaderViewModelActor
 internal func processPersistedSnippetWithCurrentReadabilityProcessor(
     document: SwiftSoup.Document,
     readabilityContent: String,
