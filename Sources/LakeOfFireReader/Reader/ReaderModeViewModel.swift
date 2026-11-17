@@ -14,6 +14,7 @@ import RealmSwiftGaps
 import LakeKit
 import WebKit
 import SwiftUtilities
+import Perception
 
 private func stripTemplateTagsForSanitize(_ html: String) -> String {
     guard html.range(of: "template", options: .caseInsensitive) != nil else { return html }
@@ -95,20 +96,20 @@ private func readerFontCSSValues(horizontalFamily: String, verticalFamily explic
     )
 }
 
-private struct ReaderModeSharedFontCSSValues: Equatable {
+private struct ReaderModeSharedFontCSSValues: Equatable, Sendable {
     var horizontalFamily: String
     var verticalFamily: String
     var horizontalCSSValue: String
     var verticalCSSValue: String
 }
 
-private struct ReaderModeSharedFontInlinePayload {
+private struct ReaderModeSharedFontInlinePayload: Sendable {
     var combinedCSS: String
     var bootstrapScript: String
     var fontValues: ReaderModeSharedFontCSSValues
 }
 
-private struct ReaderModeSharedFontBlobPayload {
+private struct ReaderModeSharedFontBlobPayload: Sendable {
     var base64CSS: String
     var identity: String
 
@@ -133,7 +134,8 @@ private enum ReaderModeSharedFontPayloadIdentity {
     }
 }
 
-private final class ReaderModeSharedFontInlinePayloadCache {
+// All mutable cache fields are guarded by lock; only value payloads escape.
+private final class ReaderModeSharedFontInlinePayloadCache: @unchecked Sendable {
     private let lock = NSLock()
     private var cachedCSS: String?
     private var cachedFontValues: ReaderModeSharedFontCSSValues?
@@ -172,7 +174,8 @@ private final class ReaderModeSharedFontInlinePayloadCache {
     }
 }
 
-private final class ReaderModeSharedFontBlobPayloadCache {
+// All mutable cache fields are guarded by lock; only value payloads escape.
+private final class ReaderModeSharedFontBlobPayloadCache: @unchecked Sendable {
     private let lock = NSLock()
     private var cachedBase64CSS: String?
     private var cachedPayload: ReaderModeSharedFontBlobPayload?
@@ -1384,7 +1387,7 @@ public typealias ReaderModeFrameContentReplacement = @MainActor (
 @MainActor
 @Perceptible
 public final class ReaderModeLoadingState {
-    public struct Snapshot: Equatable {
+    public struct Snapshot: Equatable, Sendable {
         public var isReaderModeLoading: Bool
         public var lastRenderedURL: URL?
         public var expectedSyntheticReaderLoaderURL: URL?

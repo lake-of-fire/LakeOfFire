@@ -5,7 +5,7 @@ import LakeOfFireContent
 /// Owns presentation only. Retiring a picker cancels its waiter; it never
 /// removes a file that the selected importer may already have committed.
 @MainActor
-final class ReaderFileImportPresentationOwner: ObservableObject {
+final class ReaderFileImportPresentationOwner: @preconcurrency ObservableObject {
     struct Lifetime: Equatable, Sendable {
         fileprivate let id = UUID()
     }

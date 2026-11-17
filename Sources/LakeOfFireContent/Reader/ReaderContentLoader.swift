@@ -1144,6 +1144,32 @@ public struct ReaderContentLoader {
         return try await task.value
     }
 
+    /// Early document discovery has its own mutation receipt. It must not join
+    /// a URL-coalesced task whose creation authority belongs to another page.
+    @MainActor
+    public static func getContent(
+        forURL pageURL: URL,
+        source: String = "ReaderContentLoader.getContent",
+        admittingMutation: @escaping @Sendable () -> Bool
+    ) async throws -> (any ReaderContentProtocol)? {
+        try Task.checkCancellation()
+        guard admittingMutation() else { throw CancellationError() }
+        let backingURL = backingContentURL(fromLoaderURL: pageURL)
+        guard !pageURL.isReaderURLLoaderURL || backingURL != nil else { return nil }
+        let storage = DiscoveryStorage()
+        let content = try await load(
+            url: backingURL ?? pageURL,
+            persist: backingURL != nil || !pageURL.isNativeReaderView,
+            countsAsHistoryVisit: false,
+            source: source,
+            storage: storage,
+            admittingMutation: admittingMutation
+        )
+        try Task.checkCancellation()
+        guard admittingMutation() else { throw CancellationError() }
+        return content
+    }
+
     /// Propagate prepared Reader HTML only while its originating selection remains
     /// live. Discovery and queued Realm writes can each suspend; the lifetime
     /// fence must be checked by the final, storage-admitted transaction.
@@ -1292,10 +1318,16 @@ public struct ReaderContentLoader {
         persist: Bool,
         countsAsHistoryVisit: Bool,
         source: String,
-        storage: DiscoveryStorage
+        storage: DiscoveryStorage,
+        admittingMutation: @escaping @Sendable () -> Bool = { true }
     ) async throws -> (any ReaderContentProtocol)? {
-        let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
+        nonisolated func validateMutation() throws {
             try Task.checkCancellation()
+            guard admittingMutation() else { throw CancellationError() }
+        }
+        try validateMutation()
+        let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
+            try validateMutation()
             
             if url.isInternalReaderLoadingURL {
                 // Don't persist about:load
@@ -1317,6 +1349,7 @@ public struct ReaderContentLoader {
                 skipFeedEntries: false,
                 storage: storage
             )
+            try validateMutation()
             match = candidates.max(by: {
                 ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
             })
@@ -1342,7 +1375,7 @@ public struct ReaderContentLoader {
                     // Another load/capture may have committed while this query
                     // was suspended. Never replace that row with new defaults.
                     match = try await historyRealm.asyncWritePreservingOwnership {
-                        try Task.checkCancellation()
+                        try validateMutation()
                         try storage.validate()
                         let timestamp = Date()
                         if let existing = historyRealm.object(ofType: HistoryRecord.self, forPrimaryKey: historyRecord.compoundKey) {
@@ -1350,12 +1383,16 @@ public struct ReaderContentLoader {
                                 existing.lastVisitedAt = timestamp
                                 existing.isDeleted = false
                                 existing.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                                try validateMutation()
+                                try storage.validate()
                             }
                             return existing
                         }
                         if countsAsHistoryVisit { historyRecord.lastVisitedAt = timestamp }
                         historyRealm.add(historyRecord)
                         historyRecord.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                        try validateMutation()
+                        try storage.validate()
                         return historyRecord
                     }
                     historyVisitPending = false
@@ -1364,14 +1401,15 @@ public struct ReaderContentLoader {
                 }
             }
             
-            try Task.checkCancellation()
+            try validateMutation()
             guard let match, !match.isInvalidated,
                   let reference = storage.reference(for: match) else {
                 try await HistoryRecord.refreshDemotedStatus(forURL: url,
                     historyRealmConfiguration: storage.historyConfiguration,
                     historyStorageAdmission: storage.historyAdmission,
                     bookmarkRealmConfiguration: storage.bookmarkConfiguration,
-                    bookmarkStorageAdmission: storage.bookmarkAdmission)
+                    bookmarkStorageAdmission: storage.bookmarkAdmission,
+                    admittingMutation: admittingMutation)
                 return nil
             }
             let loadedReference = try await finishLoadedContentAndRefreshDemotion(
@@ -1379,12 +1417,14 @@ public struct ReaderContentLoader {
                 countsAsHistoryVisit: historyVisitPending,
                 readerModeRequired: persist && ((url.isReaderFileURL && url.contains(.plainText)) || url.isEBookURL),
                 bookmarkRealmConfiguration: storage.bookmarkConfiguration,
-                bookmarkStorageAdmission: storage.bookmarkAdmission
+                bookmarkStorageAdmission: storage.bookmarkAdmission,
+                admittingMutation: admittingMutation
             )
             return loadedReference
         }()
-        try Task.checkCancellation()
+        try validateMutation()
         let result = try await contentRef?.resolveOnMainActor()
+        try validateMutation()
         guard let result, !result.isDeleted else { return nil }
         return result
     }
@@ -1395,16 +1435,19 @@ public struct ReaderContentLoader {
         countsAsHistoryVisit: Bool,
         readerModeRequired: Bool,
         bookmarkRealmConfiguration: Realm.Configuration,
-        bookmarkStorageAdmission: RealmStorageAdmission
+        bookmarkStorageAdmission: RealmStorageAdmission,
+        admittingMutation: @escaping @Sendable () -> Bool = { true }
     ) async throws -> ContentReference? {
         let loadedReference = try await finishLoadedContent(reference,
-            countsAsHistoryVisit: countsAsHistoryVisit, readerModeRequired: readerModeRequired)
+            countsAsHistoryVisit: countsAsHistoryVisit, readerModeRequired: readerModeRequired,
+            admittingMutation: admittingMutation)
         // A live final read can reject a provisionally deleted identity. The
         // delivered demotion still belongs to its captured store and must reach
         // settled write evaluation, even when there is no load result to return.
         try await HistoryRecord.refreshDemotedStatus(for: reference,
             bookmarkRealmConfiguration: bookmarkRealmConfiguration,
-            bookmarkStorageAdmission: bookmarkStorageAdmission)
+            bookmarkStorageAdmission: bookmarkStorageAdmission,
+            admittingMutation: admittingMutation)
         return loadedReference
     }
 
@@ -1412,14 +1455,20 @@ public struct ReaderContentLoader {
     static func finishLoadedContent(
         _ reference: ContentReference,
         countsAsHistoryVisit: Bool,
-        readerModeRequired: Bool
+        readerModeRequired: Bool,
+        admittingMutation: @escaping @Sendable () -> Bool = { true }
     ) async throws -> ContentReference? {
+        nonisolated func validateMutation() throws {
+            try Task.checkCancellation()
+            guard admittingMutation() else { throw CancellationError() }
+        }
+        try validateMutation()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
         if !countsAsHistoryVisit && !readerModeRequired {
             // Discovery alone does not queue a writer. Refresh, then return only
             // a live identity; any demotion update has its own guarded writer.
             await realm.asyncRefresh()
-            try Task.checkCancellation()
+            try validateMutation()
             try reference.validateStorage()
             guard let content = reference.resolve(in: realm),
                 !content.isDeleted else { return nil }
@@ -1427,7 +1476,7 @@ public struct ReaderContentLoader {
         }
         await contentWriteGateForTesting?(.loadedContent)
         return try await realm.asyncWritePreservingOwnership {
-            try Task.checkCancellation()
+            try validateMutation()
             try reference.validateStorage()
             guard let content = reference.resolve(in: realm) else { return nil }
             let visit = countsAsHistoryVisit && reference.contentType == HistoryRecord.self
@@ -1446,6 +1495,8 @@ public struct ReaderContentLoader {
                 changed = true
             }
             if changed { content.refreshChangeMetadata(explicitlyModified: true, at: timestamp) }
+            try validateMutation()
+            try reference.validateStorage()
             return reference
         }
     }

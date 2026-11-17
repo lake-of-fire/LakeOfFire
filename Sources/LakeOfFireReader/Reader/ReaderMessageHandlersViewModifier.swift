@@ -537,16 +537,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let bodyOpacity = body["bodyOpacity"].map { String(describing: $0) } ?? "nil"
 
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
-                readerModeViewModel.logSyntheticDocumentState(
-                    pageURL: pageURL,
-                    readyState: readyState,
-                    hasReaderContent: hasReaderContent,
-                    hasReaderRenderReady: hasReaderRenderReady,
-                    reason: reason,
-                    manabiFontPending: manabiFontPending,
-                    bodyVisibility: bodyVisibility,
-                    bodyOpacity: bodyOpacity
-                )
                 debugPrint(
                     "# READERLOAD stage=readerDocState.ready",
                     "pageURL=\(pageURL.absoluteString)",
@@ -1155,7 +1145,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     let pairs = result.rssURLs.prefix(10)
                     let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                     let titles = pairs.map { $0.last ?? $0.first ?? "" }
-                    try await ReaderContentLoader.updateContent(url: admission.targetURL) { object in
+                    try await ReaderContentLoader.updateContent(
+                        url: admission.targetURL, admittingMutation: { admission.permitsMutation }
+                    ) { object in
                         guard admission.permitsMutation else { return false }
                         let existingURLs = Array(object.rssURLs)
                         let existingTitles = Array(object.rssTitles)

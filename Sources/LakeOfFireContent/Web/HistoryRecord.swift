@@ -153,8 +153,11 @@ public extension HistoryRecord {
         historyStorageAdmission: RealmStorageAdmission? = nil,
         bookmarkRealmConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
         bookmarkStorageAdmission: RealmStorageAdmission? = nil,
-        skipPreviouslyDemoted: Bool = true
+        skipPreviouslyDemoted: Bool = true,
+        admittingMutation: @escaping @Sendable () -> Bool = { true }
     ) async throws {
+        try Task.checkCancellation()
+        guard admittingMutation() else { throw CancellationError() }
         let actor = RealmBackgroundActor.shared
         let historyAdmission = historyStorageAdmission ?? actor.captureStorageAdmission(for: historyRealmConfiguration)
         let bookmarkAdmission = bookmarkStorageAdmission ?? (actor.realmCacheKey(for: bookmarkRealmConfiguration) == actor.realmCacheKey(for: historyRealmConfiguration)
@@ -162,6 +165,7 @@ public extension HistoryRecord {
         let realm = try await actor.cachedRealm(for: historyRealmConfiguration, storageAdmission: historyAdmission)
         if !realm.isFrozen && !realm.isInWriteTransaction { await realm.asyncRefresh() }
         try Task.checkCancellation()
+        guard admittingMutation() else { throw CancellationError() }
         guard historyAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: historyRealmConfiguration) }),
               bookmarkAdmission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: bookmarkRealmConfiguration) }) else {
             throw RealmBackgroundActorError.realmFileChangedDuringOpen
@@ -178,7 +182,7 @@ public extension HistoryRecord {
         try await refreshDemotedStatus(for: reference,
             bookmarkRealmConfiguration: bookmarkRealmConfiguration,
             bookmarkStorageAdmission: bookmarkAdmission,
-            skipPreviouslyDemoted: skipPreviouslyDemoted)
+            skipPreviouslyDemoted: skipPreviouslyDemoted, admittingMutation: admittingMutation)
     }
 
     @RealmBackgroundActor
