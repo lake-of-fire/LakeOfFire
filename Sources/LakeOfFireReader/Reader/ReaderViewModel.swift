@@ -108,6 +108,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
     var eBookRestoreInitializationID: UUID?
 
     public var scriptCaller = WebViewScriptCaller()
+    // A mounted reader must never become headless merely because its weak
+    // owner disappeared. Rebinding also retires already queued settings work.
+    private weak var settingsOwner: NavigationTaskManager?
+    private var hasBoundSettingsOwner = false
+    private var settingsOwnerRevision: UInt64 = 0
+
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
     @Published var webViewSystemScripts: [WebViewUserScript]? = nil
     private let baseSystemScripts: [WebViewUserScript]
@@ -373,13 +379,87 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
 
-    public func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            try Task.checkCancellation()
-            refreshSettingsInWebView(content: content, newState: newState)
+    func bindSettingsOwner(_ owner: NavigationTaskManager) {
+        if settingsOwner !== owner { settingsOwnerRevision &+= 1 }
+        hasBoundSettingsOwner = true
+        settingsOwner = owner
+    }
 
+    private func makeSettingsOwnerFence(content: any ReaderContentProtocol) -> @MainActor () -> Bool {
+        guard hasBoundSettingsOwner else {
+            return { [weak self] in self?.hasBoundSettingsOwner == false }
+        }
+        guard let owner = settingsOwner else { return { false } }
+        let revision = settingsOwnerRevision
+        let fence = owner.makeSettingsCommitFence(content: content, readerViewModel: self)
+        return { [weak self, weak owner] in
+            guard let self, let owner, self.settingsOwner === owner,
+                  self.settingsOwnerRevision == revision else { return false }
+            return fence()
+        }
+    }
+
+    private func makeSettingsCommitFence(
+        content: any ReaderContentProtocol,
+        newState: WebViewState,
+        caller: WebViewScriptCaller,
+        binding: WebViewScriptCaller.JavaScriptBindingToken?,
+        documentIsCurrent: @escaping @MainActor () -> Bool
+    ) -> (@MainActor () -> Bool)? {
+        let ownerIsCurrent = makeSettingsOwnerFence(content: content)
+        let isCurrent = { @MainActor [weak self, weak caller] in
+            guard let self, let caller, !Task.isCancelled,
+                  !content.isInvalidated, !content.isDeleted,
+                  documentIsCurrent(), !Task.isCancelled,
+                  !content.isInvalidated, !content.isDeleted,
+                  ownerIsCurrent(),
+                  self.scriptCaller === caller,
+                  caller.currentJavaScriptBindingToken == binding,
+                  binding != nil || !caller.canEvaluateJavaScript,
+                  content.url.matchesReaderURL(newState.pageURL),
+                  self.state.pageURL.matchesReaderURL(newState.pageURL) else { return false }
+            return true
+        }
+        guard isCurrent() else { return nil }
+        return isCurrent
+    }
+
+    public func onNavigationFinished(
+        content: any ReaderContentProtocol,
+        newState: WebViewState,
+        completion: ((WebViewState) -> Void)? = nil
+    ) {
+        onNavigationFinished(
+            content: content, newState: newState, documentIsCurrent: { true }, completion: completion
+        )
+    }
+
+    @discardableResult
+    public func onNavigationFinished(
+        content: any ReaderContentProtocol,
+        newState: WebViewState,
+        documentIsCurrent: @escaping @MainActor () -> Bool,
+        completion: ((WebViewState) -> Void)? = nil
+    ) -> Task<Void, Never>? {
+        let caller = scriptCaller
+        let binding = caller.currentJavaScriptBindingToken
+        guard let isCurrent = makeSettingsCommitFence(
+            content: content, newState: newState, caller: caller, binding: binding,
+            documentIsCurrent: documentIsCurrent
+        ) else { return nil }
+        return Task { @MainActor [weak self] in
+            guard let self, isCurrent() else { return }
+            // Keep completion available to current, unbound native callers.
+            // A reentrant completion may retire the remaining DOM work.
             completion?(newState)
+            guard isCurrent(), let settingsTask = self.refreshSettingsInWebView(
+                content: content, newState: newState, documentIsCurrent: isCurrent
+            ) else { return }
+            await withTaskCancellationHandler(operation: {
+                await settingsTask.value
+            }, onCancel: {
+                settingsTask.cancel()
+            })
         }
     }
 
@@ -398,13 +478,18 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    private func refreshTitleInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) async throws {
-        guard !content.isInvalidated, !content.isDeleted else { return }
+    private func refreshTitleInWebView(
+        content: any ReaderContentProtocol,
+        newState: WebViewState,
+        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken,
+        documentIsCurrent: @escaping @MainActor () -> Bool
+    ) async throws {
+        guard documentIsCurrent(), !content.isInvalidated, !content.isDeleted else { return }
         try await refreshTitleInWebView(
             title: content.title, contentURL: content.url,
             isFromClipboard: content.isFromClipboard,
             rssContainsFullContent: content.rssContainsFullContent,
-            newState: newState
+            newState: newState, requiring: bindingToken, documentIsCurrent: documentIsCurrent
         )
     }
 
@@ -415,8 +500,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
         isFromClipboard: Bool,
         rssContainsFullContent: Bool,
         newState: WebViewState? = nil,
-        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil
+        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil,
+        documentIsCurrent: @MainActor () -> Bool = { true }
     ) async throws {
+        guard documentIsCurrent() else { return }
         let state = newState ?? self.state
         if !contentURL.isEBookURL && !isFromClipboard && rssContainsFullContent
             && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -501,19 +588,48 @@ public class ReaderViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        // Keep this exact two-argument overload for the environment function.
+        // The fenced overload captures mounted ownership before queuing work.
+        refreshSettingsInWebView(content: content, newState: newState, documentIsCurrent: { true })
+    }
+
+    @MainActor
+    @discardableResult
+    public func refreshSettingsInWebView(
+        content: any ReaderContentProtocol,
+        newState: WebViewState? = nil,
+        documentIsCurrent: @escaping @MainActor () -> Bool
+    ) -> Task<Void, Never>? {
+        let refreshState = newState ?? state
+        let caller = scriptCaller
+        guard let binding = caller.currentJavaScriptBindingToken,
+              let isCurrent = makeSettingsCommitFence(
+                content: content, newState: refreshState, caller: caller, binding: binding,
+                documentIsCurrent: documentIsCurrent
+              ) else { return nil }
+        return Task { @MainActor [weak self] in
+            guard let self, isCurrent() else { return }
             let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
-            try await self.scriptCaller.evaluateJavaScript("""
-                if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
-                    document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
-                }
-                if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
-                    document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
-                }
-                document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
-                """, duplicateInMultiTargetFrames: true)
-            try await self.refreshTitleInWebView(content: content, newState: newState)
+            do {
+                try await caller.evaluateJavaScript("""
+                    if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
+                        document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
+                    }
+                    if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
+                        document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
+                    }
+                    document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
+                    """, duplicateInMultiTargetFrames: true, requiring: binding)
+                guard isCurrent() else { return }
+                try await self.refreshTitleInWebView(
+                    content: content, newState: refreshState, requiring: binding,
+                    documentIsCurrent: isCurrent
+                )
+            } catch {
+                // Failed settings do not publish a title. A fresh refresh can
+                // retry; no success or ownership state is cached here.
+                return
+            }
         }
     }
 }

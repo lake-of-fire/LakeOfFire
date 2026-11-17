@@ -2126,4 +2126,80 @@ final class ReaderNavigationCallbackLifetimeTests: XCTestCase {
         XCTAssertTrue(f.record.isInvalidated)
         XCTAssertEqual(f.probe.settingsCount, 0)
     }
+
+    func testDeallocatedMountedOwnerRetiresQueuedAndSuspendedSettingsAndFailsClosed() async throws {
+        for suspended in [false, true] {
+            let f = try fixture()
+            var owner: NavigationTaskManager? = NavigationTaskManager()
+            var handler: ReaderWebViewHandler? = ReaderWebViewHandler(
+                navigationTaskManager: try XCTUnwrap(owner),
+                readerContent: f.content, readerViewModel: f.reader,
+                readerModeViewModel: f.mode, readerMediaPlayerViewModel: f.media,
+                scriptCaller: f.reader.scriptCaller
+            )
+            XCTAssertNotNil(handler)
+            weak var retiredOwner = owner
+            let held = gate()
+            if suspended {
+                f.probe.settingsGate = held
+                f.probe.settingsEntered = expectation(description: "Settings held before mounted owner deallocation")
+            }
+            var completions = 0
+            let finish = own(try XCTUnwrap(f.reader.onNavigationFinished(
+                content: f.record, newState: f.state, documentIsCurrent: { true },
+                completion: { _ in completions += 1 }
+            )))
+            if suspended {
+                await fulfillment(of: [try XCTUnwrap(f.probe.settingsEntered)], timeout: 2)
+            }
+            handler = nil
+            owner = nil
+            XCTAssertNil(retiredOwner)
+            await held.release()
+            await settle(finish, releasing: held)
+            XCTAssertEqual(completions, suspended ? 1 : 0)
+            XCTAssertEqual(f.probe.settingsCount, suspended ? 1 : 0)
+            XCTAssertTrue(f.probe.titles.isEmpty)
+
+            let refresh: @MainActor (any ReaderContentProtocol, WebViewState?) -> Void =
+                f.reader.refreshSettingsInWebView
+            let priorRefreshCount = f.reader.refreshTasks.count
+            refresh(f.record, f.state)
+            XCTAssertEqual(f.reader.refreshTasks.count, priorRefreshCount)
+            XCTAssertNil(f.reader.onNavigationFinished(
+                content: f.record, newState: f.state, documentIsCurrent: { true },
+                completion: { _ in XCTFail("A previously mounted reader became headless") }
+            ))
+
+            f.rebuildHandler()
+            refresh(f.record, f.state)
+            await settle(try XCTUnwrap(f.reader.refreshTasks.last))
+            XCTAssertEqual(f.probe.titles, ["Original title"])
+        }
+    }
+
+    func testSettingsOwnerRebindingABACannotRestoreQueuedAdmission() async throws {
+        let f = try fixture()
+        let queued = own(try XCTUnwrap(f.reader.refreshSettingsInWebView(
+            content: f.record, newState: f.state, documentIsCurrent: { true }
+        )))
+        let otherOwner = NavigationTaskManager()
+        let otherHandler = ReaderWebViewHandler(
+            navigationTaskManager: otherOwner,
+            readerContent: f.content, readerViewModel: f.reader,
+            readerModeViewModel: f.mode, readerMediaPlayerViewModel: f.media,
+            scriptCaller: f.reader.scriptCaller
+        )
+        f.rebuildHandler()
+        await settle(queued)
+        XCTAssertEqual(f.probe.settingsCount, 0)
+        XCTAssertTrue(f.probe.titles.isEmpty)
+        // Keep the intervening owner alive: rejection must use the captured
+        // binding revision, rather than merely the weak owner's deallocation.
+        withExtendedLifetime(otherHandler) {}
+        f.reader.refreshSettingsInWebView(content: f.record, newState: f.state)
+        await settle(try XCTUnwrap(f.reader.refreshTasks.last))
+        XCTAssertEqual(f.probe.titles, ["Original title"])
+    }
+
 }
