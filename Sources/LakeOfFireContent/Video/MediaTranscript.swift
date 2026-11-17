@@ -173,8 +173,9 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
 
     public static func decodeWebVTT(_ value: Data) throws -> String {
         let data = try decodeWebVTTData(value)
-        // Validate without Foundation consuming a leading UTF-8 BOM.
-        guard let string = String(validating: data, as: UTF8.self) else {
+        // Preserve the BOM and reject malformed UTF-8 on every supported OS.
+        let string = String(decoding: data, as: UTF8.self)
+        guard string.utf8.elementsEqual(data) else {
             throw MediaTranscriptCodecError.invalidFrame
         }
         return string
