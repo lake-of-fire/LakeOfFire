@@ -225,7 +225,7 @@ class LibraryCategoriesViewModel: ObservableObject {
         let configurationID = libraryConfiguration.id
         let configurationCreatedAt = libraryConfiguration.createdAt
         return Task { @MainActor in
-            try await Task { @RealmBackgroundActor [realmConfiguration] in
+            try await Task { @RealmBackgroundActor [realmConfiguration, reorderedIDs] in
                 let realm =
                     try await RealmBackgroundActor.shared.cachedRealm(
                         for: realmConfiguration
