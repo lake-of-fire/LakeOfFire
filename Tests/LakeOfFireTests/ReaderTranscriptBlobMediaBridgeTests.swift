@@ -113,6 +113,8 @@ final class ReaderTranscriptBlobMediaBridgeTests: XCTestCase {
     }
 
     private func json(_ object: [String: Any]) throws -> String {
-        String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        // The shipping bridge uses JSON.stringify, which leaves base64 slashes unescaped.
+        String(decoding: try JSONSerialization.data(
+            withJSONObject: object, options: [.withoutEscapingSlashes]), as: UTF8.self)
     }
 }
