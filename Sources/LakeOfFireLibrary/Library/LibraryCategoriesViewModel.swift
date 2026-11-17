@@ -210,9 +210,9 @@ class LibraryCategoriesViewModel: ObservableObject {
         guard !visibleIDs.isEmpty,
               Set(visibleIDs).count == visibleIDs.count,
               fromOffsets.allSatisfy(visibleIDs.indices.contains),
-              fromOffsets.allSatisfy {
+              fromOffsets.allSatisfy({
                   editableIDs.contains(visibleIDs[$0])
-              },
+              }),
               visibleIDs.indices.contains(toOffset)
                 || toOffset == visibleIDs.endIndex else {
             return nil
