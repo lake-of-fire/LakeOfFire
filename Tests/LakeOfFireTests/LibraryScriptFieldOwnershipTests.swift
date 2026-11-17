@@ -25,6 +25,32 @@ private actor LibraryScriptFieldGate {
     }
 }
 
+private final class LibraryScriptRetirementObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completionAllowed = false
+    private let premature: XCTestExpectation
+    private let finished: XCTestExpectation
+
+    init(premature: XCTestExpectation, finished: XCTestExpectation) {
+        self.premature = premature
+        self.finished = finished
+    }
+
+    func allowCompletion() {
+        lock.lock()
+        completionAllowed = true
+        lock.unlock()
+    }
+
+    func didFinish() {
+        lock.lock()
+        let allowed = completionAllowed
+        lock.unlock()
+        if !allowed { premature.fulfill() }
+        finished.fulfill()
+    }
+}
+
 /// Private in-memory storage. Physical removal/recreation simulates acknowledged cleanup;
 /// every fixture mutation still uses the production background write lane.
 @MainActor
@@ -578,6 +604,46 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(script.title, "Final after release")
         XCTAssertNotNil(script.explicitlyModifiedAt)
         XCTAssertNil(releasedEditor)
+    }
+
+    func testRetirementJoinsSupersededActiveAttemptWithoutReportingInitialBinding() async throws {
+        let (original, script) = try await fixture()
+        let (replacement, otherScript) = try await fixture(scriptID: script.id)
+        let premature = expectation(description: "retirement waits for its captured active attempt")
+        premature.isInverted = true
+        let retired = expectation(description: "superseded attempt settled before retirement completion")
+        retired.assertForOverFulfill = true
+        let observation = LibraryScriptRetirementObservation(premature: premature, finished: retired)
+        let editor = model(script, retirementDidFinish: { observation.didFinish() })
+        let gate = LibraryScriptFieldGate()
+        let suspended = expectation(description: "superseded attempt continuation registered")
+        let write = editor.writeFieldAsync(.title("Obsolete"), beforeWrite: {
+            await gate.wait(onSuspension: { suspended.fulfill() })
+            throw InjectedFailure.write
+        })
+        addTeardownBlock { await gate.release(); _ = await write.result }
+        await fulfillment(of: [suspended], timeout: 5)
+
+        // The final input has already committed; only its older active attempt remains.
+        try await editor.writeFieldAsync(.title("Final before retirement")).value
+        original.refresh()
+        let afterFinalInput = generations(original)
+        let replacementGenerations = generations(replacement)
+        editor.script = otherScript
+        await fulfillment(of: [premature], timeout: 0.1)
+
+        observation.allowCompletion()
+        await gate.release()
+        do { try await write.value; XCTFail("The superseded attempt should fail") }
+        catch InjectedFailure.write {}
+        await fulfillment(of: [retired], timeout: 5)
+        original.refresh()
+        replacement.refresh()
+        XCTAssertEqual(script.title, "Final before retirement")
+        XCTAssertEqual(generations(original), afterFinalInput)
+        XCTAssertEqual(otherScript.title, "Original")
+        XCTAssertEqual(editor.scriptTitle, "Original")
+        XCTAssertEqual(generations(replacement), replacementGenerations)
     }
 
     // File replacement deliberately preserves model IDs and creation dates. A

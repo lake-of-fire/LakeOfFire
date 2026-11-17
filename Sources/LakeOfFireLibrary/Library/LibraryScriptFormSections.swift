@@ -13,6 +13,7 @@ import LakeOfFireReader
 class LibraryScriptFormSectionsViewModel: ObservableObject {
     let realmConfiguration: Realm.Configuration
     private let observesRealm: Bool
+    private let retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)?
     private var isRefreshing = false
     private var pendingFieldCommands: [LibraryScriptField: LibraryScriptFieldCommand] = [:]
     private var activeWrites: [UUID: Task<Void, Error>] = [:]
@@ -22,8 +23,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     private var owner: LibraryScriptDomainOwner?
     var script: UserScript? {
         willSet {
-            observeCompletion(finishEditing())
-            pendingFieldCommands.removeAll()
+            retireFieldCommands()
             scriptObservation?.cancel()
             scriptObservation = nil
             scriptObservationID = UUID()
@@ -35,7 +35,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             guard observesRealm, let script, !script.isInvalidated,
                   !script.isFrozen, script.realm != nil else { return }
             let observationID = scriptObservationID
-            scriptObservation = script.objectPublisher
+            scriptObservation = RealmSwift.valuePublisher(script)
                 .sink(receiveCompletion: { [weak self] completion in
                     Task { @MainActor [weak self] in
                         guard let self, self.scriptObservationID == observationID else { return }
@@ -66,10 +66,12 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
 
     init(
         realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration,
-        observesRealm: Bool = true
+        observesRealm: Bool = true,
+        retirementDidFinish: (@RealmBackgroundActor @Sendable () -> Void)? = nil
     ) {
         self.realmConfiguration = realmConfiguration
         self.observesRealm = observesRealm
+        self.retirementDidFinish = retirementDidFinish
         observe($scriptTitle, edit: LibraryScriptFieldEdit.title, debounced: true)
         observe($scriptText, edit: LibraryScriptFieldEdit.text, debounced: true)
         observe($scriptEnabled, edit: LibraryScriptFieldEdit.enabled)
@@ -116,6 +118,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         beforeWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)? = nil
     ) -> Task<Void, Error> {
         if let active = activeWrites[command.intent] { return active }
+        // A retired or superseded trailing delivery must not submit another attempt.
+        guard pendingFieldCommands[command.edit.field]?.intent == command.intent else {
+            return Task<Void, Error> {}
+        }
         let task = Task<Void, Error> { @RealmBackgroundActor [weak self] in
             do {
                 try await command.write(beforeWrite: beforeWrite)
@@ -182,14 +188,19 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         }
     }
 
+    private func retireFieldCommands() {
+        let retirement = LibraryScriptFieldRetirement(
+            commands: Array(pendingFieldCommands.values), activeWrites: activeWrites
+        )
+        pendingFieldCommands.removeAll()
+        activeWrites.removeAll()
+        retirement.start(didFinish: retirementDidFinish)
+    }
+
     deinit {
-        let commands = Array(pendingFieldCommands.values)
-        Task { @RealmBackgroundActor in
-            for command in commands {
-                do { try await command.write() }
-                catch { print("# LIBRARYSCRIPTEDITOR retirement write failed: \(error)") }
-            }
-        }
+        LibraryScriptFieldRetirement(
+            commands: Array(pendingFieldCommands.values), activeWrites: activeWrites
+        ).start(didFinish: retirementDidFinish)
     }
 
     func refresh() {

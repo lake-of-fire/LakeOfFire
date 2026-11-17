@@ -141,20 +141,37 @@ struct LibraryScriptFieldCommand: Sendable {
 }
 
 /// Retains the final commands when their editor binding is replaced or released.
-/// Joining a matching attempt preserves its durable success; a failed attempt gets
-/// one retry through the original owner and shared input-order admission.
+/// Joins every submitted attempt before settling the batch. Final commands without
+/// a successful attempt run once through the original owner and shared input-order admission.
 struct LibraryScriptFieldRetirement: Sendable {
     let commands: [LibraryScriptFieldCommand]
     let activeWrites: [UUID: Task<Void, Error>]
 
+    // The independent batch retains commands/tasks, never the editor or its new binding.
+    // Empty initial bindings and already-settled replacements have no work to retire.
+    func start(didFinish: (@RealmBackgroundActor @Sendable () -> Void)? = nil) {
+        guard !commands.isEmpty || !activeWrites.isEmpty else { return }
+        Task { @RealmBackgroundActor in
+            defer { didFinish?() }
+            do { try await finish() }
+            catch { print("# LIBRARYSCRIPTEDITOR retirement write failed: \(error)") }
+        }
+    }
+
     @RealmBackgroundActor
     func finish() async throws {
+        var succeededIntents = Set<UUID>()
+        // Superseded attempts still belong to this retirement batch. Join them
+        // before reporting settlement, but retry only the captured final inputs.
+        for (intent, write) in activeWrites {
+            do {
+                try await write.value
+                succeededIntents.insert(intent)
+            } catch { /* A matching final command gets one retry below. */ }
+        }
         var firstError: Error?
         for command in commands.sorted(by: { $0.edit.field.rawValue < $1.edit.field.rawValue }) {
-            if let active = activeWrites[command.intent] {
-                do { try await active.value; continue }
-                catch { /* Retry the captured command below. */ }
-            }
+            guard !succeededIntents.contains(command.intent) else { continue }
             do { try await command.write() }
             catch { if firstError == nil { firstError = error } }
         }
