@@ -335,9 +335,11 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     }
 
     private func cachedHistoryRecord(url: URL) throws -> (Realm, HistoryRecord) {
-        let realm = try Realm(configuration: .init(
+        var configuration = Realm.Configuration(
             inMemoryIdentifier: UUID().uuidString, objectTypes: [HistoryRecord.self]
-        ), queue: nil)
+        )
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let realm = try Realm(configuration: configuration, queue: nil)
         let record = HistoryRecord()
         record.compoundKey = UUID().uuidString
         record.url = url
