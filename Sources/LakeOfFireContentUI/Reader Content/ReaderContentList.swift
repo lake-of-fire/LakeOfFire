@@ -1349,7 +1349,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     let requestID = UUID()
                     currentLoadRequestID = requestID
                     pendingScrollTargetID = nil
-                    deleteEligibilityRefreshTask?.cancel()
+                    deleteEligibilityModel.cancelRefresh()
                     await performReaderContentListLoad(
                         viewModel: viewModel,
                         request: request,
@@ -1372,7 +1372,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 .onDisappear {
                     currentLoadRequestID = nil
                     pendingScrollTargetID = nil
-                    deleteEligibilityRefreshTask?.cancel()
+                    deleteEligibilityModel.cancelRefresh()
                 }
     }
 
