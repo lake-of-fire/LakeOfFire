@@ -1678,6 +1678,69 @@ final class FeedRefreshRegistry: @unchecked Sendable {
     }
 }
 
+// FeedKit items are mutable reference graphs. Copy only the values used by
+// persistence on their main-actor owner before entering the Realm write lane.
+private struct RSSPersistenceItem: Sendable {
+    let link: String?
+    let title: String?
+    let content: String?
+    let author: String?
+    let publicationDate: Date?
+    let enclosureType: String?
+    let enclosureURL: String?
+    let mediaContentURLs: [String]
+    let subtitleHref: String?
+
+    @MainActor
+    init(_ item: RSSFeedItem) {
+        link = item.link
+        title = item.title
+        content = item.content?.contentEncoded ?? item.description
+        author = item.author
+        publicationDate = item.pubDate ?? item.dublinCore?.dcDate
+        enclosureType = item.enclosure?.attributes?.type
+        enclosureURL = item.enclosure?.attributes?.url
+        mediaContentURLs = item.media?.mediaContents?.compactMap { $0.attributes?.url } ?? []
+        subtitleHref = item.media?.mediaSubTitle?.attributes?.href
+    }
+}
+
+private struct AtomPersistenceItem: Sendable {
+    struct Link: Sendable {
+        let href: String?
+        let rel: String?
+        let type: String?
+        let title: String?
+    }
+
+    struct Category: Sendable {
+        let scheme: String?
+        let term: String?
+    }
+
+    let title: String?
+    let links: [Link]?
+    let categories: [Category]?
+    let author: String
+    let publicationDate: Date?
+    let content: String?
+
+    @MainActor
+    init(_ item: AtomFeedEntry) {
+        title = item.title
+        links = item.links?.map {
+            Link(href: $0.attributes?.href, rel: $0.attributes?.rel,
+                 type: $0.attributes?.type, title: $0.attributes?.title)
+        }
+        categories = item.categories?.map {
+            Category(scheme: $0.attributes?.scheme, term: $0.attributes?.term)
+        }
+        author = item.authors?.compactMap { $0.name }.joined(separator: ", ") ?? ""
+        publicationDate = item.published ?? item.updated
+        content = item.content?.value
+    }
+}
+
 public extension Feed {
     /// Call in the transaction that changes the URL or partially commits feed content.
     func retireFetchMetadata() {
@@ -1731,6 +1794,7 @@ public extension Feed {
         realmConfiguration: Realm.Configuration,
         deleteOrphans: Bool
     ) async throws {
+        let rssItems = rssItems.map { RSSPersistenceItem($0) }
         let feedID = id
         let iconUrl = iconUrl
         let entryContentKind = entryContentKind
@@ -1755,22 +1819,22 @@ public extension Feed {
                         ?? link.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
                 else { return nil }
                 var imageUrl: URL? = nil
-                if let enclosureAttribs = item.enclosure?.attributes, enclosureAttribs.type?.hasPrefix("image/") ?? false {
-                    if let imageUrlRaw = enclosureAttribs.url {
+                if item.enclosureType?.hasPrefix("image/") ?? false {
+                    if let imageUrlRaw = item.enclosureURL {
                         imageUrl = URL(string: imageUrlRaw)
                     }
 //                } else if let rawImageURL = item.media?.contents?
 //                    .lazy.compactMap({ $0.attributes?.url })
 //                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
-                } else if let mediaImageURL = item.media?.mediaContents?
-                    .lazy.compactMap({ $0.attributes?.url })
+                } else if let mediaImageURL = item.mediaContentURLs
+                    .lazy
                     .compactMap({ URL(string: $0) })
                     .first(where: { entryImageExtensions.contains($0.pathExtension.lowercased()) })
                 {
                     imageUrl = mediaImageURL
                 }
-                let content = item.content?.contentEncoded ?? item.description
-                let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
+                let content = item.content
+                let rawSubtitleHref = item.subtitleHref?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 let audioSubtitlesURL: URL? = rawSubtitleHref
                     .flatMap { rawValue in
@@ -1805,7 +1869,7 @@ public extension Feed {
                 feedEntry.author = item.author ?? ""
                 feedEntry.imageUrl = imageUrl
                 feedEntry.sourceIconURL = iconUrl
-                feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
+                feedEntry.publicationDate = item.publicationDate
                 feedEntry.readerContentKind = entryContentKind
                 feedEntry.audioSubtitlesURL = audioSubtitlesURL
                 feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
@@ -1862,6 +1926,7 @@ public extension Feed {
         realmConfiguration: Realm.Configuration,
         deleteOrphans: Bool
     ) async throws {
+        let atomItems = atomItems.map { AtomPersistenceItem($0) }
         let feedID = id
         let sourceIconURL = iconUrl
         let entryContentKind = entryContentKind
@@ -1906,21 +1971,21 @@ public extension Feed {
                 var url: URL?
                 var htmlURL: URL?
                 var imageUrl: URL?
-                item.links?.forEach { (link: AtomFeedEntryLink) in
-                    guard let linkHref = link.attributes?.href,
+                item.links?.forEach { (link: AtomPersistenceItem.Link) in
+                    guard let linkHref = link.href,
                           let linkURL = URL(string: linkHref)
                             ?? linkHref.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
                     else { return }
                     
-                    if (link.attributes?.rel ?? "alternate") == "alternate" {
+                    if (link.rel ?? "alternate") == "alternate" {
                         url = linkURL
-                        let mediaType = link.attributes?.type?
+                        let mediaType = link.type?
                             .split(separator: ";", maxSplits: 1).first?
                             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                         if htmlURL == nil, mediaType == "text/html" || mediaType == "application/xhtml+xml" {
                             htmlURL = linkURL
                         }
-                    } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
+                    } else if let rel = link.rel, let type = link.type, rel == "enclosure" && type.hasPrefix("image/") {
                         imageUrl = linkURL
                     }
                 }
@@ -1931,28 +1996,28 @@ public extension Feed {
                 var voiceFrameUrl: URL? = nil
                 if let rawVoiceFrameUrl = item.links?
                     .filter({ (link) -> Bool in
-                        return (link.attributes?.rel ?? "") == "voice-frame"
+                        return (link.rel ?? "") == "voice-frame"
                     })
-                        .first?.attributes?.href
+                        .first?.href
                 {
                     voiceFrameUrl = URL(string: rawVoiceFrameUrl)
                 }
                 
                 let voiceAudioURLs: [URL] = (item.links ?? [])
-                    .filter { $0.attributes?.rel == "voice-audio" }
-                    .compactMap { $0.attributes?.href }
+                    .filter { $0.rel == "voice-audio" }
+                    .compactMap { $0.href }
                     .compactMap { URL(string: $0) }
 
                 let rawAtomSubtitleHref = item.links?
                     .first { link in
-                        guard link.attributes?.rel == "voice-audio-subtitles" else { return false }
-                        let normalizedType = link.attributes?.type?
+                        guard link.rel == "voice-audio-subtitles" else { return false }
+                        let normalizedType = link.type?
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                             .lowercased()
                         guard let normalizedType, !normalizedType.isEmpty else { return true }
                         return normalizedType.contains("vtt")
                     }?
-                    .attributes?.href?
+                    .href?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 let audioSubtitlesURL: URL? = rawAtomSubtitleHref
                     .flatMap { rawValue in
@@ -1965,9 +2030,9 @@ public extension Feed {
                 var redditTranslationsUrl: URL? = nil, redditTranslationsTitle: String? = nil
                 if let redditTranslationsAttrs = item.links?
                     .filter({ (link) -> Bool in
-                        return (link.attributes?.rel ?? "") == "reddit-translations"
+                        return (link.rel ?? "") == "reddit-translations"
                     })
-                        .first?.attributes,
+                        .first,
                    let rawRedditTranslationsUrl = redditTranslationsAttrs.href
                 {
                     redditTranslationsUrl = URL(string: rawRedditTranslationsUrl)
@@ -1991,8 +2056,8 @@ public extension Feed {
                     .lazy
                     .compactMap { category -> FeedEntryCollection? in
                         guard
-                            let scheme = category.attributes?.scheme,
-                            let term = category.attributes?.term
+                            let scheme = category.scheme,
+                            let term = category.term
                         else { return nil }
                         return collectionsBySchemeAndTerm["\(scheme)\n\(term)"]
                     }
@@ -2002,17 +2067,16 @@ public extension Feed {
                 feedEntry.feedID = feedID
                 feedEntry.url = url
                 feedEntry.title = title ?? ""
-                feedEntry.author = item.authors?.compactMap { $0.name }
-                    .joined(separator: ", ") ?? ""
+                feedEntry.author = item.author
                 feedEntry.imageUrl = imageUrl
                 feedEntry.sourceIconURL = sourceIconURL
-                feedEntry.publicationDate = item.published ?? item.updated
+                feedEntry.publicationDate = item.publicationDate
                 feedEntry.readerContentKind = entryContentKind
                 feedEntry.feedEntryCollectionKey = collection?.compoundKey
                 feedEntry.feedEntryCollectionScheme = collection?.scheme
                 feedEntry.feedEntryCollectionTerm = collection?.term
                 feedEntry.feedEntryCollectionTitle = collection?.title
-                feedEntry.html = item.content?.value
+                feedEntry.html = item.content
                 feedEntry.voiceFrameUrl = voiceFrameUrl
                 feedEntry.voiceAudioURL = voiceAudioURLs.first
                 feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
