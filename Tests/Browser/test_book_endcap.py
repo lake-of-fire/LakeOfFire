@@ -20,15 +20,26 @@ class ViewerAssetServer(ThreadingHTTPServer):
 
 
 class BookEndcapBrowserTests(unittest.TestCase):
+    @staticmethod
+    def _close_browser(browser):
+        try:
+            for context in browser.contexts:
+                context.close()
+        finally:
+            browser.close()
+
     @classmethod
     def setUpClass(cls):
         cls.server = ViewerAssetServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(ROOT)))
+        cls.addClassCleanup(cls.server.server_close)
         Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.addClassCleanup(cls.server.shutdown)
         cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH'),headless=True,args=['--no-sandbox'])
-    @classmethod
-    def tearDownClass(cls):
-        cls.browser.close(); cls.playwright.stop(); cls.server.shutdown(); cls.server.server_close()
+        cls.addClassCleanup(cls.playwright.stop)
+        cls.browser = cls.playwright.chromium.launch(
+            executable_path=os.environ.get('CHROMIUM_PATH'), headless=True,
+            args=['--no-sandbox', '--disable-features=MacAppCodeSignClone'])
+        cls.addClassCleanup(cls._close_browser, cls.browser)
     def journey(self, dir='ltr', vertical=False, fixed=False, long=False, size=(390,844)):
         page = self.browser.new_page(viewport={'width':size[0], 'height':size[1]})
         self.addCleanup(page.close)
