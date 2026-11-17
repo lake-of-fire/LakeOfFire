@@ -320,7 +320,10 @@ public extension ReaderContentProtocol {
     }
 
     @MainActor
-    func asyncWrite(_ block: @escaping @RealmBackgroundActor (Realm, any ReaderContentProtocol) -> Void) async throws {
+    func asyncWrite(
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
+        _ block: @escaping @RealmBackgroundActor (Realm, any ReaderContentProtocol) throws -> Void
+    ) async throws {
         guard !isInvalidated, let sourceRealm = realm,
               let reference = ReaderContentLoader.ContentReference(content: self) else { return }
         try await { @RealmBackgroundActor in
@@ -331,8 +334,11 @@ public extension ReaderContentProtocol {
                 try Task.checkCancellation()
                 try reference.validateStorage()
                 guard let content = reference.resolve(in: targetRealm) else { return }
-                block(targetRealm, content)
+                try block(targetRealm, content)
                 try reference.validateStorage()
+                if let account {
+                    try ReaderContentAccountCommit.commit(in: targetRealm, account: account)
+                }
             }
         }()
         if !sourceRealm.isFrozen { await sourceRealm.asyncRefresh() }

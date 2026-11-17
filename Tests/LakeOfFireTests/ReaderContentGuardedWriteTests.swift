@@ -1,4 +1,5 @@
 import Foundation
+@testable import LakeKit
 import RealmSwift
 import RealmSwiftGaps
 import XCTest
@@ -31,6 +32,46 @@ final class ReaderContentGuardedWriteTests: XCTestCase {
         }
         realm.refresh()
         XCTAssertEqual(record.title, "Edited")
+    }
+
+    func testThrowingMutationRollsBackItsAdmittedTransaction() async throws {
+        let (realm, record) = try fixture()
+        do {
+            try await record.asyncWrite { _, content in
+                content.title = "Must roll back"
+                throw CancellationError()
+            }
+            XCTFail("A rejected mutation must throw")
+        } catch is CancellationError { }
+        realm.refresh()
+        XCTAssertEqual(record.title, "Original")
+    }
+
+    func testCurrentAccountCommitsThroughItsPublicationBoundary() async throws {
+        let (realm, record) = try fixture()
+        let account = GuardedWriteAccountFixture(.init(identity: .signedOut, generation: 0))
+        let access = account.access
+        try await record.asyncWrite(account: (access, access.snapshot)) { _, content in
+            content.title = "Accepted"
+        }
+        realm.refresh()
+        XCTAssertEqual(record.title, "Accepted")
+    }
+
+    func testAccountGenerationChangeDuringMutationRollsBack() async throws {
+        let (realm, record) = try fixture()
+        let account = GuardedWriteAccountFixture(.init(identity: .authenticated(userID: 1), generation: 1))
+        let access = account.access
+        let snapshot = access.snapshot
+        do {
+            try await record.asyncWrite(account: (access, snapshot)) { _, content in
+                content.title = "Retired account edit"
+                account.replace(.init(identity: .authenticated(userID: 1), generation: 2))
+            }
+            XCTFail("A retired account generation must not commit")
+        } catch is CancellationError { }
+        realm.refresh()
+        XCTAssertEqual(record.title, "Original")
     }
 
     func testFrozenLiveRowWritesWithoutRefreshingFrozenRealm() async throws {
@@ -129,4 +170,27 @@ final class ReaderContentGuardedWriteTests: XCTestCase {
         XCTAssertEqual(record.url, updatedURL)
     }
 
+}
+
+private final class GuardedWriteAccountFixture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: AccountSessionSnapshot
+
+    init(_ value: AccountSessionSnapshot) { self.value = value }
+
+    private var snapshot: AccountSessionSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func replace(_ value: AccountSessionSnapshot) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.value = value
+    }
+
+    var access: AccountSessionAccess {
+        AccountSessionAccess(testSnapshotProvider: { self.snapshot })
+    }
 }

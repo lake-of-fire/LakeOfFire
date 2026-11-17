@@ -3456,6 +3456,7 @@ public class ReaderModeViewModel: ObservableObject {
               active.generation == renderGeneration else { return }
         let frameReplacementHook = readerModeWillReplaceFrameContent
         let frameReplacementBinding = renderBinding
+        let isMainFrame = frameInfo?.isMainFrame != false
         ReaderSnippetFinalDocumentDiagnostics.record("readability-start", contentURL: requestedURL, generation: renderGeneration)
         guard originatingContentIsCurrent(),
               isCurrentRender(for: requestedURL, generation: renderGeneration) else {
@@ -3744,7 +3745,7 @@ public class ReaderModeViewModel: ObservableObject {
 
             markReaderRenderReady(
                 in: doc,
-                renderGeneration: frameInfo?.isMainFrame == false ? nil : renderGeneration
+                renderGeneration: isMainFrame ? renderGeneration : nil
             )
 
             let expectedNativeContentFingerprint =
@@ -3785,8 +3786,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
 
-            if usesInternalReaderScheme,
-               frameInfo?.isMainFrame != false {
+            if usesInternalReaderScheme, isMainFrame {
                 transformedHTMLBytes = Array(externalizingCanonicalReaderSegmentSidecar(
                     in: transformedHTMLBytes,
                     scheme: .internalReader
@@ -3801,7 +3801,7 @@ public class ReaderModeViewModel: ObservableObject {
             let transformedContentForFrameInjection: String?
             let transformedBodyClassesForFrameInjection: String?
             let transformedStyleTextForFrameInjection: String?
-            if let frameInfo, !frameInfo.isMainFrame {
+            if !isMainFrame {
                 let transformedContent = transformedHTMLString ?? String(decoding: transformedHTMLBytes, as: UTF8.self)
                 transformedContentForFrameInjection = transformedContent
                 if processHTML == nil {

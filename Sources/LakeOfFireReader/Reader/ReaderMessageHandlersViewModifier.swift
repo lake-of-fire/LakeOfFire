@@ -404,7 +404,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     ) -> ReaderReadabilityMessageSettlement? {
         guard let bindingFence = scriptCaller.makeJavaScriptBindingCommitFence(requiring: bindingToken) else { return nil }
         let ownerFence = readabilityMutationOwner.capture()
-        let selectionFence = readerContent.makeSelectionCommitFence(requiring: readerContent.selectionID)
+        let selectionFence = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         let accountAdmission = readerModeViewModel.makeReadabilityAccountAdmission()
         // Capture all built-in routes before lookup. A later account/store route
         // cannot nominate a new destination for this document callback.
