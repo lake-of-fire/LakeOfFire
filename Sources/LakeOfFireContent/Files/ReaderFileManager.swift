@@ -116,7 +116,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     private struct InventoryTask {
         let id: UUID
-        let task: Task<Void, any Error>
+        let task: Task<Void, any Swift.Error>
     }
 
     private let inventoryOwnership = InventoryOwnership()
@@ -785,7 +785,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let id = UUID()
         inventoryNeedsFollowUp.remove(receipt)
         lastInventoryPublishedAt.removeAll()
-        let task: Task<Void, any Error> = Task { @MainActor in
+        let task: Task<Void, any Swift.Error> = Task { @MainActor in
             var publishedGeneration: UInt64?
             defer {
                 if inventoryTasks[receipt]?.id == id {
