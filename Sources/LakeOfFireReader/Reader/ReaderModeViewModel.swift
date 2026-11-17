@@ -880,13 +880,19 @@ internal func recoverPersistedSnippetSourceHTMLForProcessing(_ html: String) -> 
     return try? document.outerHtml()
 }
 
+/// Republishes a processed document on the same worker actor that owns its DOM
+/// processing. The value may be captured by render tasks on other actors.
+public typealias ReaderModeRuntimeAuthorityRepublisher = @ReaderViewModelActor @Sendable (
+    SwiftSoup.Document, URL, URL?
+) async -> Bool
+
 internal func processPersistedSnippetWithCurrentReadabilityProcessor(
     document: SwiftSoup.Document,
     readabilityContent: String,
     url: URL,
     tracksReadingProgress: Bool,
     processReadabilityContent: EbookReadabilityContentProcessor?,
-    republishReaderModeRuntimeAuthority: ((SwiftSoup.Document, URL, URL?) async -> Bool)?,
+    republishReaderModeRuntimeAuthority: ReaderModeRuntimeAuthorityRepublisher?,
     preprocessDoc: @escaping EbookDocumentTransform
 ) async throws -> SwiftSoup.Document {
     if let republishReaderModeRuntimeAuthority,
@@ -1384,6 +1390,17 @@ public typealias ReaderModeFrameContentReplacement = @MainActor (
     String, [String: any Sendable]
 ) async throws -> Bool
 
+/// Keeps the navigator selected at render admission on MainActor while the
+/// render task and DOM pipeline run on ReaderViewModelActor.
+@MainActor
+private final class ReaderModeRenderNavigator {
+    let navigator: WebViewNavigator
+
+    init(_ navigator: WebViewNavigator) {
+        self.navigator = navigator
+    }
+}
+
 @MainActor
 @Perceptible
 public final class ReaderModeLoadingState {
@@ -1717,7 +1734,7 @@ public class ReaderModeViewModel: ObservableObject {
     /// Re-admits native segment authority when a persisted snippet already has
     /// canonical markup. A failed admission causes the caller to regenerate
     /// semantic content through its current readability processor.
-    public var republishReaderModeRuntimeAuthority: ((SwiftSoup.Document, URL, URL?) async -> Bool)? = nil {
+    public var republishReaderModeRuntimeAuthority: ReaderModeRuntimeAuthorityRepublisher? = nil {
         willSet { processingDependencyWillChange() }
     }
     public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil {
@@ -3091,6 +3108,7 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator
     ) {
+        let renderNavigator = ReaderModeRenderNavigator(navigator)
         let contentURL = readerContent.pageURL
         let cachedReadabilityContent = readabilityContent
         let cachedContainerSelector = readabilityContainerSelector
@@ -3141,18 +3159,20 @@ public class ReaderModeViewModel: ObservableObject {
             guard await originatingContentIsCurrent() else { return }
             switch routeDecision.route {
             case .localHTML:
-                await self.showReaderViewUsingSwiftProcessing(
-                    readerContent: readerContent,
-                    scriptCaller: scriptCaller,
-                    navigator: navigator,
-                    renderURL: contentURL,
-                    renderGeneration: generation,
-                    renderBinding: renderBinding,
-                    prefetchedContent: routeDecision.prefetchedContent,
-                    prefetchedLocalHTML: routeDecision.prefetchedLocalHTML,
-                    selectionIsCurrent: selectionIsCurrent,
-                    originatingContentIsCurrent: originatingContentIsCurrent
-                )
+                await { @MainActor in
+                    await self.showReaderViewUsingSwiftProcessing(
+                        readerContent: readerContent,
+                        scriptCaller: scriptCaller,
+                        navigator: renderNavigator.navigator,
+                        renderURL: contentURL,
+                        renderGeneration: generation,
+                        renderBinding: renderBinding,
+                        prefetchedContent: routeDecision.prefetchedContent,
+                        prefetchedLocalHTML: routeDecision.prefetchedLocalHTML,
+                        selectionIsCurrent: selectionIsCurrent,
+                        originatingContentIsCurrent: originatingContentIsCurrent
+                    )
+                }()
             case .capturedReadability:
                 guard let cachedReadabilityContent else {
                     await self.cancelReaderModeLoad(
@@ -3198,19 +3218,21 @@ public class ReaderModeViewModel: ObservableObject {
                         )
                         return
                     }
-                    try await self.showReadabilityContent(
-                        readerContent: readerContent,
-                        readabilityContent: resolvedReadabilityContent,
-                        renderToSelector: cachedContainerSelector,
-                        in: cachedContainerFrameInfo,
-                        scriptCaller: scriptCaller,
-                        navigator: navigator,
-                        renderURL: contentURL,
-                        renderGeneration: generation,
-                        renderBinding: renderBinding,
-                        selectionIsCurrent: selectionIsCurrent,
-                        originatingContentIsCurrent: originatingContentIsCurrent
-                    )
+                    try await { @MainActor in
+                        try await self.showReadabilityContent(
+                            readerContent: readerContent,
+                            readabilityContent: resolvedReadabilityContent,
+                            renderToSelector: cachedContainerSelector,
+                            in: cachedContainerFrameInfo,
+                            scriptCaller: scriptCaller,
+                            navigator: renderNavigator.navigator,
+                            renderURL: contentURL,
+                            renderGeneration: generation,
+                            renderBinding: renderBinding,
+                            selectionIsCurrent: selectionIsCurrent,
+                            originatingContentIsCurrent: originatingContentIsCurrent
+                        )
+                    }()
                 } catch is CancellationError {
                     await self.cancelReaderModeLoad(
                         for: contentURL,
@@ -3451,6 +3473,7 @@ public class ReaderModeViewModel: ObservableObject {
         selectionIsCurrent: @escaping @Sendable () -> Bool,
         originatingContentIsCurrent: @escaping @MainActor () -> Bool
     ) async throws {
+        let renderNavigator = ReaderModeRenderNavigator(navigator)
         let requestedURL = renderURL
         guard let active = activeRendersByURL[canonicalRenderKey(requestedURL)],
               active.generation == renderGeneration else { return }
@@ -3975,19 +3998,19 @@ public class ReaderModeViewModel: ObservableObject {
                             && self.readerModeContentIsCurrent(content, readerContent: readerContent)
                     }
                     ReaderSnippetFinalDocumentDiagnostics.record("html-dispatch", contentURL: requestedURL, generation: renderGeneration)
-                    navigator.load(
+                    renderNavigator.navigator.load(
                         transformedHTMLData,
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
                         baseURL: displayURL
                     )
-                    guard let issued = navigator.issuedDataNavigationIdentity else {
+                    guard let issued = renderNavigator.navigator.issuedDataNavigationIdentity else {
                         cancelReaderModeLoad(for: requestedURL, ifOwnedBy: renderGeneration,
                             readerContent: readerContent, originatingContentIsCurrent: originatingContentIsCurrent)
                         return
                     }
                     expectedSyntheticReaderNavigation = PreparedReaderNavigation(
-                        navigator: navigator, intent: issued, url: displayURL
+                        navigator: renderNavigator.navigator, intent: issued, url: displayURL
                     )
 #if DEBUG
                     if let readerDocumentDispatchedForTesting {
