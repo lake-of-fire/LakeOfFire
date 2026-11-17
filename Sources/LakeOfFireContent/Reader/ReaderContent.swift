@@ -387,16 +387,53 @@ public class ReaderContent: ObservableObject {
 
     /// Select caller-resolved content through the same revocable owner used by loads.
     public func replaceSelection(with content: (any ReaderContentProtocol)?) {
+        _ = replaceSelection(with: content, admission: { true })
+    }
+
+    /// Revalidate the caller's admission across synchronous publication callbacks.
+    /// A reentrant selection owns its own lifetime and cannot be overwritten.
+    @discardableResult
+    public func replaceSelection(
+        with content: (any ReaderContentProtocol)?,
+        admission: @escaping @MainActor () -> Bool
+    ) -> Bool {
+        let predecessorID = selectionID
+        let predecessorLifetime = selectionLifetime
+        let predecessorNativeLifetime = nativeContentLifetime
+        let predecessorHandoff = selectionHandoff
+        guard admission(), selectionID == predecessorID,
+              selectionLifetime === predecessorLifetime,
+              nativeContentLifetime === predecessorNativeLifetime,
+              selectionHandoff === predecessorHandoff else { return false }
         withdrawSelectionIntent()
+        guard selectionID == predecessorID,
+              selectionLifetime === predecessorLifetime,
+              nativeContentLifetime === predecessorNativeLifetime,
+              selectionHandoff === predecessorHandoff else { return false }
         let retiredTask = loadingTask
-        selectionLifetime.withdraw()
-        selectionLifetime = ReaderContentSelectionLifetime()
-        selectionID = UUID()
+        let replacementLifetime = ReaderContentSelectionLifetime()
+        let replacementID = UUID()
+        selectionLifetime = replacementLifetime
+        selectionID = replacementID
         loadingTask = nil
         loadingResolvedContentURL = nil
         loadingNativeContentLifetime = nil
+        var published = false
+        defer {
+            if !published { replacementLifetime.withdraw() }
+        }
+        predecessorLifetime.withdraw()
         retiredTask?.cancel()
-        self.content = content
+        published = setContent(content, permitsPublication: { [weak self] in
+            guard let self, self.selectionID == replacementID,
+                  self.selectionLifetime === replacementLifetime,
+                  replacementLifetime.permitsCommit(), admission() else { return false }
+            guard self.selectionID == replacementID,
+                  self.selectionLifetime === replacementLifetime,
+                  replacementLifetime.permitsCommit() else { return false }
+            return true
+        })
+        return published
     }
 
     private func syncLocationBarTitle() {

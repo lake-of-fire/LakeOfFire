@@ -110,6 +110,80 @@ final class ReaderContentSelectionOwnershipTests: XCTestCase, @unchecked Sendabl
         XCTAssertTrue(current === b)
     }
 
+    func testGuardedSelectionDenialPreservesOriginalSelection() {
+        let reader = ReaderContent(), original = record("original"), replacement = record("replacement")
+        reader.replaceSelection(with: original)
+        let selectionID = reader.currentSelectionID
+        let originalFence = reader.makeSelectionCommitFence(requiring: selectionID)
+
+        let accepted = reader.replaceSelection(with: replacement, admission: { false })
+
+        XCTAssertFalse(accepted)
+        XCTAssertTrue(reader.content === original)
+        XCTAssertEqual(reader.currentSelectionID, selectionID)
+        XCTAssertTrue(originalFence())
+    }
+
+    func testGuardedSelectionCannotAdoptSameObjectSelectedByAdmissionReentry() {
+        let reader = ReaderContent(), replacement = record("replacement")
+        var didReplace = false
+        var successorID: UUID?
+        let accepted = reader.replaceSelection(with: replacement, admission: {
+            if !didReplace {
+                didReplace = true
+                reader.replaceSelection(with: replacement)
+                successorID = reader.currentSelectionID
+            }
+            return true
+        })
+
+        XCTAssertFalse(accepted)
+        XCTAssertTrue(didReplace)
+        XCTAssertTrue(reader.content === replacement)
+        XCTAssertEqual(reader.currentSelectionID, successorID)
+        XCTAssertTrue(reader.makeSelectionCommitFence(requiring: successorID)())
+    }
+
+    func testGuardedSelectionAdmissionCannotOverwriteReentrantNativeTarget() {
+        let reader = ReaderContent(), original = record("original"), replacement = record("replacement")
+        let successor = record("successor")
+        reader.replaceSelection(with: original)
+        reader.pageURL = original.url
+        let selectionID = reader.currentSelectionID
+
+        let accepted = reader.replaceSelection(with: replacement, admission: {
+            reader.pageURL = successor.url
+            return true
+        })
+
+        XCTAssertFalse(accepted)
+        XCTAssertTrue(reader.content === original)
+        XCTAssertEqual(reader.pageURL, successor.url)
+        XCTAssertEqual(reader.currentSelectionID, selectionID)
+    }
+
+    func testGuardedSelectionRevocationDuringPublicationPermanentlyClosesAttempt() throws {
+        let reader = ReaderContent(), original = record("original"), replacement = record("replacement")
+        reader.replaceSelection(with: original)
+        var permitsPublication = true
+        var rejectedFence: (@Sendable () -> Bool)?
+        let subscription = reader.objectWillChange.sink {
+            guard permitsPublication else { return }
+            rejectedFence = reader.makeSelectionCommitFence(requiring: reader.currentSelectionID)
+            permitsPublication = false
+        }
+        defer { subscription.cancel() }
+
+        let accepted = reader.replaceSelection(with: replacement, admission: { permitsPublication })
+
+        XCTAssertFalse(accepted)
+        XCTAssertTrue(reader.content === original)
+        let fence = try XCTUnwrap(rejectedFence)
+        XCTAssertFalse(fence())
+        permitsPublication = true
+        XCTAssertFalse(fence())
+    }
+
     func testClearingCallerSelectionRejectsOldResolver() async throws {
         let originalResolver = ReaderContent.contentResolver
         defer { ReaderContent.contentResolver = originalResolver }
