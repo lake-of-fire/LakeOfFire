@@ -804,21 +804,6 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    @RealmBackgroundActor
-    private static func releaseDiskCache(_ configuration: Realm.Configuration) {
-        // A replaced path has two cache keys. Retire only this fixture's keys,
-        // including the old inode; the public current-identity eviction is narrower.
-        let actor = RealmBackgroundActor.shared
-        let keys = actor.cachedRealms.keys.filter {
-            actor.cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
-        }
-        for key in keys {
-            guard let realm = actor.cachedRealms[key], !realm.isInWriteTransaction else { continue }
-            actor.cachedRealms.removeValue(forKey: key)
-            realm.invalidate()
-        }
-    }
-
     private func diskFixture() throws -> DiskFixture {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("script-storage-\(UUID())", isDirectory: true)
@@ -833,7 +818,7 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
         retired.fileURL = directory.appendingPathComponent("retired.realm")
         let captured = current
         addTeardownBlock {
-            await Self.releaseDiskCache(captured)
+            await RealmBackgroundActor.shared.releaseScriptFieldOwnershipDiskCache(captured)
             try? FileManager.default.removeItem(at: directory)
         }
         let scriptID = UUID()
@@ -890,7 +875,7 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
                 try await fixture.commands.write(mutation)
                 XCTFail("A retained command adopted the replacement store: \(mutation)")
             } catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
-            await Self.releaseDiskCache(fixture.current)
+            await RealmBackgroundActor.shared.releaseScriptFieldOwnershipDiskCache(fixture.current)
             XCTAssertEqual(try diskState(fixture.current), fixture.replacementState)
             XCTAssertEqual(try diskState(fixture.retired), fixture.originalState)
         }
@@ -914,7 +899,7 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
                 try await writer.value
                 XCTFail("The transaction did not revalidate physical storage: \(mutation)")
             } catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
-            await Self.releaseDiskCache(fixture.current)
+            await RealmBackgroundActor.shared.releaseScriptFieldOwnershipDiskCache(fixture.current)
             XCTAssertEqual(try diskState(fixture.current), fixture.replacementState)
             XCTAssertEqual(try diskState(fixture.retired), fixture.originalState)
         }
@@ -941,7 +926,7 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
         catch InjectedFailure.write {}
         do { try await finishing.value; XCTFail("Retirement retry adopted the replacement") }
         catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
-        await Self.releaseDiskCache(fixture.current)
+        await RealmBackgroundActor.shared.releaseScriptFieldOwnershipDiskCache(fixture.current)
         XCTAssertEqual(try diskState(fixture.current), fixture.replacementState)
         XCTAssertEqual(try diskState(fixture.retired), fixture.originalState)
     }
@@ -961,7 +946,7 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
         _ = fixture.commands.domain.makeEdit("retired.example")
         try await fresh.field.write()
         try await freshDomain.write()
-        await Self.releaseDiskCache(fixture.current)
+        await RealmBackgroundActor.shared.releaseScriptFieldOwnershipDiskCache(fixture.current)
         let after = try diskState(fixture.current)
         XCTAssertEqual(after.title, "Successor title")
         XCTAssertEqual(after.domains, ["successor.example"])
@@ -969,8 +954,23 @@ final class LibraryScriptFieldOwnershipTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try diskState(fixture.retired), fixture.originalState)
         try await fresh.field.write()
         try await freshDomain.write()
-        await Self.releaseDiskCache(fixture.current)
+        await RealmBackgroundActor.shared.releaseScriptFieldOwnershipDiskCache(fixture.current)
         XCTAssertEqual(try diskState(fixture.current), after, "Same-value replays must not re-journal")
     }
 
+}
+
+private extension RealmBackgroundActor {
+    func releaseScriptFieldOwnershipDiskCache(_ configuration: Realm.Configuration) {
+        // A replaced path has two cache keys. Retire only this fixture's keys,
+        // including the old inode; the public current-identity eviction is narrower.
+        let keys = cachedRealms.keys.filter {
+            cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
+        }
+        for key in keys {
+            guard let realm = cachedRealms[key], !realm.isInWriteTransaction else { continue }
+            cachedRealms.removeValue(forKey: key)
+            realm.invalidate()
+        }
+    }
 }

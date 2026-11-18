@@ -525,19 +525,6 @@ final class LibraryCategoryEditorPresentationTests: XCTestCase, @unchecked Senda
         }
     }
 
-    @RealmBackgroundActor
-    private static func releaseDiskCache(_ configuration: Realm.Configuration) {
-        let actor = RealmBackgroundActor.shared
-        let keys = actor.cachedRealms.keys.filter {
-            actor.cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
-        }
-        for key in keys {
-            guard let realm = actor.cachedRealms[key], !realm.isInWriteTransaction else { continue }
-            actor.cachedRealms.removeValue(forKey: key)
-            realm.invalidate()
-        }
-    }
-
     private func diskFixture() throws -> CategoryFeedDeletionDiskFixture {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("category-feed-deletion-\(UUID())", isDirectory: true)
@@ -552,7 +539,7 @@ final class LibraryCategoryEditorPresentationTests: XCTestCase, @unchecked Senda
         retiredConfiguration.fileURL = directory.appendingPathComponent("retired.realm")
         let captured = configuration
         addTeardownBlock {
-            await Self.releaseDiskCache(captured)
+            await RealmBackgroundActor.shared.releaseCategoryEditorPresentationDiskCache(captured)
             try? FileManager.default.removeItem(at: directory)
         }
         let categoryID = UUID()
@@ -626,7 +613,7 @@ final class LibraryCategoryEditorPresentationTests: XCTestCase, @unchecked Senda
             try await fixture.command.write()
             XCTFail("A captured deletion must not adopt the replacement store")
         } catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseCategoryEditorPresentationDiskCache(fixture.configuration)
         XCTAssertEqual(try diskSnapshot(fixture.configuration), fixture.replacement)
         XCTAssertEqual(try diskSnapshot(fixture.retiredConfiguration), fixture.original)
     }
@@ -649,8 +636,21 @@ final class LibraryCategoryEditorPresentationTests: XCTestCase, @unchecked Senda
             try await deletion.value
             XCTFail("Deletion must revalidate the physical store inside its owned transaction")
         } catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseCategoryEditorPresentationDiskCache(fixture.configuration)
         XCTAssertEqual(try diskSnapshot(fixture.configuration), fixture.replacement)
         XCTAssertEqual(try diskSnapshot(fixture.retiredConfiguration), fixture.original)
+    }
+}
+
+private extension RealmBackgroundActor {
+    func releaseCategoryEditorPresentationDiskCache(_ configuration: Realm.Configuration) {
+        let keys = cachedRealms.keys.filter {
+            cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
+        }
+        for key in keys {
+            guard let realm = cachedRealms[key], !realm.isInWriteTransaction else { continue }
+            cachedRealms.removeValue(forKey: key)
+            realm.invalidate()
+        }
     }
 }

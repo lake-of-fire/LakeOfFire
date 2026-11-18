@@ -993,19 +993,6 @@ final class LibraryFeedCreationTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    @RealmBackgroundActor
-    private static func releaseDiskCache(_ configuration: Realm.Configuration) {
-        let actor = RealmBackgroundActor.shared
-        let keys = actor.cachedRealms.keys.filter {
-            actor.cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
-        }
-        for key in keys {
-            guard let realm = actor.cachedRealms[key], !realm.isInWriteTransaction else { continue }
-            actor.cachedRealms.removeValue(forKey: key)
-            realm.invalidate()
-        }
-    }
-
     private func makeDiskFixture() throws -> DiskFixture {
         suppressDownloadObserverInitialization()
         let directory = FileManager.default.temporaryDirectory
@@ -1021,7 +1008,7 @@ final class LibraryFeedCreationTests: XCTestCase, @unchecked Sendable {
             excludedClassNames: []
         )
         addTeardownBlock {
-            await Self.releaseDiskCache(configuration)
+            await RealmBackgroundActor.shared.releaseFeedCreationDiskCache(configuration)
             try? FileManager.default.removeItem(at: directory)
         }
         let categoryID = UUID()
@@ -1078,7 +1065,7 @@ final class LibraryFeedCreationTests: XCTestCase, @unchecked Sendable {
             try await createAfterReplacingDiskFile(fixture)
             XCTFail("Creation must not adopt a replacement physical store")
         } catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseFeedCreationDiskCache(fixture.configuration)
         XCTAssertEqual(try diskSnapshot(fixture.configuration), fixture.replacement)
         XCTAssertEqual(try diskSnapshot(fixture.retiredConfiguration), fixture.original)
     }
@@ -1103,7 +1090,7 @@ final class LibraryFeedCreationTests: XCTestCase, @unchecked Sendable {
             _ = try await task.value
             XCTFail("Owned creation must reject the retired physical store")
         } catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseFeedCreationDiskCache(fixture.configuration)
         XCTAssertEqual(try diskSnapshot(fixture.configuration), fixture.replacement)
         XCTAssertEqual(try diskSnapshot(fixture.retiredConfiguration), fixture.original)
     }
@@ -1157,5 +1144,18 @@ final class LibraryFeedCreationTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(presentation.published.isEmpty)
         XCTAssertEqual(fixture.category.createdAt, replacementCreatedAt)
         XCTAssertEqual(snapshot(fixture.realm), authoritativeReplacement)
+    }
+}
+
+private extension RealmBackgroundActor {
+    func releaseFeedCreationDiskCache(_ configuration: Realm.Configuration) {
+        let keys = cachedRealms.keys.filter {
+            cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
+        }
+        for key in keys {
+            guard let realm = cachedRealms[key], !realm.isInWriteTransaction else { continue }
+            cachedRealms.removeValue(forKey: key)
+            realm.invalidate()
+        }
     }
 }

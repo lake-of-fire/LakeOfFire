@@ -11,7 +11,7 @@ final class LibraryCategoryInvalidationTests: XCTestCase {
         let configuration = makeConfiguration()
         let manager = LibraryDataManager(observesChanges: false)
         try await Task { @RealmBackgroundActor in
-            let realm = try await Realm.open(configuration: configuration, actor: RealmBackgroundActor.shared)
+            let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
             let category = FeedCategory()
             try realm.write { realm.add(category) }
             try realm.write { realm.delete(category) }

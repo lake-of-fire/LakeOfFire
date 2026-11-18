@@ -267,25 +267,13 @@ final class BookmarkStatusCacheCommandTests: XCTestCase {
         ReaderContentLoader.historyRealmConfiguration = fixtureConfiguration
         ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer = nil
         addTeardownBlock {
-            await Self.releaseFixtureCache(fixtureConfiguration)
+            await RealmBackgroundActor.shared.releaseBookmarkStatusFixtureCache(fixtureConfiguration)
             ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
             ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
             ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer = originalAnalysisEnqueuer
         }
         let realm = try await Realm(configuration: fixtureConfiguration, actor: MainActor.shared)
         return (fixtureConfiguration, realm, BookmarkStatusCache())
-    }
-
-    @RealmBackgroundActor
-    private static func releaseFixtureCache(_ configuration: Realm.Configuration) {
-        let actor = RealmBackgroundActor.shared
-        let keys = actor.cachedRealms.keys.filter {
-            actor.cachedRealms[$0]?.configuration.inMemoryIdentifier == configuration.inMemoryIdentifier
-        }
-        for key in keys {
-            guard actor.cachedRealms[key]?.isInWriteTransaction == false else { continue }
-            actor.cachedRealms.removeValue(forKey: key)?.invalidate()
-        }
     }
 
     @MainActor
@@ -345,5 +333,17 @@ private actor BookmarkStatusAnalysisGate {
         released = true
         continuation?.resume()
         continuation = nil
+    }
+}
+
+private extension RealmBackgroundActor {
+    func releaseBookmarkStatusFixtureCache(_ configuration: Realm.Configuration) {
+        let keys = cachedRealms.keys.filter {
+            cachedRealms[$0]?.configuration.inMemoryIdentifier == configuration.inMemoryIdentifier
+        }
+        for key in keys {
+            guard cachedRealms[key]?.isInWriteTransaction == false else { continue }
+            cachedRealms.removeValue(forKey: key)?.invalidate()
+        }
     }
 }

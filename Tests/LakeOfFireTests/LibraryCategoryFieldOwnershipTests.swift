@@ -713,21 +713,6 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
         }
     }
 
-    @RealmBackgroundActor
-    private static func releaseDiskCache(_ configuration: Realm.Configuration) {
-        // File replacement changes the current cache key. Retire only this
-        // unique fixture path's keys, including the captured original inode.
-        let actor = RealmBackgroundActor.shared
-        let keys = actor.cachedRealms.keys.filter {
-            actor.cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
-        }
-        for key in keys {
-            guard let realm = actor.cachedRealms[key], !realm.isInWriteTransaction else { continue }
-            actor.cachedRealms.removeValue(forKey: key)
-            realm.invalidate()
-        }
-    }
-
     private func diskFixture() throws -> CategoryFieldDiskFixture {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("category-storage-\(UUID())", isDirectory: true)
@@ -742,7 +727,7 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
         retiredConfiguration.fileURL = directory.appendingPathComponent("retired.realm")
         let captured = configuration
         addTeardownBlock {
-            await Self.releaseDiskCache(captured)
+            await RealmBackgroundActor.shared.releaseCategoryFieldOwnershipDiskCache(captured)
             try? FileManager.default.removeItem(at: directory)
         }
         let categoryID = UUID()
@@ -800,7 +785,7 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
             try await command.write()
             XCTFail("The captured field command adopted the successor store")
         } catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseCategoryFieldOwnershipDiskCache(fixture.configuration)
         XCTAssertEqual(try diskSnapshot(fixture.configuration), fixture.replacement)
         XCTAssertEqual(try diskSnapshot(fixture.retiredConfiguration), fixture.original)
     }
@@ -823,7 +808,7 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
             try await write.value
             XCTFail("The field transaction failed to revalidate captured physical storage")
         } catch RealmBackgroundActorError.realmFileChangedDuringOpen {}
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseCategoryFieldOwnershipDiskCache(fixture.configuration)
         XCTAssertEqual(try diskSnapshot(fixture.configuration), fixture.replacement)
         XCTAssertEqual(try diskSnapshot(fixture.retiredConfiguration), fixture.original)
     }
@@ -840,13 +825,13 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
         // command merely because path, record ID and creation date match.
         _ = old.ordering.issueIntent(field: old.edit.field)
         try await fresh.write()
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseCategoryFieldOwnershipDiskCache(fixture.configuration)
         let after = try diskSnapshot(fixture.configuration)
         XCTAssertEqual(after.title, "Successor input")
         XCTAssertNotEqual(after.generations, fixture.replacement.generations)
         XCTAssertEqual(try diskSnapshot(fixture.retiredConfiguration), fixture.original)
         try await fresh.write()
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseCategoryFieldOwnershipDiskCache(fixture.configuration)
         XCTAssertEqual(try diskSnapshot(fixture.configuration), after, "Same-value delivery must not re-journal")
     }
 
@@ -1205,5 +1190,20 @@ final class LibraryCategoryFieldOwnershipTests: XCTestCase, @unchecked Sendable 
         realm.refresh()
         let current = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: id))
         XCTAssertEqual(categoryFieldRowSnapshot(current, in: realm), replacementCommit)
+    }
+}
+
+private extension RealmBackgroundActor {
+    func releaseCategoryFieldOwnershipDiskCache(_ configuration: Realm.Configuration) {
+        // File replacement changes the current cache key. Retire only this
+        // unique fixture path's keys, including the captured original inode.
+        let keys = cachedRealms.keys.filter {
+            cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
+        }
+        for key in keys {
+            guard let realm = cachedRealms[key], !realm.isInWriteTransaction else { continue }
+            cachedRealms.removeValue(forKey: key)
+            realm.invalidate()
+        }
     }
 }

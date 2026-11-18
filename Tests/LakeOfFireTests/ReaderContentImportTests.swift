@@ -127,7 +127,7 @@ final class ReaderContentImportTests: XCTestCase {
         )
         let result = try XCTUnwrap(saved)
         let reference = result.reference
-        let mainActorID = try await { @MainActor () throws -> UInt64 in
+        let mainActorID = try await { @MainActor () async throws -> UInt64 in
             let realm = try await Realm(
                 configuration: reference.realmConfiguration, actor: MainActor.shared
             )

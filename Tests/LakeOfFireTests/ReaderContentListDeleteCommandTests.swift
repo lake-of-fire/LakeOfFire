@@ -4,15 +4,15 @@ import XCTest
 @testable import LakeOfFireContentUI
 
 @objc(LakeOfFireTestsUpstreamDeleteCommandContent)
-private final class UpstreamDeleteCommandContent: Bookmark, DeletableReaderContent {
+private final class UpstreamDeleteCommandContent: Bookmark, @unchecked Sendable {
     var deleteCalls = 0
     var deletion: (@MainActor () async throws -> Void)?
-    var deleteActionTitle: String { "Delete" }
+    override var deleteActionTitle: String { "Delete" }
 
     override class func shouldIncludeInDefaultSchema() -> Bool { false }
 
     @MainActor
-    func delete() async throws {
+    override func delete() async throws {
         deleteCalls += 1
         try await deletion?()
     }

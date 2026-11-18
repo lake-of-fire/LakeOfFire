@@ -118,7 +118,7 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
         BigSyncMutationTracking.install(configurations: [configuration, replacement], excludedClassNames: [])
         let capturedConfigurations = [configuration, replacement, retired]
         addTeardownBlock {
-            for configuration in capturedConfigurations { await Self.releaseDiskCache(configuration) }
+            for configuration in capturedConfigurations { await RealmBackgroundActor.shared.releaseFeedEditorStorageOwnershipDiskCache(configuration) }
             try? FileManager.default.removeItem(at: directory)
         }
         let feedID = UUID()
@@ -199,19 +199,6 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
             replacement: try XCTUnwrap(fixture.replacementConfiguration.fileURL),
             retired: try XCTUnwrap(fixture.retiredConfiguration.fileURL)
         )
-    }
-
-    @RealmBackgroundActor
-    private static func releaseDiskCache(_ configuration: Realm.Configuration) {
-        let actor = RealmBackgroundActor.shared
-        let keys = actor.cachedRealms.keys.filter {
-            actor.cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
-        }
-        for key in keys {
-            guard let realm = actor.cachedRealms[key], !realm.isInWriteTransaction else { continue }
-            actor.cachedRealms.removeValue(forKey: key)
-            realm.invalidate()
-        }
     }
 
     @RealmBackgroundActor
@@ -299,7 +286,7 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
     }
 
     private func assertStoresUnchanged(_ fixture: DiskFixture) async throws {
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseFeedEditorStorageOwnershipDiskCache(fixture.configuration)
         let current = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
         let retired = try await Self.snapshot(fixture.retiredConfiguration, feedID: fixture.feedID)
         XCTAssertEqual(current, fixture.replacement)
@@ -444,7 +431,7 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
         editor.model!.refresh()
         XCTAssertEqual(editor.model!.feedIconURL, "")
         await editor.retire()
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseFeedEditorStorageOwnershipDiskCache(fixture.configuration)
         let replacementState = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
         let committed = try await Self.snapshot(fixture.retiredConfiguration, feedID: fixture.feedID)
         XCTAssertEqual(replacementState, fixture.replacement)
@@ -591,7 +578,7 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
         try await editor.model!.finishEditing().value
         XCTAssertEqual(editor.model!.feedTitle, "Accepted")
         await editor.retire()
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseFeedEditorStorageOwnershipDiskCache(fixture.configuration)
         let current = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
         let replacement = try await Self.snapshot(fixture.replacementConfiguration, feedID: fixture.feedID)
         XCTAssertEqual(current.title, "Accepted")
@@ -660,7 +647,7 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
         addTeardownBlock { write.cancel(); _ = await write.result }
         try await write.value
         await oldEditor.retire()
-        await Self.releaseDiskCache(fixture.configuration)
+        await RealmBackgroundActor.shared.releaseFeedEditorStorageOwnershipDiskCache(fixture.configuration)
         let current = try await Self.snapshot(fixture.configuration, feedID: fixture.feedID)
         let retired = try await Self.snapshot(fixture.retiredConfiguration, feedID: fixture.feedID)
         XCTAssertEqual(current.title, "Replacement owner's input")
@@ -1007,5 +994,18 @@ final class LibraryFeedEditorStorageOwnershipTests: XCTestCase, @unchecked Senda
         XCTAssertEqual(settled.categoryTitle, "Peer category")
         XCTAssertEqual(settled.categoryCreatedAt, fixture.original.categoryCreatedAt)
         XCTAssertEqual(settled.generations, peerGenerations)
+    }
+}
+
+private extension RealmBackgroundActor {
+    func releaseFeedEditorStorageOwnershipDiskCache(_ configuration: Realm.Configuration) {
+        let keys = cachedRealms.keys.filter {
+            cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
+        }
+        for key in keys {
+            guard let realm = cachedRealms[key], !realm.isInWriteTransaction else { continue }
+            cachedRealms.removeValue(forKey: key)
+            realm.invalidate()
+        }
     }
 }

@@ -1149,19 +1149,6 @@ final class WebFeedButtonLibraryStateTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(host.detailPath, expectedPath)
     }
 
-    @RealmBackgroundActor
-    private static func releaseDiskCache(_ configuration: Realm.Configuration) {
-        let actor = RealmBackgroundActor.shared
-        let keys = actor.cachedRealms.keys.filter {
-            actor.cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
-        }
-        for key in keys {
-            guard let realm = actor.cachedRealms[key], !realm.isInWriteTransaction else { continue }
-            actor.cachedRealms.removeValue(forKey: key)
-            realm.invalidate()
-        }
-    }
-
     private func diskSnapshot(_ configuration: Realm.Configuration) throws -> WebFeedObservedStore {
         try autoreleasepool {
             let realm = try Realm(configuration: configuration)
@@ -1182,7 +1169,7 @@ final class WebFeedButtonLibraryStateTests: XCTestCase, @unchecked Sendable {
         // Mutation policy belongs to the path, not the copied configuration.
         BigSyncMutationTracking.install(configurations: [original, replacement], excludedClassNames: [])
         addTeardownBlock {
-            await Self.releaseDiskCache(original)
+            await RealmBackgroundActor.shared.releaseWebFeedButtonDiskCache(original)
             try? FileManager.default.removeItem(at: directory)
         }
         let identities = Identities()
@@ -1234,7 +1221,7 @@ final class WebFeedButtonLibraryStateTests: XCTestCase, @unchecked Sendable {
         XCTAssertNil(state.userCategories)
         XCTAssertNil(state.feed(matching: [URL(string: "https://example.com/A.rss")!]))
         await state.stopObservation()
-        await Self.releaseDiskCache(original)
+        await RealmBackgroundActor.shared.releaseWebFeedButtonDiskCache(original)
         XCTAssertEqual(try diskSnapshot(original), beforeReplacement)
         XCTAssertEqual(try diskSnapshot(retired), beforeOriginal)
     }
@@ -1253,7 +1240,7 @@ final class WebFeedButtonLibraryStateTests: XCTestCase, @unchecked Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let configuration = configured(Realm.Configuration(fileURL: directory.appendingPathComponent("new.realm")))
         addTeardownBlock {
-            await Self.releaseDiskCache(configuration)
+            await RealmBackgroundActor.shared.releaseWebFeedButtonDiskCache(configuration)
             try? FileManager.default.removeItem(at: directory)
         }
         let originalGlobal = LibraryDataManager.realmConfiguration
@@ -1278,7 +1265,7 @@ final class WebFeedButtonLibraryStateTests: XCTestCase, @unchecked Sendable {
         XCTAssertNotNil(feedID)
         XCTAssertTrue(model.isLibraryPresented)
         await state.stopObservation()
-        await Self.releaseDiskCache(configuration)
+        await RealmBackgroundActor.shared.releaseWebFeedButtonDiskCache(configuration)
         let created = try diskSnapshot(configuration)
         XCTAssertEqual(created.libraries.count, 1)
         XCTAssertEqual(created.categories.count, 1)
@@ -1293,5 +1280,18 @@ final class WebFeedButtonLibraryStateTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(Set(created.mutations.map(\.entityType)), Set([
             LibraryConfiguration.className(), FeedCategory.className(), Feed.className(),
         ]))
+    }
+}
+
+private extension RealmBackgroundActor {
+    func releaseWebFeedButtonDiskCache(_ configuration: Realm.Configuration) {
+        let keys = cachedRealms.keys.filter {
+            cachedRealms[$0]?.configuration.fileURL == configuration.fileURL
+        }
+        for key in keys {
+            guard let realm = cachedRealms[key], !realm.isInWriteTransaction else { continue }
+            cachedRealms.removeValue(forKey: key)
+            realm.invalidate()
+        }
     }
 }

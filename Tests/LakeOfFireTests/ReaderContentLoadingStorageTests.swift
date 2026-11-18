@@ -180,7 +180,7 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         XCTAssertTrue(publishedTitles.isEmpty)
         let cachedContent = try await reader.getContent()
         XCTAssertNil(cachedContent)
-        let renamed = try await reader.updateContentTitle("Must not rename deleted content")
+        let renamed = try await reader.updateContentTitle("Must not rename deleted content", for: nil)
         XCTAssertFalse(renamed)
         XCTAssertEqual(realm.objects(BigSyncPendingMutation.self)
             .map { $0.recordName + ":" + $0.generation }.sorted(), journalAfterDeletion)
@@ -1551,8 +1551,7 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
 
         try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
-            excludingPrimaryKey: primary.compoundKey,
-            primaryClassName: primary.objectSchema.className,
+            excluding: try XCTUnwrap(ReaderContentLoader.ContentReference(content: primary)),
             readabilityHTML: html,
             resolvedTitle: "Inferred title",
             permitsCommit: { true }
@@ -1568,8 +1567,7 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
 
         try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
-            excludingPrimaryKey: primary.compoundKey,
-            primaryClassName: primary.objectSchema.className,
+            excluding: try XCTUnwrap(ReaderContentLoader.ContentReference(content: primary)),
             readabilityHTML: html,
             resolvedTitle: "Inferred title",
             permitsCommit: { true }
@@ -1613,17 +1611,21 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         XCTAssertTrue(fence())
 
         let gate = ReaderContentLoadingDiscoveryGate()
-        await { @RealmBackgroundActor in
-            ReaderContentLoader.loadAllDiscoveryGateForTesting = { await gate.pause() }
-        }()
+        let previousProviders = ReaderContentLoader.additionalContentProviders
+        defer { ReaderContentLoader.additionalContentProviders = previousProviders }
+        ReaderContentLoader.additionalContentProviders = [
+            ReaderContentAdditionalProvider(id: "retired-reader-selection") { _ in
+                await gate.pause()
+                return []
+            }
+        ]
         let primaryKey = primary.compoundKey
-        let primaryClassName = primary.objectSchema.className
+        let primaryReference = try XCTUnwrap(ReaderContentLoader.ContentReference(content: primary))
         XCTAssertEqual(primaryKey, related.compoundKey)
         let propagation = Task { @RealmBackgroundActor in
             try await ReaderContentLoader.propagateReaderModeDefaults(
                 for: url,
-                excludingPrimaryKey: primaryKey,
-                primaryClassName: primaryClassName,
+                excluding: primaryReference,
                 readabilityHTML: "<p>Stale reader document</p>",
                 resolvedTitle: "Stale title",
                 permitsCommit: fence
@@ -1649,7 +1651,10 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         try await reader.load(url: successorURL, resolveContent: { _ in successor })
         XCTAssertFalse(fence())
         await gate.releaseAll()
-        try await propagation.value
+        do {
+            try await propagation.value
+            XCTFail("A retired Reader selection must cancel propagation")
+        } catch is CancellationError { }
         await realm.asyncRefresh()
 
         XCTAssertEqual(related.title, "Original related title")

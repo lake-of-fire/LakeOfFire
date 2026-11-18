@@ -271,13 +271,7 @@ final class ReaderContentListSnapshotTests: XCTestCase {
         try realm.write { realm.add([first, second, excluded]) }
         let identifier = configuration.inMemoryIdentifier
         addTeardownBlock {
-            await { @ReaderContentListActor in
-                for (key, cached) in ReaderContentListActor.shared.cachedRealms
-                    where cached.configuration.inMemoryIdentifier == identifier {
-                    cached.invalidate()
-                    ReaderContentListActor.shared.cachedRealms.removeValue(forKey: key)
-                }
-            }()
+            await ReaderContentListActor.shared.releaseSnapshotFixtureCache(inMemoryIdentifier: identifier)
         }
         let model = ReaderContentListViewModel<ContentFile>()
 
@@ -699,4 +693,17 @@ private final class ReaderListLoadGate {
 
 private enum ReaderListLoadFixtureError: Error {
     case filterFailed
+}
+
+private extension ReaderContentListActor {
+    func releaseSnapshotFixtureCache(inMemoryIdentifier identifier: String?) {
+        let keys = cachedRealms.keys.filter {
+            cachedRealms[$0]?.configuration.inMemoryIdentifier == identifier
+        }
+        for key in keys {
+            guard let realm = cachedRealms[key], !realm.isInWriteTransaction else { continue }
+            cachedRealms.removeValue(forKey: key)
+            realm.invalidate()
+        }
+    }
 }

@@ -7,7 +7,7 @@ import SwiftCloudDrive
 import SwiftUIDownloads
 @testable import LakeOfFireContent
 
-private enum InventoryFixtureError: Error {
+private enum InventoryFixtureError: Swift.Error {
     case seamNotReached
     case taskTimedOut
     case scanFailed

@@ -252,7 +252,7 @@ final class ReaderHistoryInvalidationTests: XCTestCase {
 
         let submitted = XCTestExpectation(description: "Bookmark deletion submitted")
         let deletion = Task { @MainActor in
-            let viewRealm = try Realm(configuration: configuration)
+            let viewRealm = try await Realm(configuration: configuration, actor: MainActor.shared)
             let displayed = try XCTUnwrap(viewRealm.object(ofType: Bookmark.self, forPrimaryKey: key))
             try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
                 try await displayed.delete()
@@ -286,7 +286,7 @@ final class ReaderHistoryInvalidationTests: XCTestCase {
 
         let submitted = XCTestExpectation(description: "History deletion submitted")
         let deletion = Task { @MainActor in
-            let viewRealm = try Realm(configuration: configuration)
+            let viewRealm = try await Realm(configuration: configuration, actor: MainActor.shared)
             let displayed = try XCTUnwrap(viewRealm.object(ofType: HistoryRecord.self, forPrimaryKey: key))
             try await RealmWriteSubmissionObservation.$willSubmit.withValue({ submitted.fulfill() }) {
                 try await displayed.delete()
