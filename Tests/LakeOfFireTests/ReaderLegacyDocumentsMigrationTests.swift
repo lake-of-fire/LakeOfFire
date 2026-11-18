@@ -344,11 +344,349 @@ final class ReaderLegacyDocumentsMigrationTests: XCTestCase {
         XCTAssertEqual(try fixture.read("Documents/" + name), Data([2]))
     }
 
+    func testStaleAdmissionBeforeActorEntryCreatesNoDestination() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("book.epub", Data([1]))
+        do {
+            _ = try await ReaderLegacyDocumentsMigration().migrate(containerURL: fixture.root, validateAdmission: { false })
+            XCTFail("Expected expired admission")
+        } catch { XCTAssertEqual(error as? ReaderLegacyDocumentsMigration.Failure, .admissionExpired) }
+        XCTAssertTrue(fixture.exists("book.epub"))
+        XCTAssertFalse(fixture.exists("Documents"))
+    }
+
+    func testAccountChangeImmediatelyBeforeRenameBalancesNotificationAndPreservesSource() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("book.epub", Data([1]))
+        let state = MoveState()
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.isCurrent = { state.current }
+        environment.moveNotification = { source, destination, completed in
+            state.notifications.append((source, destination, completed))
+            if !completed { state.current = false }
+        }
+        do {
+            _ = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: fixture.root)
+            XCTFail("Expected expired admission")
+        } catch { XCTAssertEqual(error as? ReaderLegacyDocumentsMigration.Failure, .admissionExpired) }
+        XCTAssertEqual(try fixture.read("book.epub"), Data([1]))
+        XCTAssertFalse(fixture.exists("Documents/book.epub"))
+        XCTAssertEqual(state.notifications.count, 2)
+        XCTAssertEqual(state.notifications.last?.1, fixture.url("book.epub"))
+        XCTAssertEqual(state.notifications.last?.2, true)
+    }
+
+    func testAccountChangeAfterFirstCommitPreservesEarlierMoveAndRemainingOriginal() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("a.epub", Data([1]))
+        try fixture.write("b.epub", Data([2]))
+        let state = MoveState()
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.isCurrent = { state.current }
+        environment.moveNotification = { _, _, completed in if completed { state.current = false } }
+        do {
+            _ = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: fixture.root)
+            XCTFail("Expected expired admission")
+        } catch { XCTAssertEqual(error as? ReaderLegacyDocumentsMigration.Failure, .admissionExpired) }
+        XCTAssertEqual(try fixture.read("Documents/a.epub"), Data([1]))
+        XCTAssertEqual(try fixture.read("b.epub"), Data([2]))
+    }
+
+    func testDestinationReplacementDuringPresenterCallbackRejectsDescriptorCommit() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("book.epub", Data([1]))
+        try fixture.write("Documents/existing.epub", Data([2]))
+        let root = fixture.root
+        let source = fixture.url("book.epub")
+        let destination = fixture.url("Documents")
+        let displaced = fixture.url("DisplacedDocuments")
+        let state = MoveState()
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.rename = { _, _, _, _ in
+            state.renameCount += 1
+            errno = EIO
+            return -1
+        }
+        environment.moveNotification = { from, to, completed in
+            state.notifications.append((from, to, completed))
+            if !completed {
+                do {
+                    try FileManager.default.moveItem(at: destination, to: displaced)
+                    try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+                } catch { XCTFail("Could not replace destination during presenter callback: \(error)") }
+            }
+        }
+        do {
+            _ = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: root)
+            XCTFail("Replaced destination must reject the announced move")
+        } catch { XCTAssertEqual(error as? ReaderLegacyDocumentsMigration.Failure, .invalidDestination) }
+        XCTAssertEqual(state.renameCount, 0)
+        XCTAssertEqual(state.notifications.count, 2)
+        XCTAssertEqual(state.notifications.last?.1, source)
+        XCTAssertEqual(state.notifications.last?.2, true)
+        XCTAssertEqual(try Data(contentsOf: source), Data([1]))
+        XCTAssertEqual(try Data(contentsOf: displaced.appendingPathComponent("existing.epub")), Data([2]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: displaced.appendingPathComponent("book.epub").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("book.epub").path))
+    }
+
+    func testSourceReplacementDuringPresenterCallbackPreservesOriginalAndSuccessor() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("book.epub", Data([1]))
+        let root = fixture.root
+        let source = fixture.url("book.epub")
+        let savedOriginal = fixture.url(".saved-original.epub")
+        let target = fixture.url("Documents/book.epub")
+        let state = MoveState()
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.rename = { _, _, _, _ in
+            state.renameCount += 1
+            errno = EIO
+            return -1
+        }
+        environment.moveNotification = { from, to, completed in
+            state.notifications.append((from, to, completed))
+            if !completed {
+                do {
+                    try FileManager.default.moveItem(at: source, to: savedOriginal)
+                    try Data([3]).write(to: source)
+                } catch { XCTFail("Could not replace source during presenter callback: \(error)") }
+            }
+        }
+        do {
+            _ = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: root)
+            XCTFail("Replaced source must reject the announced move")
+        } catch { XCTAssertEqual(error as? ReaderLegacyDocumentsMigration.Failure, .sourceChanged) }
+        XCTAssertEqual(state.renameCount, 0)
+        XCTAssertEqual(state.notifications.count, 2)
+        XCTAssertEqual(state.notifications.last?.1, source)
+        XCTAssertEqual(state.notifications.last?.2, true)
+        XCTAssertEqual(try Data(contentsOf: savedOriginal), Data([1]))
+        XCTAssertEqual(try Data(contentsOf: source), Data([3]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    func testFailedRenameBalancesPresenterNotificationAndRetainsOriginalErrno() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("book.epub", Data([1]))
+        let state = MoveState()
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.rename = { _, _, _, _ in errno = EXDEV; return -1 }
+        environment.moveNotification = { source, destination, completed in
+            state.notifications.append((source, destination, completed))
+            if completed { errno = EIO }
+        }
+        do {
+            _ = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: fixture.root)
+            XCTFail("Expected rename failure")
+        } catch {
+            XCTAssertEqual((error as NSError).domain, NSPOSIXErrorDomain)
+            XCTAssertEqual((error as NSError).code, Int(EXDEV))
+        }
+        XCTAssertEqual(state.notifications.count, 2)
+        XCTAssertEqual(state.notifications.last?.1, fixture.url("book.epub"))
+        XCTAssertEqual(try fixture.read("book.epub"), Data([1]))
+        XCTAssertFalse(fixture.exists("Documents/book.epub"))
+    }
+
+    func testExclusiveRenameCollisionBalancesNotificationAndRetriesRecoveredName() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("book.epub", Data([1]))
+        let state = MoveState()
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        let nativeRename = environment.rename
+        environment.rename = { source, name, destination, target in
+            if state.notifications.count == 1 { errno = EEXIST; return -1 }
+            return nativeRename(source, name, destination, target)
+        }
+        environment.moveNotification = { source, destination, completed in
+            state.notifications.append((source, destination, completed))
+        }
+        let report = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: fixture.root)
+        XCTAssertEqual(report.recoveredItemCount, 1)
+        XCTAssertEqual(state.notifications.count, 4)
+        XCTAssertEqual(state.notifications[1].1, fixture.url("book.epub"))
+        XCTAssertEqual(try fixture.read("Documents/book (Recovered 1).epub"), Data([1]))
+    }
+
+    func testEvictedDestinationContentsDoNotAdmitPayloadOrBlockLegacyMove() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("Documents/current.epub", Data([2]))
+        try fixture.write("legacy.epub", Data([1]))
+        let root = fixture.root
+        let destination = fixture.url("Documents")
+        let existing = fixture.url("Documents/current.epub")
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.inventory = { _ in [existing] }
+        environment.requirePayload = { url in
+            if url.standardizedFileURL.path.hasPrefix(destination.standardizedFileURL.path) {
+                throw ReaderLegacyDocumentsMigration.Failure.payloadUnavailable
+            }
+        }
+        let report = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: root)
+        XCTAssertEqual(report.movedItemCount, 1)
+        XCTAssertEqual(try fixture.read("Documents/legacy.epub"), Data([1]))
+        XCTAssertEqual(try fixture.read("Documents/current.epub"), Data([2]))
+    }
+
+    func testCloudOnlyLogicalItemCannotCompleteWithoutPayload() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let logicalURL = fixture.url("evicted.epub")
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.inventory = { _ in [logicalURL] }
+        environment.requirePayload = { url in
+            if url == logicalURL { throw ReaderLegacyDocumentsMigration.Failure.payloadUnavailable }
+        }
+        do {
+            _ = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: fixture.root)
+            XCTFail("Cloud-only payload must remain retryable")
+        } catch { XCTAssertEqual(error as? ReaderLegacyDocumentsMigration.Failure, .payloadUnavailable) }
+    }
+
+    func testCloudOnlyDescendantPreventsMovingPartiallyMaterializedPackage() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("book.epub/local", Data([1]))
+        let unavailable = fixture.url("book.epub/remote")
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.inventory = { _ in [unavailable] }
+        environment.requirePayload = { if $0 == unavailable { throw ReaderLegacyDocumentsMigration.Failure.payloadUnavailable } }
+        do {
+            _ = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: fixture.root)
+            XCTFail("Incomplete package must remain retryable")
+        } catch { XCTAssertEqual(error as? ReaderLegacyDocumentsMigration.Failure, .payloadUnavailable) }
+        XCTAssertEqual(try fixture.read("book.epub/local"), Data([1]))
+        XCTAssertFalse(fixture.exists("Documents/book.epub"))
+    }
+
+    func testEmptyProviderInventoryDoesNotHideUnavailableLocalUserItem() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("pending.epub", Data([1]))
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.inventory = { _ in [] }
+        environment.requirePayload = { _ in throw ReaderLegacyDocumentsMigration.Failure.payloadUnavailable }
+        do {
+            _ = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: fixture.root)
+            XCTFail("An empty provider query cannot complete pending local work")
+        } catch { XCTAssertEqual(error as? ReaderLegacyDocumentsMigration.Failure, .payloadUnavailable) }
+        XCTAssertEqual(try fixture.read("pending.epub"), Data([1]))
+    }
+
+    func testInventoryFailurePreservesOriginalForRetry() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("book.epub", Data([1]))
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.inventory = { _ in throw ReaderLegacyDocumentsMigration.Failure.inventoryUnavailable }
+        do {
+            _ = try await ReaderLegacyDocumentsMigration(environment: environment).migrate(containerURL: fixture.root)
+            XCTFail("Expected retryable inventory failure")
+        } catch { XCTAssertEqual(error as? ReaderLegacyDocumentsMigration.Failure, .inventoryUnavailable) }
+        XCTAssertEqual(try fixture.read("book.epub"), Data([1]))
+    }
+
+    func testSuspendedOldInventoryCannotOverwriteAConcurrentCommittedMove() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.write("book.epub", Data([1]))
+        let root = fixture.root
+        let logical = fixture.url("book.epub")
+        let gate = InventoryGate()
+        var environment = ReaderLegacyDocumentsMigration.Environment()
+        environment.inventory = { _ in await gate.snapshot() }
+        let migration = ReaderLegacyDocumentsMigration(environment: environment)
+        let oldAttempt = Task { try await migration.migrate(containerURL: root) }
+        let deadline = Date().addingTimeInterval(2)
+        while !(await gate.isSuspended), Date() < deadline { await Task.yield() }
+        guard await gate.isSuspended else {
+            oldAttempt.cancel()
+            await gate.release([])
+            _ = try? await oldAttempt.value
+            XCTFail("First inventory did not suspend")
+            return
+        }
+        let report = try await migration.migrate(containerURL: root)
+        XCTAssertEqual(report.movedItemCount, 1)
+        await gate.release([logical])
+        do {
+            _ = try await oldAttempt.value
+            XCTFail("An old snapshot must remain retryable")
+        } catch { /* The committed logical source no longer has payload. */ }
+        XCTAssertEqual(try fixture.read("Documents/book.epub"), Data([1]))
+        XCTAssertFalse(fixture.exists("book.epub"))
+        XCTAssertFalse(fixture.exists("Documents/book (Recovered 1).epub"))
+    }
+
+    private actor InventoryGate {
+        private var calls = 0
+        private var continuation: CheckedContinuation<[URL], Never>?
+        var isSuspended: Bool { continuation != nil }
+        func snapshot() async -> [URL] {
+            calls += 1
+            if calls == 1 {
+                return await withCheckedContinuation { continuation = $0 }
+            }
+            return []
+        }
+        func release(_ urls: [URL]) {
+            continuation?.resume(returning: urls)
+            continuation = nil
+        }
+    }
+
+    func testLogicalInventoryCollapsesPackagesAndExcludesMetadataAndOtherContainers() throws {
+        let root = URL(fileURLWithPath: "/container")
+        let children = try ReaderLegacyDocumentsMigration.logicalChildren([
+            root.appendingPathComponent("book.epub/chapter"),
+            root.appendingPathComponent("book.epub/remote"),
+            root.appendingPathComponent(".metadata/item"),
+            URL(fileURLWithPath: "/container-other/book.epub")
+        ], root: root)
+        XCTAssertEqual(children, [root.appendingPathComponent("book.epub")])
+    }
+
+    func testLogicalCloudDescendantThroughExistingRootAliasIsNotIgnored() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let alias = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-alias-" + UUID().uuidString)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.root)
+        defer { try? FileManager.default.removeItem(at: alias) }
+        let logical = alias.appendingPathComponent("cloud-only.epub/OPS/chapter.xhtml")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: logical.path))
+        let children = try ReaderLegacyDocumentsMigration.logicalChildren([logical], root: fixture.root)
+        XCTAssertEqual(children, [fixture.url("cloud-only.epub")])
+        let throughAlias = try ReaderLegacyDocumentsMigration.logicalChildren([logical], root: alias)
+        XCTAssertEqual(throughAlias, [fixture.url("cloud-only.epub")])
+    }
+
+    // Mutations occur only in the migration actor's synchronous callbacks;
+    // XCTest reads the state after joining that actor operation.
+    private final class MoveState: @unchecked Sendable {
+        var current = true
+        var renameCount = 0
+        var notifications: [(URL, URL, Bool)] = []
+    }
+
     private final class Fixture {
         let root: URL
         init() throws {
-            root = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-documents-\(UUID().uuidString)").resolvingSymlinksInPath()
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-documents-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            guard let canonicalPath = directory.path.withCString({ realpath($0, nil) }) else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            defer { free(canonicalPath) }
+            root = URL(fileURLWithPath: String(cString: canonicalPath), isDirectory: true)
         }
         func url(_ path: String) -> URL { root.appendingPathComponent(path) }
         func exists(_ path: String) -> Bool { FileManager.default.fileExists(atPath: url(path).path) }

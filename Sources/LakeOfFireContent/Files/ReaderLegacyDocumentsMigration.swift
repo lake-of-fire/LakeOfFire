@@ -6,8 +6,10 @@ import Darwin
 /// Documents. Directories (including unpacked EPUBs) remain indivisible: a
 /// collision preserves the entire incoming item under a recovered name.
 ///
-/// This actor serializes in-process migrations, not all writers. Apple file
-/// coordination protects cooperative writers; descriptor-relative exclusive
+/// Cloud inventory snapshots may suspend and overlap other attempts. The actor
+/// serializes synchronous commit loops; every resume revalidates admission and
+/// directory identity. Apple file coordination protects cooperative writers;
+/// descriptor-relative exclusive
 /// rename is the storage commit point. There is no copy-then-delete path.
 public actor ReaderLegacyDocumentsMigration {
     public static let shared = ReaderLegacyDocumentsMigration()
@@ -24,14 +26,60 @@ public actor ReaderLegacyDocumentsMigration {
         case unsupportedItem
         case recoveryNameExhausted
         case coordinationDidNotRun
+        case admissionExpired
+        case inventoryUnavailable
+        case payloadUnavailable
     }
 
-    public init() {}
+    /// Foundation supplies this immutable, opaque account identity. It is only
+    /// retained and compared, never mutated or inspected across executors.
+    public struct Admission: @unchecked Sendable {
+        public let root: URL
+        private let identity: any NSObjectProtocol
+        private let identifier: String
 
-    public func migrate(containerURL: URL) throws -> Report {
+        public init(root: URL, identity: any NSCoding & NSCopying & NSObjectProtocol, identifier: String) {
+            self.root = root.standardizedFileURL
+            self.identity = identity.copy(with: nil) as? any NSObjectProtocol ?? identity
+            self.identifier = identifier
+        }
+
+        public func isCurrent() -> Bool {
+            let manager = FileManager.default
+            guard let current = manager.ubiquityIdentityToken,
+                  identity.isEqual(current),
+                  let currentRoot = manager.url(forUbiquityContainerIdentifier: identifier) else { return false }
+            return currentRoot.standardizedFileURL == root
+        }
+    }
+
+    // Internal boundaries exercise account loss, cloud-only inventory and failed
+    // storage commits using real temporary files without requiring an iCloud account.
+    struct Environment: Sendable {
+        var isCurrent: @Sendable () -> Bool = { true }
+        var inventory: (@Sendable (URL) async throws -> [URL])?
+        var requirePayload: @Sendable (URL) throws -> Void = { try ReaderLegacyDocumentsMigration.requireAvailablePayload($0) }
+        var rename: @Sendable (Int32, String, Int32, String) -> Int32 = { source, name, destination, target in
+            name.withCString { from in
+                target.withCString { to in renameatx_np(source, from, destination, to, UInt32(RENAME_EXCL)) }
+            }
+        }
+        var moveNotification: @Sendable (URL, URL, Bool) -> Void = { _, _, _ in }
+    }
+
+    private let environment: Environment
+    public init() { environment = Environment() }
+    init(environment: Environment) { self.environment = environment }
+
+    public func migrate(containerURL: URL, validateAdmission: (@Sendable () -> Bool)? = nil) async throws -> Report {
+        func requireAdmission() throws {
+            try Task.checkCancellation()
+            guard environment.isCurrent(), validateAdmission?() ?? true else { throw Failure.admissionExpired }
+        }
+        try requireAdmission()
         try Task.checkCancellation()
         guard containerURL.isFileURL else { throw Failure.invalidContainer }
-        let root = containerURL.standardizedFileURL.resolvingSymlinksInPath()
+        let root = Self.canonicalLogicalURL(containerURL)
         guard root.path != "/" else { throw Failure.invalidContainer }
         let rootDescriptor = root.path.withCString { open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW) }
         guard rootDescriptor >= 0 else { throw Self.posixError() }
@@ -40,6 +88,7 @@ public actor ReaderLegacyDocumentsMigration {
         let destination = root.appendingPathComponent("Documents", isDirectory: true)
 
         try Self.coordinate(url: destination, options: .forMerging) {
+            try requireAdmission()
             try Self.requireRoot(root, identity: rootIdentity)
             let result = mkdirat(rootDescriptor, "Documents", 0o777)
             if result != 0 && errno != EEXIST { throw Self.posixError() }
@@ -52,6 +101,7 @@ public actor ReaderLegacyDocumentsMigration {
 
         func requireCurrentDirectories() throws {
             try Task.checkCancellation()
+            try requireAdmission()
             try Self.requireRoot(root, identity: rootIdentity)
             guard try Self.identity(parent: rootDescriptor, name: "Documents") == destinationIdentity else {
                 throw Failure.invalidDestination
@@ -59,15 +109,53 @@ public actor ReaderLegacyDocumentsMigration {
         }
 
         try requireCurrentDirectories()
-        let items = try FileManager.default.contentsOfDirectory(
-            at: root, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
-        ).sorted { $0.lastPathComponent.utf8.lexicographicallyPrecedes($1.lastPathComponent.utf8) }
+        func inventory() async throws -> [URL] {
+            let entries = try FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.isHiddenKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey], options: []
+            )
+            var local: [URL] = []
+            for entry in entries {
+                let values = try entry.resourceValues(forKeys: [.isHiddenKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey])
+                // Hidden container metadata is excluded independently of its
+                // cloud download state. Logical user URLs come from the public
+                // query snapshot; private placeholder names are never inferred.
+                if !entry.lastPathComponent.hasPrefix("."), values.isHidden != true {
+                    local.append(entry)
+                }
+            }
+            let cloud: [URL]
+            if let discover = environment.inventory { cloud = try await discover(root) }
+            else if validateAdmission != nil { cloud = try await Self.cloudInventory(root: root) }
+            else { cloud = [] }
+            try requireCurrentDirectories()
+            // Metadata includes descendants and logical URLs for evicted items.
+            // Collapse to an indivisible top-level user item, never a private
+            // placeholder filename or a hidden container metadata directory.
+            let children = try Self.logicalChildren(cloud, root: root)
+            for url in cloud {
+                let top = try Self.logicalChildren([url], root: root)
+                if let child = top.first,
+                   (try? Self.identity(parent: rootDescriptor, name: child.lastPathComponent)) != destinationIdentity {
+                    try environment.requirePayload(url)
+                }
+            }
+            return Array(Set(local + children)).sorted {
+                $0.lastPathComponent.utf8.lexicographicallyPrecedes($1.lastPathComponent.utf8)
+            }
+        }
+        let items = try await inventory()
         try requireCurrentDirectories()
         var movedCount = 0
         var recoveredCount = 0
         for item in items {
             try requireCurrentDirectories()
             let name = item.lastPathComponent
+            // Never traverse or download the existing destination's library.
+            // Its filesystem identity also handles case-insensitive spelling.
+            if (try? Self.identity(parent: rootDescriptor, name: name)) == destinationIdentity { continue }
+            // Public resource/download APIs run before requiring lstat: a logical cloud
+            // URL need not have a local directory entry yet.
+            try environment.requirePayload(item)
             let sourceIdentity = try Self.identity(parent: rootDescriptor, name: name)
             // Compare filesystem identity too: case-insensitive volumes may
             // spell the existing directory differently from "Documents".
@@ -87,14 +175,24 @@ public actor ReaderLegacyDocumentsMigration {
                     guard try Self.identity(parent: rootDescriptor, name: name) == sourceIdentity else {
                         throw Failure.sourceChanged
                     }
+                    try environment.requirePayload(item)
+                    try requireAdmission()
                     coordinator.item(at: item, willMoveTo: target)
-                    let result = name.withCString { sourceName in
-                        targetName.withCString { destinationName in
-                            renameatx_np(rootDescriptor, sourceName, destinationDescriptor, destinationName, UInt32(RENAME_EXCL))
-                        }
+                    environment.moveNotification(item, target, false)
+                    var committedURL = item
+                    defer {
+                        coordinator.item(at: item, didMoveTo: committedURL)
+                        environment.moveNotification(item, committedURL, true)
                     }
+                    // Recheck after presenter notification, immediately before
+                    // the exclusive storage commit. All exits balance willMove.
+                    try requireCurrentDirectories()
+                    guard try Self.identity(parent: rootDescriptor, name: name) == sourceIdentity else {
+                        throw Failure.sourceChanged
+                    }
+                    let result = environment.rename(rootDescriptor, name, destinationDescriptor, targetName)
                     if result == 0 {
-                        coordinator.item(at: item, didMoveTo: target)
+                        committedURL = target
                         return true
                     }
                     let code = errno
@@ -114,9 +212,7 @@ public actor ReaderLegacyDocumentsMigration {
         try requireCurrentDirectories()
         // Do not publish completion for an unprocessed item created during the
         // pass. Already committed moves remain and a retry finishes the rest.
-        let remaining = try FileManager.default.contentsOfDirectory(
-            at: root, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
-        )
+        let remaining = try await inventory()
         for item in remaining {
             guard try Self.identity(parent: rootDescriptor, name: item.lastPathComponent) == destinationIdentity else {
                 throw Failure.sourceChanged
@@ -124,6 +220,107 @@ public actor ReaderLegacyDocumentsMigration {
         }
         try requireCurrentDirectories()
         return Report(movedItemCount: movedCount, recoveredItemCount: recoveredCount)
+    }
+
+    static func logicalChildren(_ urls: [URL], root: URL) throws -> [URL] {
+        let canonicalRoot = canonicalLogicalURL(root)
+        let prefix = canonicalRoot.path + "/"
+        var children = Set<URL>()
+        for url in urls {
+            guard url.isFileURL else { throw Failure.inventoryUnavailable }
+            let path = canonicalLogicalURL(url).path
+            guard path.hasPrefix(prefix) else { continue }
+            let relative = String(path.dropFirst(prefix.count))
+            guard let name = relative.split(separator: "/").first, !name.hasPrefix(".") else { continue }
+            children.insert(canonicalRoot.appendingPathComponent(String(name)))
+        }
+        return Array(children)
+    }
+
+    /// An evicted logical descendant need not exist locally. Resolve its
+    /// nearest existing ancestor first, then restore the missing components;
+    /// resolving the full nonexistent URL alone may preserve a /var alias.
+    private static func canonicalLogicalURL(_ url: URL) -> URL {
+        var ancestor = url.standardizedFileURL
+        var missingComponents: [String] = []
+        while ancestor.path != "/", !FileManager.default.fileExists(atPath: ancestor.path) {
+            missingComponents.append(ancestor.lastPathComponent)
+            ancestor.deleteLastPathComponent()
+        }
+        let resolvedAncestor: URL
+        if let canonicalPath = ancestor.path.withCString({ realpath($0, nil) }) {
+            defer { free(canonicalPath) }
+            resolvedAncestor = URL(fileURLWithPath: String(cString: canonicalPath))
+        } else {
+            resolvedAncestor = ancestor.resolvingSymlinksInPath()
+        }
+        return missingComponents.reversed().reduce(resolvedAncestor) {
+            $0.appendingPathComponent($1)
+        }
+    }
+
+    private static func requireAvailablePayload(_ url: URL) throws {
+        let keys: Set<URLResourceKey> = [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey, .isDirectoryKey]
+        func requireDownloaded(_ item: URL) throws {
+            let values = try item.resourceValues(forKeys: keys)
+            if values.isUbiquitousItem == true,
+               values.ubiquitousItemDownloadingStatus != .current,
+               values.ubiquitousItemDownloadingStatus != .downloaded {
+                try FileManager.default.startDownloadingUbiquitousItem(at: item)
+                throw Failure.payloadUnavailable
+            }
+        }
+        try requireDownloaded(url)
+        if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
+            var traversalError: Error?
+            guard let enumerator = FileManager.default.enumerator(
+                at: url, includingPropertiesForKeys: Array(keys), options: [],
+                errorHandler: { _, error in traversalError = error; return false }
+            ) else { throw Failure.payloadUnavailable }
+            for case let descendant as URL in enumerator { try requireDownloaded(descendant) }
+            if let traversalError { throw traversalError }
+        }
+    }
+
+    /// A finite initial-gathering snapshot discovers logical URLs absent from
+    /// local enumeration. The query lives on the main run loop and is stopped
+    /// on success, cancellation, timeout or start failure. Retry owns downloads.
+    @MainActor
+    private static func cloudInventory(root: URL) async throws -> [URL] {
+        let query = NSMetadataQuery()
+        let gathering = GatheringState()
+        let observer = NotificationCenter.default.addObserver(
+            forName: .NSMetadataQueryDidFinishGathering, object: query, queue: .main
+        ) { _ in
+            Task { @MainActor in gathering.finished = true }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        query.searchScopes = [NSMetadataQueryUbiquitousDataScope]
+        query.predicate = NSPredicate(value: true)
+        guard query.start() else { throw Failure.inventoryUnavailable }
+        defer { query.stop() }
+        let deadline = Date().addingTimeInterval(10)
+        while !gathering.finished {
+            try Task.checkCancellation()
+            guard Date() < deadline else { throw Failure.inventoryUnavailable }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        query.disableUpdates()
+        defer { query.enableUpdates() }
+        var urls: [URL] = []
+        for result in query.results {
+            guard let item = result as? NSMetadataItem,
+                  let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL else {
+                throw Failure.inventoryUnavailable
+            }
+            urls.append(url)
+        }
+        return urls
+    }
+
+    @MainActor
+    private final class GatheringState {
+        var finished = false
     }
 
     /// Preserve the extension, including for directory-backed EPUBs, while
@@ -196,7 +393,7 @@ public actor ReaderLegacyDocumentsMigration {
         var result: Result<Void, Error>?
         coordinator.coordinate(writingItemAt: url, options: options, error: &coordinationError) { actualURL in
             result = Result {
-                guard actualURL.standardizedFileURL == url.standardizedFileURL else { throw Failure.sourceChanged }
+                guard canonicalLogicalURL(actualURL) == canonicalLogicalURL(url) else { throw Failure.sourceChanged }
                 try Task.checkCancellation()
                 try action()
             }
@@ -214,8 +411,8 @@ public actor ReaderLegacyDocumentsMigration {
         coordinator.coordinate(writingItemAt: source, options: .forMoving,
                                writingItemAt: destination, options: [], error: &coordinationError) { from, to in
             result = Result {
-                guard from.standardizedFileURL == source.standardizedFileURL,
-                      to.standardizedFileURL == destination.standardizedFileURL else { throw Failure.sourceChanged }
+                guard canonicalLogicalURL(from) == canonicalLogicalURL(source),
+                      canonicalLogicalURL(to) == canonicalLogicalURL(destination) else { throw Failure.sourceChanged }
                 try Task.checkCancellation()
                 return try action(coordinator)
             }
