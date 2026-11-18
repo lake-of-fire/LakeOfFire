@@ -66,6 +66,39 @@ final class ReviewReaderFileImportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: collided), Data("user changed renamed file".utf8))
         XCTAssertEqual(try Data(contentsOf: next), Data("imported".utf8))
     }
+    func testLongFilenameCollisionsPreservePayloadsAndReuseRenamedImports() async throws {
+        for name in [String(repeating: "a", count: 251) + ".txt",
+                     String(repeating: "猫", count: 83) + ".txt"] {
+            let (incoming, library, drive) = try await fixture()
+            let source = incoming.appendingPathComponent(name)
+            let original = library.appendingPathComponent(name)
+            let imported = Data("imported long filename".utf8)
+            let existing = Data("existing long filename".utf8)
+            try imported.write(to: source)
+            try existing.write(to: original)
+
+            let first = try await install(source, drive: drive)
+            let repeated = try await install(source, drive: drive)
+            XCTAssertNotEqual(first.standardizedFileURL, original.standardizedFileURL)
+            XCTAssertEqual(repeated.standardizedFileURL, first.standardizedFileURL)
+            XCTAssertLessThanOrEqual(first.lastPathComponent.utf8.count, 255)
+            XCTAssertEqual(first.pathExtension, "txt")
+            XCTAssertEqual(try Data(contentsOf: first), imported)
+            XCTAssertEqual(try Data(contentsOf: original), existing)
+
+            let edited = Data("user edited renamed import".utf8)
+            try edited.write(to: first)
+            let next = try await install(source, drive: drive)
+            XCTAssertNotEqual(next.standardizedFileURL, first.standardizedFileURL)
+            XCTAssertLessThanOrEqual(next.lastPathComponent.utf8.count, 255)
+            XCTAssertEqual(next.pathExtension, "txt")
+            XCTAssertEqual(try Data(contentsOf: next), imported)
+            XCTAssertEqual(try Data(contentsOf: first), edited)
+            XCTAssertEqual(try Data(contentsOf: original), existing)
+            XCTAssertEqual(try Data(contentsOf: source), imported)
+        }
+    }
+
     func testNewFileAndSameURLControls() async throws {
         let (incoming, _, drive) = try await fixture()
         let source = incoming.appendingPathComponent("fresh.txt")

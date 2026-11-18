@@ -118,8 +118,20 @@ enum ReaderFileImportStorage {
             }
             guard collision < Int.max else { throw CocoaError(.fileWriteFileExists) }
             collision += 1
-            let suffix = collision == 1 ? "" : "-\(collision)"
-            candidate = targetDirectory.appending(baseName + " (" + (collisionHash ?? "") + suffix + ")" + ext)
+            let counter = collision == 1 ? "" : "-\(collision)"
+            let suffix = " (" + (collisionHash ?? "") + counter + ")" + ext
+            // A valid source filename can already occupy the entire filesystem
+            // component limit. Reserve space for the collision identity and
+            // extension before appending them, including on repeated collisions.
+            var remainingBytes = 255 - suffix.utf8.count
+            guard remainingBytes >= 0 else { throw CocoaError(.fileWriteInvalidFileName) }
+            let stem = baseName.prefix { character in
+                let bytes = character.utf8.count
+                guard bytes <= remainingBytes else { return false }
+                remainingBytes -= bytes
+                return true
+            }
+            candidate = targetDirectory.appending(String(stem) + suffix)
         }
     }
 }
