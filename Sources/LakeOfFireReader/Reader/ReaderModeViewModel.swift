@@ -3473,19 +3473,7 @@ public class ReaderModeViewModel: ObservableObject {
                     return
                 }
             }
-            let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
-            try await propagateReaderModeDefaults(
-                for: url,
-                primaryKey: primaryRecordCompoundKey,
-                primaryClassName: primaryRecordClassName,
-                readabilityHTML: readabilityContent,
-                fallbackTitle: titleForDisplay,
-                derivedTitle: derivedTitle,
-                permitsCommit: selectionIsCurrent
-            )
-            guard await ownsContent() else {
-                return
-            }
+            let derivedTitle = url.isSnippetURL ? nil : titleFromReadabilityDocument(doc)
             try await processForReaderMode(
                 doc: doc,
                 url: url,
@@ -3797,6 +3785,26 @@ public class ReaderModeViewModel: ObservableObject {
                         await readerDocumentDispatchedForTesting()
                     }
 #endif
+                }
+                // The selected record has already been prepared. Propagation to
+                // its other saved copies owns no part of the visible render.
+                guard !url.isSnippetURL, selectionIsCurrent() else { return }
+                Task(priority: .utility) { @ReaderViewModelActor in
+                    do {
+                        try await propagateReaderModeDefaults(
+                            for: url,
+                            primaryKey: primaryRecordCompoundKey,
+                            primaryClassName: primaryRecordClassName,
+                            readabilityHTML: readabilityContent,
+                            fallbackTitle: titleForDisplay,
+                            derivedTitle: derivedTitle,
+                            permitsCommit: selectionIsCurrent
+                        )
+                    } catch is CancellationError {
+                        // A replacement selection or account owns later writes.
+                    } catch {
+                        print("Reader metadata propagation failed: \(error.localizedDescription)")
+                    }
                 }
 //                try await { @MainActor in
 //                    readerModeLoading(false)
