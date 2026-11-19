@@ -11,6 +11,7 @@ import AppKit
 import UIKit
 #endif
 import RealmSwiftGaps
+import BigSyncKit
 import UniformTypeIdentifiers
 
 
@@ -609,16 +610,21 @@ public struct ReaderContentLoader {
         primaryClassName: String,
         readabilityHTML: String,
         resolvedTitle: String?,
+        legacyFlattenedTitle: String? = nil,
+        primaryTitleUpdate: (expected: String, replacement: String)? = nil,
         account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool
     ) async throws {
         guard permitsCommit() else { return }
         try Task.checkCancellation()
         try await updateContent(url: url, account: account, permitsCommit: permitsCommit) { record in
-            guard permitsCommit(), !Task.isCancelled,
-                  !(record.compoundKey == primaryKey
-                    && record.objectSchema.className == primaryClassName) else {
-                return false
+            guard permitsCommit(), !Task.isCancelled else { return false }
+            if record.compoundKey == primaryKey && record.objectSchema.className == primaryClassName {
+                guard let primaryTitleUpdate,
+                      record.title == primaryTitleUpdate.expected,
+                      record.title != primaryTitleUpdate.replacement else { return false }
+                record.title = primaryTitleUpdate.replacement
+                return true
             }
 
             var changed = false
@@ -638,8 +644,9 @@ public struct ReaderContentLoader {
                     changed = true
                 }
                 if let resolvedTitle,
-                   record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   record.title != resolvedTitle {
+                   record.title != resolvedTitle,
+                   (record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || record.title == legacyFlattenedTitle) {
                     record.title = resolvedTitle
                     changed = true
                 }
@@ -713,7 +720,7 @@ public struct ReaderContentLoader {
                 // outside Session's nonrecursive lock. Only durable commit is fenced.
                 guard permitsCommit?() != false, !Task.isCancelled else { throw CancellationError() }
                 if mutate(object) {
-                    object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                    try object.refreshChangeMetadataThrowing(explicitlyModified: true, at: timestamp)
                 }
                 guard permitsCommit?() != false, !Task.isCancelled else { throw CancellationError() }
                 try reference.validateStorage()

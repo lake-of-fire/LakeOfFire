@@ -15,6 +15,7 @@ import LakeKit
 import WebKit
 import SwiftUtilities
 import Perception
+import BigSyncKit
 
 private func stripTemplateTagsForSanitize(_ html: String) -> String {
     guard html.range(of: "<template", options: .caseInsensitive) != nil else {
@@ -1068,31 +1069,57 @@ internal func updateSnippetReaderTitleIfNeeded(
     return true
 }
 
-internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String? {
-    func normalisedTitle(_ raw: String?) -> String? {
-        let trimmed = (raw ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed.truncate(36)
-    }
+private func normalisedReadabilityTitle(_ raw: String?) -> String? {
+    let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed.truncate(36)
+}
 
+struct ReaderArticleTitleEvidence: Sendable {
+    let heading: String
+    let legacyFlattenedTitle: String?
+
+    func replacement(for storedTitle: String) -> String? {
+        if storedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || storedTitle == legacyFlattenedTitle {
+            return heading
+        }
+        return nil
+    }
+}
+
+func readerArticleTitleEvidence(from html: String) -> ReaderArticleTitleEvidence? {
+    guard let doc = try? SwiftSoup.parse(html) else { return nil }
+    let headings = [try? doc.getElementById("reader-title"), try? doc.getElementsByTag("h1").first()]
+    for case let element? in headings {
+        guard let heading = normalisedReadabilityTitle(readerHeadingTextWithoutRuby(element)) else { continue }
+        let flattened = normalisedReadabilityTitle(try? element.text())
+        let legacyFlattenedTitle = flattened != heading
+            && (try? element.select("ruby rt, ruby rtc").first()) != nil
+            ? flattened : nil
+        return ReaderArticleTitleEvidence(heading: heading, legacyFlattenedTitle: legacyFlattenedTitle)
+    }
+    return nil
+}
+
+internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String? {
     if let readerTitleText = readerHeadingTextWithoutRuby(try? doc.getElementById("reader-title")),
-       let title = normalisedTitle(readerTitleText) {
+       let title = normalisedReadabilityTitle(readerTitleText) {
         return title
     }
 
     if let headingText = readerHeadingTextWithoutRuby(try? doc.getElementsByTag("h1").first()),
-       let title = normalisedTitle(headingText) {
+       let title = normalisedReadabilityTitle(headingText) {
         return title
     }
 
     if let headTitle = try? doc.title(),
-       let title = normalisedTitle(headTitle) {
+       let title = normalisedReadabilityTitle(headTitle) {
         return title
     }
 
     if let body = doc.body(),
        let bodyText = bodyTextExcludingReaderContent(from: body),
-       let title = normalisedTitle(bodyText) {
+       let title = normalisedReadabilityTitle(bodyText) {
         return title
     }
     return nil
@@ -1291,17 +1318,31 @@ private func propagateReaderModeDefaults(
     readabilityHTML: String,
     fallbackTitle: String?,
     derivedTitle: String? = nil,
+    originalTitle: String,
+    repairsArticleTitle: Bool,
     permitsCommit: @escaping @Sendable () -> Bool
 ) async throws {
     guard !url.isSnippetURL, permitsCommit(), !Task.isCancelled else { return }
+    let titleWasBlank = originalTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let sourceTitle = repairsArticleTitle && (titleWasBlank
+        || readabilityHTML.range(of: "<ruby", options: .caseInsensitive) != nil)
+        ? readerArticleTitleEvidence(from: readabilityHTML) : nil
     let storageReadabilityHTML = stripRuntimeReadabilityAssets(from: readabilityHTML)
-    let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle
+    let resolvedTitle = sourceTitle?.heading ?? derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle
+    let primaryReplacement: String?
+    if repairsArticleTitle, titleWasBlank {
+        primaryReplacement = sourceTitle?.heading ?? titleFromReadabilityHTML(storageReadabilityHTML)
+    } else {
+        primaryReplacement = sourceTitle?.replacement(for: originalTitle)
+    }
     try await ReaderContentLoader.propagateReaderModeDefaults(
         for: url,
         excludingPrimaryKey: primaryKey,
         primaryClassName: primaryClassName,
         readabilityHTML: storageReadabilityHTML,
         resolvedTitle: resolvedTitle,
+        legacyFlattenedTitle: sourceTitle?.legacyFlattenedTitle,
+        primaryTitleUpdate: primaryReplacement.map { (expected: originalTitle, replacement: $0) },
         account: ReaderModeProcessingAccountContext.account.map { ($0.access, $0.snapshot) },
         permitsCommit: permitsCommit
     )
@@ -3319,14 +3360,17 @@ public class ReaderModeViewModel: ObservableObject {
             && !url.isReaderFileURL
             && (content.content?.isEmpty ?? true)
         let resolvedStoredHTML = shouldStoreReaderHTML ? stripRuntimeReadabilityAssets(from: readabilityContent) : nil
+        let originalTitle = content.title
+        let repairsArticleTitle = !url.isSnippetURL && !url.isEBookURL && !url.isFileURL
+            && !url.isNativeReaderView && !url.isReaderFileURL
         let resolvedTitleIfNeeded: String? = {
-            guard content.title.isEmpty else { return nil }
+            guard !repairsArticleTitle, originalTitle.isEmpty else { return nil }
             return (resolvedStoredHTML ?? content.html)?
                 .strippingHTML()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .components(separatedBy: "\n")
                 .first?
-                .truncate(36) ?? ""
+                .truncate(36)
         }()
         let titleForDisplay = content.titleForDisplay
         let needsAsyncWrite =
@@ -3358,12 +3402,12 @@ public class ReaderModeViewModel: ObservableObject {
                     if let resolvedStoredHTML {
                         content.html = resolvedStoredHTML
                     }
-                    if let resolvedTitleIfNeeded {
+                    if let resolvedTitleIfNeeded, content.title == originalTitle {
                         content.title = resolvedTitleIfNeeded
                     }
                     content.rssContainsFullContent = true
                 }
-                content.refreshChangeMetadata(explicitlyModified: true)
+                try content.refreshChangeMetadataThrowing(explicitlyModified: true)
                 guard selectionIsCurrent(), !Task.isCancelled else { throw CancellationError() }
             }
         }
@@ -3786,8 +3830,8 @@ public class ReaderModeViewModel: ObservableObject {
                     }
 #endif
                 }
-                // The selected record has already been prepared. Propagation to
-                // its other saved copies owns no part of the visible render.
+                // Repair saved article titles and update other copies after
+                // dispatch, so storage discovery never delays the render.
                 guard !url.isSnippetURL, selectionIsCurrent() else { return }
                 Task(priority: .utility) { @ReaderViewModelActor in
                     do {
@@ -3798,6 +3842,8 @@ public class ReaderModeViewModel: ObservableObject {
                             readabilityHTML: readabilityContent,
                             fallbackTitle: titleForDisplay,
                             derivedTitle: derivedTitle,
+                            originalTitle: originalTitle,
+                            repairsArticleTitle: repairsArticleTitle,
                             permitsCommit: selectionIsCurrent
                         )
                     } catch is CancellationError {
