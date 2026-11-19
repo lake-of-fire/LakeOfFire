@@ -132,6 +132,30 @@ final class ReaderFileLibraryBoundaryTests: XCTestCase {
         try Data(text.utf8).write(to: destination)
     }
 
+    func testExtensionlessEPUBDownloadsRouteAsBooksAndKeepSignedResourceIdentity() async throws {
+        try await withFixture { f in
+            ReaderFileManager.fileDestinationProcessors = [{ @Sendable url in
+                url.pathExtension.lowercased() == "epub" ? RootRelativePath(path: "books") : nil
+            }]
+            let firstURL = try XCTUnwrap(URL(string: "https://example.com/download/42?signature=a%2Fb+%2523"))
+            let secondURL = try XCTUnwrap(URL(string: "https://example.com/download/42?signature=a%2fb+%2523"))
+            let firstDownload = try await f.manager.downloadable(
+                url: firstURL, name: "First", mediaType: "application/epub+zip"
+            )
+            let secondDownload = try await f.manager.downloadable(
+                url: secondURL, name: "Second", mediaType: "application/epub+zip"
+            )
+            let first = try XCTUnwrap(firstDownload)
+            let second = try XCTUnwrap(secondDownload)
+            XCTAssertEqual(first.url.absoluteString, firstURL.absoluteString)
+            XCTAssertEqual(second.url.absoluteString, secondURL.absoluteString)
+            XCTAssertEqual(first.localDestination.lastPathComponent, "42.epub")
+            XCTAssertEqual(second.localDestination.lastPathComponent, "42.epub")
+            XCTAssertTrue(first.localDestination.pathComponents.contains("books"))
+            XCTAssertNotEqual(first.localDestination, second.localDestination)
+        }
+    }
+
     func testCatalogBasenameCollisionCannotClaimAnotherDownloadsBytes() async throws {
         try await withFixture { f in
             let legacy = f.library.appendingPathComponent("book.txt")

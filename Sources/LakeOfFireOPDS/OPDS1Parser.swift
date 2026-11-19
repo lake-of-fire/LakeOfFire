@@ -461,8 +461,14 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
 
         guard isAtom(namespace) else { return }
         if elementName == "link", parent?.role == .entry || parent?.role == .feed {
+            let href = attributeDict["href"]
+            let relations = attributeDict["rel"].map { [LinkRelation($0)] } ?? []
+            let resolvedHREF = href.flatMap { reference in
+                Link.isNonResourceAcquisitionReference(reference, relations: relations)
+                    ? reference : URLHelper.getAbsolute(href: reference, base: effectiveBase)
+            }
             let record = LinkRecord(
-                href: URLHelper.getAbsolute(href: attributeDict["href"], base: effectiveBase),
+                href: resolvedHREF,
                 type: attributeDict["type"], title: attributeDict["title"], rel: attributeDict["rel"],
                 facetGroup: attribute("facetGroup", namespace: "http://opds-spec.org/2010/catalog", in: attributeDict)
                     ?? attributeDict["facetGroup"]
