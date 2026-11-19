@@ -61,6 +61,8 @@ private struct ReaderLoadingOverlay: View {
     let showsImmediately: Bool
 
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
+    @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
 
     private let minimumVisibleNanoseconds: UInt64 = 250_000_000
 
@@ -76,6 +78,18 @@ private struct ReaderLoadingOverlay: View {
     @State private var latestStatusMessage: String?
     @State private var statusDisplayGeneration = 0
 
+    init(isLoading: Bool, statusMessage: String?, showDelayNanoseconds: UInt64, showsImmediately: Bool) {
+        self.isLoading = isLoading
+        self.statusMessage = statusMessage
+        self.showDelayNanoseconds = showDelayNanoseconds
+        self.showsImmediately = showsImmediately
+        let initiallyVisible = isLoading && showsImmediately
+        _isVisible = State(initialValue: initiallyVisible)
+        _visibleSince = State(initialValue: initiallyVisible ? Date() : nil)
+        _latestIsLoading = State(initialValue: isLoading)
+        _latestStatusMessage = State(initialValue: statusMessage)
+    }
+
     var body: some View {
         ZStack {
             Rectangle()
@@ -87,7 +101,7 @@ private struct ReaderLoadingOverlay: View {
                 Group {
                     if let message = displayedMessage, !message.isEmpty {
                         Text(message)
-                            .font(.callout)
+                            .font(.footnote)
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.secondary)
                             .opacity(isShowingStatus ? 1 : 0)
@@ -140,7 +154,11 @@ private struct ReaderLoadingOverlay: View {
     }
 
     private var overlayColor: Color {
-        colorScheme == .dark ? .black : .white
+        readerThemeBackgroundColor(
+            colorScheme: colorScheme,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme
+        )
     }
 
     @MainActor

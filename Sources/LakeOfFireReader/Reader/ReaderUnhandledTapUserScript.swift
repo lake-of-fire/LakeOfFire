@@ -6,6 +6,11 @@ struct ReaderUnhandledTapUserScript {
     let userScript: WebViewUserScript
     
     init() {
+#if os(iOS)
+        let requiresUserScrollIntent = true
+#else
+        let requiresUserScrollIntent = false
+#endif
         let contents = """
 (function() {
     const handlerName = 'swiftUIWebViewUnhandledTap';
@@ -165,7 +170,35 @@ struct ReaderUnhandledTapUserScript {
     let lastScrollPosition = { x: window.scrollX || 0, y: window.scrollY || 0 };
     let accumulatedScroll = { value: 0 };
     let lastPostedScrollHidden = { value: null };
+    let scrollNavigationEnabled = \(requiresUserScrollIntent ? "false" : "true");
+    const scrollInputEvents = ['touchmove', 'wheel', 'keydown'];
     const SCROLL_THRESHOLD = 24;
+    function isScrollInput(event) {
+        if (event.isTrusted !== true || event.defaultPrevented) return false;
+        switch (event.type) {
+        case 'touchmove':
+            return event.touches?.length === 1;
+        case 'wheel':
+            return !event.ctrlKey && Math.abs(event.deltaY) > 0;
+        case 'keydown':
+            return ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)
+                && !elementLooksInteractive(event.target);
+        default:
+            return false;
+        }
+    }
+
+    function enableScrollNavigation(event) {
+        if (scrollNavigationEnabled || !isScrollInput(event)) return;
+        scrollNavigationEnabled = true;
+        lastScrollPosition.x = window.scrollX || 0;
+        lastScrollPosition.y = window.scrollY || 0;
+        accumulatedScroll.value = 0;
+        for (const type of scrollInputEvents) {
+            window.removeEventListener(type, enableScrollNavigation);
+        }
+    }
+
     function postHideNavigationForScroll(hidden, reason) {
         if (lastPostedScrollHidden.value === hidden) {
             return;
@@ -186,15 +219,27 @@ struct ReaderUnhandledTapUserScript {
 
     function handleDocumentScroll() {
         const currentX = window.scrollX || 0;
-        const currentY = window.scrollY || 0;
+        const maximumY = Math.max(0,
+            ((document.scrollingElement || document.documentElement)?.scrollHeight || 0) - window.innerHeight);
+        const currentY = Math.min(maximumY, Math.max(0, window.scrollY || 0));
+        const previousY = Math.min(maximumY, Math.max(0, lastScrollPosition.y));
         const dx = currentX - lastScrollPosition.x;
-        const dy = currentY - lastScrollPosition.y;
+        const dy = currentY - previousY;
         lastScrollPosition.x = currentX;
         lastScrollPosition.y = currentY;
+        if (!scrollNavigationEnabled) {
+            accumulatedScroll.value = 0;
+            return;
+        }
         if (Math.abs(dx) > Math.abs(dy)) {
             return;
         }
 
+        if (maximumY > 0 && currentY >= maximumY - 2 && dy > 0) {
+            postHideNavigationForScroll(false, 'documentScrollBottom');
+            accumulatedScroll.value = 0;
+            return;
+        }
         const delta = Math.abs(dy) >= Math.abs(dx) ? dy : dx;
         if (Math.abs(delta) < 0.5) {
             return;
@@ -213,6 +258,9 @@ struct ReaderUnhandledTapUserScript {
     window.addEventListener('pointermove', handlePointerMove, { capture: true, passive: true });
     window.addEventListener('pointerup', handlePointerUp, { capture: true, passive: true });
     window.addEventListener('pointercancel', handlePointerCancel, { capture: true, passive: true });
+    for (const type of scrollInputEvents) {
+        window.addEventListener(type, enableScrollNavigation, { capture: true, passive: true });
+    }
     window.addEventListener('scroll', handleDocumentScroll, { capture: true, passive: true });
 })();
 """

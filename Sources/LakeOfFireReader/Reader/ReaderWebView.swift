@@ -551,6 +551,7 @@ public struct ReaderWebView: View {
             buildMenu: buildMenu,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme,
+            isPreparingReaderCanvas: readerModeViewModel.isReaderModeLoading,
             scriptCaller: scriptCaller,
             userScripts: readerViewModel.allScripts,
             state: $readerViewModel.state,
@@ -587,6 +588,16 @@ public struct ReaderWebView: View {
     }
 }
 
+enum ReaderWebViewCanvasPolicy {
+    static func usesThemedCanvas(pageURL: URL, isPreparingReaderCanvas: Bool, hasReaderRenderReady: Bool) -> Bool {
+        isPreparingReaderCanvas
+            || pageURL.absoluteString == "about:blank"
+            || pageURL.isReaderURLLoaderURL
+            || pageURL.isNativeReaderView
+            || hasReaderRenderReady
+    }
+}
+
 fileprivate struct ReaderWebViewInternal: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
@@ -603,6 +614,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var buildMenu: BuildMenuType?
     let lightModeTheme: LightModeTheme
     let darkModeTheme: DarkModeTheme
+    let isPreparingReaderCanvas: Bool
     var scriptCaller: WebViewScriptCaller
     var userScripts: [WebViewUserScript]
     @Binding var state: WebViewState
@@ -624,23 +636,12 @@ fileprivate struct ReaderWebViewInternal: View {
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.colorScheme) private var colorScheme
 
-    private var readerThemeBackgroundColor: Color {
-        switch colorScheme {
-        case .dark:
-            switch darkModeTheme {
-            case .black:
-                return .black
-            case .gray:
-                return Color(red: Double(0x31) / 255, green: Double(0x32) / 255, blue: Double(0x34) / 255)
-            }
-        default:
-            switch lightModeTheme {
-            case .white:
-                return .white
-            case .beige:
-                return Color(red: Double(0xf7) / 255, green: Double(0xf0) / 255, blue: Double(0xd8) / 255)
-            }
-        }
+    private var canvasBackgroundColor: Color {
+        readerThemeBackgroundColor(
+            colorScheme: colorScheme,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme
+        )
     }
     
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
@@ -674,16 +675,24 @@ fileprivate struct ReaderWebViewInternal: View {
                 trailing: 0
             )
         )
+        let usesThemedCanvas = ReaderWebViewCanvasPolicy.usesThemedCanvas(
+            pageURL: state.pageURL,
+            isPreparingReaderCanvas: isPreparingReaderCanvas,
+            hasReaderRenderReady: state.hasReaderRenderReady
+        )
+        let readerAppearance: DarkModeSetting = colorScheme == .dark ? .darkModeOverride : .alwaysLightMode
         WebView(
             config: WebViewConfig(
                 dataDetectorsEnabled: false,
-                backgroundColor: readerThemeBackgroundColor,
+                isOpaque: !usesThemedCanvas,
+                backgroundColor: canvasBackgroundColor,
                 usesSampledPageTopColorForUnderPageBackground: true,
                 usesConfiguredBackgroundForReaderDocuments: true,
                 adjustsScrollViewContentInsetsForSafeArea: false,
                 hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
                 nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
-                userScripts: userScripts),
+                userScripts: userScripts,
+                darkModeSetting: usesThemedCanvas ? readerAppearance : .system),
             navigator: navigator,
             state: $state,
             scriptCaller: scriptCaller,
@@ -724,6 +733,7 @@ fileprivate struct ReaderWebViewInternal: View {
             textSelection: $textSelection,
             webViewPrewarmer: webViewPrewarmer
         )
+        .background(usesThemedCanvas ? canvasBackgroundColor : .clear)
         .onAppear {
         }
         .onDisappear {
