@@ -951,7 +951,9 @@ public class ReaderFileManager: ObservableObject {
         guard let drive = ((selection.cloudDrive?.isConnected ?? false)
             ? selection.cloudDrive : nil) ?? selection.localDrive else { return nil }
         let realmConfiguration = selection.realmConfiguration
-        let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
+        // The staged EPUB filename can carry format information absent from its remote locator.
+        let destinationHint = fileURL.lakePathExtension.lowercased() == "epub" ? fileURL : (downloadURL ?? fileURL)
+        let targetDirectory = try await Self.rootRelativePath(forImportedURL: destinationHint, drive: drive)
         try validateMetadataRefreshSelection(selection)
         let shouldStopAccessingFile = fileURL.startAccessingSecurityScopedResource()
         defer {
@@ -2259,12 +2261,17 @@ public extension ReaderFileManager {
     // Downloadables
     
     @MainActor
-    func downloadable(url: URL, name: String) async throws -> Downloadable? {
+    func downloadable(url: URL, name: String, mediaType: String? = nil) async throws -> Downloadable? {
         let selection = try metadataRefreshSelection(realmConfiguration: resolvedHistoryRealmConfiguration)
         guard let drive = ((selection.cloudDrive?.isConnected ?? false)
             ? selection.cloudDrive : nil) ?? selection.localDrive else { return nil }
 
-        let targetDirectory = try await Self.rootRelativePath(forImportedURL: url, drive: drive)
+        let originalFilename = try ReaderFileStoragePaths.downloadFilename(for: url)
+        let filename = try ReaderFileStoragePaths.downloadFilename(for: url, mediaType: mediaType)
+        // Supply the extension to format-based destination processors. The
+        // request and its download identity still use the original locator.
+        let destinationHint = originalFilename == filename ? url : url.appendingPathExtension("epub")
+        let targetDirectory = try await Self.rootRelativePath(forImportedURL: destinationHint, drive: drive)
         try validateMetadataRefreshSelection(selection)
         // A basename is not proof that a file came from this catalog resource.
         // Keep legacy files untouched rather than adopting an ambiguous match.
@@ -2274,7 +2281,7 @@ public extension ReaderFileManager {
         let targetFilePath = targetDirectory
             .appending(ReaderFileStoragePaths.downloadsDirectory)
             .appending(digest)
-            .appending(try ReaderFileStoragePaths.downloadFilename(for: url))
+            .appending(filename)
         try Self.validateContainedPath(targetFilePath, within: drive.rootDirectory)
         let targetURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
         

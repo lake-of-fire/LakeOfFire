@@ -213,6 +213,30 @@ final class BookOpenSelectionOwnershipTests: XCTestCase {
     }
 
     @MainActor
+    func testExtensionlessOPDSAcquisitionKeepsDeclaredTypeAndSignedLocator() throws {
+        let href = "../download/42?signature=a%2Fb+%2523"
+        let documents = [
+            try catalogDocument("""
+            {"metadata":{"title":"Signed book"},"links":[
+                {"href":"\(href)","rel":"download","type":"application/epub+zip"}]}
+            """),
+            try catalogDocument("""
+            <entry xmlns="http://www.w3.org/2005/Atom"><title>Signed book</title>
+              <link href="\(href)" rel="http://opds-spec.org/acquisition/open-access" type="application/epub+zip"/>
+            </entry>
+            """, atom: true),
+        ]
+        for document in documents {
+            let books = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+                in: document, relativeTo: catalogRequestURL))
+            let book = try XCTUnwrap(books.first)
+            XCTAssertEqual(book.downloadURL?.absoluteString,
+                           "https://cdn.example/releases/download/42?signature=a%2Fb+%2523")
+            XCTAssertEqual(book.downloadMediaType, "application/epub+zip")
+        }
+    }
+
+    @MainActor
     func testOPDS2AliasSpellingsKeepGenericAcquisitionPriority() throws {
         for generic in ["acquisition", LinkRelation.opdsAcquisition.string] {
             for openAccess in ["download", LinkRelation.opdsAcquisitionOpenAccess.string] {
