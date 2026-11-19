@@ -40,6 +40,14 @@ public final class URLSchemeTaskCompletionOwnership: @unchecked Sendable {
         activeTasks[ObjectIdentifier(task)] = ActiveTask(task: task)
     }
 
+    /// Response delivery is not terminal. Keep stop admission alive between
+    /// callbacks, because a callback can reenter WebKit and stop the request.
+    public func isActive(_ task: AnyObject) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeTasks[ObjectIdentifier(task)]?.task === task
+    }
+
     /// Attaches cancellation for asynchronous work owned by an active scheme task.
     /// If WebKit already stopped or completed the task, the work is cancelled
     /// immediately rather than being allowed to run without a terminal owner.
@@ -109,12 +117,18 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
         response: URLResponse,
         data: Data? = nil
     ) -> Bool {
-        guard schemeTaskCompletionOwnership.claimCompletion(urlSchemeTask as AnyObject) else {
+        guard schemeTaskCompletionOwnership.isActive(urlSchemeTask as AnyObject) else {
             return false
         }
         urlSchemeTask.didReceive(response)
         if let data {
+            guard schemeTaskCompletionOwnership.isActive(urlSchemeTask as AnyObject) else {
+                return false
+            }
             urlSchemeTask.didReceive(data)
+        }
+        guard schemeTaskCompletionOwnership.claimCompletion(urlSchemeTask as AnyObject) else {
+            return false
         }
         urlSchemeTask.didFinish()
         return true

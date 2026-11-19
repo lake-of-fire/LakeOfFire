@@ -19,6 +19,7 @@ import {
     shouldSuppressPostPageTurnDuplicate as manabiShouldSuppressPostPageTurnDuplicate,
 } from './paginator-decisions.js'
 import { installBookContentStyles } from './book-content-style.js'
+import { getDocumentLanguage } from './content-language.js'
 import { rendererNavigationNotOwned } from './renderer-navigation.js'
 import {
     applyObservedWritingDirectionToDocument as manabiApplyPreferredWritingDirectionToDocument,
@@ -565,12 +566,7 @@ const getJapaneseLayoutFlags = doc => {
         || !!doc?.querySelector?.('m-s')
     const hasManabiSegments = !!doc?.body?.matches?.('[data-mnb-has-segments="true"]')
         || !!doc?.querySelector?.('m-m')
-    const lang =
-        doc?.documentElement?.getAttribute?.('lang')
-        || doc?.documentElement?.getAttribute?.('xml:lang')
-        || doc?.body?.getAttribute?.('lang')
-        || doc?.body?.getAttribute?.('xml:lang')
-        || ''
+    const lang = getDocumentLanguage(doc) ?? ''
     const isJapanese = isJapaneseLanguageTag(lang) || hasManabiSentences || hasManabiSegments
     return {
         isJapanese,

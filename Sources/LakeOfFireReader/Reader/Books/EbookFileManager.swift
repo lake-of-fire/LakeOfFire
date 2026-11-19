@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import LakeOfFireWeb
 import LakeOfFireFiles
 import LakeOfFireContentUI
@@ -127,9 +128,26 @@ public struct EbookFileManager {
                 // image rather than clearing it without provenance.
                 if let cover = metadata.coverHref,
                    var components = URLComponents(url: readerBackingURL, resolvingAgainstBaseURL: false) {
-                    components.queryItems = [URLQueryItem(name: "subpath", value: cover)]
-                    components.fragment = nil
-                    if let imageURL = components.url { update.desired.imageURL = imageURL }
+                    do {
+                        // Match ReaderImage's admitted bytes and limits. The complete
+                        // cover digest changes Nuke's URL identity after replacement.
+                        let source = try ReaderPackageEntrySource(localURL: localURL, limits: .image)
+                        let data = try source.readEntry(subpath: cover)
+                        try Task.checkCancellation()
+                        let revision = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                        try Task.checkCancellation()
+                        components.queryItems = [
+                            URLQueryItem(name: "subpath", value: cover),
+                            URLQueryItem(name: "cover-revision", value: revision)
+                        ]
+                        components.fragment = nil
+                        if let imageURL = components.url { update.desired.imageURL = imageURL }
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        // Optional unreadable artwork must not discard other metadata
+                        // or replace a previously usable image with an unverified URL.
+                    }
                 }
                 update.desired.isPhysicalMedia = true
                 updates.append(update)

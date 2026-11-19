@@ -101,7 +101,7 @@ export const createTOCView = (toc, onclick) => {
         const el = map.get(href)
         if (!el) {
             currentItem = list[0]
-            currentItem.tabIndex = 0
+            if (currentItem) currentItem.tabIndex = 0
             return
         }
         for (const item of getParents(el))

@@ -552,7 +552,7 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
     }
 
     @RealmBackgroundActor
-    func testOPMLRoundTripPreservesDisabledAndEmptyScriptsWithoutRejournaling() async throws {
+    func testOPMLExportPreservesScriptsButImportDoesNotInstallThem() async throws {
         let sourceConfiguration = makeOPMLConfiguration()
         let restoredConfiguration = makeOPMLConfiguration()
         let sourceRealm = try await RealmBackgroundActor.shared.cachedRealm(for: sourceConfiguration)
@@ -596,46 +596,34 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
             fileURL: fileURL, realmConfiguration: restoredConfiguration
         )
 
+        let exportedScripts = try XCTUnwrap(opml.entries.first {
+            $0.attributeBoolValue("isUserScriptList") == true
+        }?.children)
+        XCTAssertEqual(exportedScripts.compactMap { $0.attributeStringValue("uuid") },
+                       scripts.map { $0.id.uuidString })
+        for (entry, original) in zip(exportedScripts, scripts) {
+            XCTAssertEqual(entry.attributeStringValue("script")?.removingPercentEncoding ?? "",
+                           original.script)
+            XCTAssertEqual(entry.attributeBoolValue("isArchived"), original.isArchived)
+        }
         let restoredLibrary = try XCTUnwrap(restoredRealm.objects(LibraryConfiguration.self).first)
-        XCTAssertEqual(Array(restoredLibrary.userScriptIDs), scripts.map(\.id))
-        XCTAssertEqual(restoredRealm.objects(UserScript.self).count, scripts.count)
-        XCTAssertNil(restoredRealm.object(ofType: UserScript.self, forPrimaryKey: deleted.id))
+        XCTAssertTrue(restoredLibrary.userScriptIDs.isEmpty,
+                      "OPML data must not install executable scripts")
+        XCTAssertTrue(restoredRealm.objects(UserScript.self).isEmpty)
         XCTAssertTrue(restoredRealm.objects(FeedCategory.self).isEmpty)
-        for original in scripts {
-            let restored = try XCTUnwrap(restoredRealm.object(
-                ofType: UserScript.self, forPrimaryKey: original.id
-            ))
-            XCTAssertEqual(restored.title, original.title)
-            XCTAssertEqual(restored.script, original.script)
-            XCTAssertEqual(restored.isArchived, original.isArchived)
-            XCTAssertFalse(restored.isDeleted)
-            XCTAssertNotNil(restoredRealm.object(
-                ofType: BigSyncPendingMutation.self, forPrimaryKey: "UserScript.\(original.id)"
-            ))
-        }
-        // WKContentWorld is initialized on the main thread; use an immutable
-        // Realm snapshot while checking the actual WebKit script projection.
-        let frozenLibrary = restoredLibrary.freeze()
-        let activeScriptCount = await MainActor.run {
-            frozenLibrary.getActiveWebViewUserScripts()?.count
-        }
-        XCTAssertEqual(activeScriptCount, 2)
         let generations = Dictionary(uniqueKeysWithValues: restoredRealm.objects(BigSyncPendingMutation.self)
             .map { ($0.recordName, $0.generation) })
         try await LibraryDataManager.shared.importOPML(
             fileURL: fileURL, realmConfiguration: restoredConfiguration
         )
-        let consolidated = try await LibraryConfiguration.getConsolidatedOrCreate(
-            realmConfiguration: restoredConfiguration
-        )
-        XCTAssertEqual(Array(consolidated.userScriptIDs), scripts.map(\.id))
-        XCTAssertEqual(consolidated.getActiveWebViewUserScripts()?.count, 2)
+        XCTAssertTrue(restoredLibrary.userScriptIDs.isEmpty)
+        XCTAssertTrue(restoredRealm.objects(UserScript.self).isEmpty)
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: restoredRealm.objects(BigSyncPendingMutation.self)
             .map { ($0.recordName, $0.generation) }), generations)
     }
 
     @RealmBackgroundActor
-    func testOPMLScriptWithoutArchiveAttributeRemainsEnabledAndIdempotent() async throws {
+    func testOPMLScriptAttributesCannotModifyExistingLocalScript() async throws {
         let configuration = makeOPMLConfiguration()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
         addTeardownBlock {
@@ -660,12 +648,12 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: fileURL) }
         try await LibraryDataManager.shared.importOPML(fileURL: fileURL, realmConfiguration: configuration)
 
-        XCTAssertFalse(script.isArchived)
-        XCTAssertEqual(script.script, "window.legacy = true;")
+        XCTAssertTrue(script.isArchived)
+        XCTAssertEqual(script.script, "", "Ignored script attributes cannot replace authored content")
         XCTAssertEqual(Array(library.userScriptIDs), [script.id])
         let generations = Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
             .map { ($0.recordName, $0.generation) })
-        XCTAssertNotNil(generations["UserScript.\(script.id)"])
+        XCTAssertNil(generations["UserScript.\(script.id)"])
         try await LibraryDataManager.shared.importOPML(fileURL: fileURL, realmConfiguration: configuration)
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
             .map { ($0.recordName, $0.generation) }), generations)

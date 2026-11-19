@@ -4,9 +4,13 @@ No loading gate, CSP or renderer geometry is disabled to make this test pass.
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
+from html import escape
+from urllib.parse import quote
 from pathlib import Path
 from threading import Thread
+import json
 import os
+import re
 import sys
 import unittest
 import zipfile
@@ -33,6 +37,44 @@ def make_epub(chapter_factory=prepared_chapter, *, missing_spine_entry=False):
         for name in ['one', 'two']:
             archive.writestr('OPS/' + name + '.xhtml', chapter_factory(name))
     return output.getvalue()
+
+def make_uri_epub(with_toc=True):
+    directory = 'OPS/100%/draft#?'
+    names = ['100%.xhtml', 'literal%20.xhtml', 'literal .xhtml',
+             'chapter#draft.xhtml', 'chapter?draft.xhtml', 'literal%2F.xhtml', '日本語.xhtml', 'A.xhtml']
+    output = BytesIO()
+    with zipfile.ZipFile(output, 'w') as archive:
+        archive.writestr('mimetype', 'application/epub+zip')
+        archive.writestr('META-INF/container.xml',
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+            f'<rootfile full-path="{escape(directory, quote=True)}/book.opf" media-type="application/oebps-package+xml"/>'
+            '</rootfiles></container>')
+        manifest = ''.join(f'<item id="c{i}" href="{quote(name, safe="")}" media-type="application/xhtml+xml"/>'
+                           for i, name in enumerate(names))
+        if with_toc:
+            manifest += '<item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>'
+        spine = ''.join(f'<itemref idref="c{i}"/>' for i in range(len(names)))
+        archive.writestr(directory + '/book.opf',
+            '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">'
+            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="uid">uri-book</dc:identifier>'
+            '<dc:title>URI References</dc:title><dc:language>tr</dc:language></metadata>'
+            f'<manifest>{manifest}</manifest><spine>{spine}</spine></package>')
+        def navigation_ref(name):
+            encoded = '%41.xhtml' if name == 'A.xhtml' else quote(name, safe='')
+            return re.sub(r'%[0-9A-Fa-f]{2}', lambda value: value[0].lower(), encoded)
+        nav = ''.join(f'<li><a href="{navigation_ref(name)}#uri-fragment">Chapter {i}</a></li>'
+                      for i, name in enumerate(names))
+        archive.writestr(directory + '/nav.xhtml',
+            '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'
+            f'<body><nav epub:type="toc"><ol>{nav}</ol></nav></body></html>')
+        for i, name in enumerate(names):
+            next_href = quote(names[(i + 1) % len(names)], safe='') + '#uri-fragment'
+            content = prepared_chapter(f'chapter-{i}').replace('</body>',
+                f'<p id="uri-fragment">target</p><p id="uri-language">I zzz</p>'
+                f'<a id="uri-next" href="{next_href}">next</a></body>')
+            archive.writestr(directory + '/' + name, content)
+    return output.getvalue(), directory, names
+
 
 class Handler(SimpleHTTPRequestHandler):
     def log_message(self, *args): pass
@@ -131,6 +173,479 @@ class BookEndcapShellTests(unittest.TestCase):
         # unittest runs class cleanups even if setup or an earlier cleanup fails.
         # Reverse registration closes the browser before its Playwright runtime.
         cls.addClassCleanup(cls.browser.close)
+
+    def test_css_layout_adaptation_preserves_selectors_and_scientific_dimensions(self):
+        page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+        self.addCleanup(page.close)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        result = page.evaluate('''async () => {
+            const {Loader} = await import('./epub.js');
+            const loader = new Loader({resources:{manifest:[]},loadText:async()=>null,loadBlob:async()=>null});
+            const frame = document.createElement('iframe');
+            document.body.append(frame);
+            try {
+                const source = '@media (min-width: 0px) { .w10vw#page-break-before.has-epub-marker {'
+                    + ' width: 1e2vw; height: 1e1vh; --epub-size: 2e1px; font-size: var(--epub-size);'
+                    + ' -epub-writing-mode: horizontal-tb; page-break-before: always; } }';
+                const css = await loader.replaceCSS(source,'OPS/book.css');
+                const doc = frame.contentDocument;
+                const style = doc.createElement('style');
+                style.textContent = css;
+                doc.head.append(style);
+                const target = doc.createElement('div');
+                target.id = 'page-break-before';
+                target.className = 'w10vw has-epub-marker';
+                doc.body.append(target);
+                const computed = frame.contentWindow.getComputedStyle(target);
+                return {css, width:parseFloat(computed.width), height:parseFloat(computed.height),
+                    fontSize:computed.fontSize,writingMode:computed.writingMode,
+                    breakBefore:computed.webkitColumnBreakBefore,
+                    viewportWidth:innerWidth,viewportHeight:innerHeight};
+            } finally { frame.remove(); loader.destroy(); }
+        }''')
+        self.assertIn('.w10vw#page-break-before.has-epub-marker', result['css'])
+        self.assertIn('--epub-size: 2e1px', result['css'])
+        self.assertAlmostEqual(result['width'], result['viewportWidth'], places=2)
+        self.assertAlmostEqual(result['height'], result['viewportHeight'] / 10, places=1)
+        self.assertEqual(result['fontSize'], '20px')
+        self.assertEqual(result['writingMode'], 'horizontal-tb')
+        self.assertEqual(result['breakBefore'], 'always')
+
+    def test_search_cfis_target_processed_structure_from_raw_archive(self):
+        processed = {f'OPS/{name}.xhtml': prepared_chapter(name) for name in ['one', 'two']}
+        def raw_chapter(name):
+            return re.sub(r'</?m-(?:s|m|t)\b[^>]*>', '', processed[f'OPS/{name}.xhtml'])
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-processed-structure.epub'
+        self.server.epub_fixtures[path] = make_epub(raw_chapter)
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.add_init_script("""(() => {
+            const processed = """ + json.dumps(processed) + """;
+            const originalFetch = window.fetch.bind(window);
+            window.processedDocumentRequests = [];
+            window.fetch = (input, options) => {
+                const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+                if (url.protocol === 'ebook:' && url.pathname === '/processed-section') {
+                    const subpath = url.searchParams.get('subpath');
+                    processedDocumentRequests.push(subpath);
+                    return Promise.resolve(new Response(processed[subpath] ?? '', {
+                        status:processed[subpath] ? 200 : 404,
+                        headers:{'Content-Type':'text/html; charset=utf-8', 'X-Manabi-Processing-Authoritative':'true'}
+                    }));
+                }
+                return originalFetch(input, options);
+            };
+        })();""")
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-processed-structure.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        result = page.evaluate("""async () => {
+            const view = reader.view;
+            const raw = new DOMParser().parseFromString(await view.book.loadText('OPS/one.xhtml'), 'application/xhtml+xml');
+            const detached = await view.book.sections[0].createDocument();
+            const rendered = view.renderer.getContents().find(content => content.index === 0).doc;
+            const hits = [];
+            for await (const result of view.search({query:'猫',index:0})) {
+                if (!result?.excerpt) continue;
+                const range = view.resolveCFI(result.cfi).anchor(rendered);
+                hits.push({text:range.toString(),match:result.excerpt.match,
+                    inSegment:range.startContainer.parentElement.closest('m-t') !== null});
+            }
+            return {rawSegments:raw.querySelectorAll('m-m').length,
+                detachedSegments:detached.querySelectorAll('m-m').length,
+                renderedSegments:rendered.querySelectorAll('m-m').length, hits};
+        }""")
+        self.assertEqual(result['rawSegments'], 0)
+        self.assertEqual(result['detachedSegments'], 1)
+        self.assertEqual(result['renderedSegments'], 1)
+        self.assertEqual(result['hits'], [{'text':'猫','match':'猫','inSegment':True}])
+
+    def test_search_svg_spine_documents_and_later_html_keep_valid_cfis(self):
+        def chapter(name):
+            text = prepared_chapter(name)
+            return text.replace('</body>', '<p id="after-svg">HTMLneedle</p></body>') if name == 'two' else text
+        output = BytesIO()
+        with zipfile.ZipFile(BytesIO(make_epub(chapter))) as original, zipfile.ZipFile(output, 'w') as archive:
+            for info in original.infolist():
+                content = original.read(info)
+                if info.filename == 'OPS/book.opf':
+                    content = content.decode().replace('<item id="two"',
+                        '<item id="graphic" href="graphic.svg" media-type="image/svg+xml"/><item id="two"')
+                    content = content.replace('<itemref idref="two"/>', '<itemref idref="graphic"/><itemref idref="two"/>').encode()
+                archive.writestr(info, content)
+            archive.writestr('OPS/graphic.svg', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 800">'
+                '<title>titleneedle</title><desc>descneedle</desc><metadata>metadataneedle</metadata>'
+                '<defs><text>defsneedle</text></defs><symbol><text>symbolneedle</text></symbol>'
+                '<text id="svg-text" x="20" y="40">SVGneedle</text>'
+                '<text id="svg-inline" x="20" y="80">read<tspan>ing</tspan></text>'
+                '<text id="svg-label-one" x="20" y="120">joined</text>'
+                '<text id="svg-label-two" x="20" y="160"><tspan>labels</tspan></text></svg>')
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-svg-spine.epub'
+        self.server.epub_fixtures[path] = output.getvalue()
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-svg-spine.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        result = page.evaluate("""async () => {
+            const view = reader.view;
+            const svg = await view.book.sections[1].createDocument();
+            const html = await view.book.sections[2].createDocument();
+            const matches = [];
+            let done = false;
+            for await (const result of view.search({query:'needle'})) {
+                if (result === 'done') done = true;
+                for (const hit of result?.subitems ?? []) {
+                    const resolved = view.resolveCFI(hit.cfi);
+                    const range = resolved.anchor(resolved.index === 1 ? svg : html);
+                    matches.push({index:resolved.index,text:range.toString(),match:hit.excerpt.match,
+                        parent:range.startContainer.parentElement.localName});
+                }
+            }
+            const direct = [];
+            for await (const hit of view.search({query:'SVGneedle',index:1})) {
+                if (!hit?.excerpt) continue;
+                direct.push(view.resolveCFI(hit.cfi).anchor(svg).toString());
+            }
+            const phrases = {};
+            for (const query of ['reading','joinedlabels','joined']) {
+                phrases[query] = [];
+                for await (const hit of view.search({query,index:1,matchWholeWords:true})) {
+                    if (!hit?.excerpt) continue;
+                    const range = view.resolveCFI(hit.cfi).anchor(svg);
+                    phrases[query].push({text:range.toString(),start:range.startContainer.parentElement.closest('text').id,
+                        end:range.endContainer.parentElement.closest('text').id});
+                }
+            }
+            return {svgBody:svg.body,svgRoot:svg.documentElement.localName,matches,direct,phrases,done};
+        }""")
+        self.assertIsNone(result['svgBody'])
+        self.assertEqual(result['svgRoot'], 'svg')
+        self.assertEqual(result['matches'], [{'index':1,'text':'needle','match':'needle','parent':'text'},
+                                            {'index':2,'text':'needle','match':'needle','parent':'p'}])
+        self.assertEqual(result['direct'], ['SVGneedle'])
+        self.assertEqual(result['phrases'], {'reading':[{'text':'reading','start':'svg-inline','end':'svg-inline'}],
+            'joinedlabels':[], 'joined':[{'text':'joined','start':'svg-label-one','end':'svg-label-one'}]})
+        self.assertTrue(result['done'])
+
+    def test_search_ruby_base_text_keeps_processed_cfi_structure(self):
+        authored = ('<p id="generated-ruby">漢字を</p>'
+                    '<p id="authored-ruby"><ruby>東京<rp>（</rp><rt>とうきょう</rt><rp>）</rp></ruby>へ</p>'
+                    '<p id="complex-ruby"><ruby><rb>大阪</rb><rtc><rt>おおさか</rt></rtc></ruby>に</p>')
+        generated = ('<m-s><m-m id="mnb-ruby"><ruby class="mnb-gen"><m-t>漢字</m-t>'
+                     '<rt>かんじ</rt></ruby><m-t>を</m-t></m-m></m-s>')
+        def raw_chapter(name):
+            return prepared_chapter(name).replace('</body>', authored + '</body>')
+        processed = {f'OPS/{name}.xhtml': raw_chapter(name).replace(
+            '<p id="generated-ruby">漢字を</p>', f'<p id="generated-ruby">{generated}</p>') for name in ['one','two']}
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-ruby.epub'
+        self.server.epub_fixtures[path] = make_epub(raw_chapter)
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.add_init_script("""(() => {
+            const processed = """ + json.dumps(processed) + """;
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = (input, options) => {
+                const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+                if (url.protocol === 'ebook:' && url.pathname === '/processed-section') {
+                    const html = processed[url.searchParams.get('subpath')];
+                    return Promise.resolve(new Response(html ?? '', {status:html ? 200 : 404,
+                        headers:{'Content-Type':'text/html; charset=utf-8','X-Manabi-Processing-Authoritative':'true'}}));
+                }
+                return originalFetch(input, options);
+            };
+        })();""")
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-ruby.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        result = page.evaluate("""async () => {
+            const view = reader.view;
+            const raw = new DOMParser().parseFromString(await view.book.loadText('OPS/one.xhtml'),'application/xhtml+xml');
+            const detached = await view.book.sections[0].createDocument();
+            const rendered = view.renderer.getContents().find(content=>content.index===0).doc;
+            const annotationCount = doc=>doc.querySelectorAll('rt,rp,rtc').length;
+            const before = [annotationCount(detached),annotationCount(rendered)];
+            const run = async query => {
+                const hits = [];
+                for await (const hit of view.search({query,index:0})) {
+                    if (!hit?.excerpt) continue;
+                    const range = view.resolveCFI(hit.cfi).anchor(rendered);
+                    const surface = range.cloneContents();
+                    surface.querySelectorAll('rt,rp,rtc').forEach(node=>node.remove());
+                    hits.push({match:hit.excerpt.match,surface:surface.textContent,
+                        id:range.startContainer.parentElement.closest('p').id,
+                        start:range.startContainer.parentElement.localName,end:range.endContainer.parentElement.localName,
+                        startOffset:range.startOffset,endOffset:range.endOffset});
+                }
+                return hits;
+            };
+            const generated = await run('漢字を'), authored = await run('東京へ'), complex = await run('大阪に');
+            const annotations = [];
+            for (const query of ['かんじ','かんじを','とうきょう','おおさか','（','）']) annotations.push(...await run(query));
+            return {rawGeneratedAnnotations:raw.querySelectorAll('#generated-ruby rt').length,
+                before,after:[annotationCount(detached),annotationCount(rendered)],generated,authored,complex,annotations};
+        }""")
+        def match(text, element_id, start, end):
+            return {'match':text,'surface':text,'id':element_id,'start':start,'end':end,'startOffset':0,'endOffset':1}
+        self.assertEqual(result['rawGeneratedAnnotations'], 0)
+        self.assertEqual(result['before'], [6,6])
+        self.assertEqual(result['after'], result['before'])
+        self.assertEqual(result['generated'], [match('漢字を','generated-ruby','m-t','m-t')])
+        self.assertEqual(result['authored'], [match('東京へ','authored-ruby','ruby','p')])
+        self.assertEqual(result['complex'], [match('大阪に','complex-ruby','rb','p')])
+        self.assertEqual(result['annotations'], [])
+
+    def test_search_unvisited_invalid_xhtml_uses_html_fallback(self):
+        def chapter(name):
+            text = prepared_chapter(name)
+            if name == 'two':
+                text = text.replace('</body>', '<p id="malformed-search">needle & searchable</p></body>')
+            return text
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-invalid-xhtml.epub'
+        self.server.epub_fixtures[path] = make_epub(chapter)
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-invalid-xhtml.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        result = page.evaluate('''async () => {
+            const view = reader.view;
+            const item = view.book.resources.getItemByHref('OPS/two.xhtml');
+            const initialType = item.mediaType;
+            const source = await view.book.loadText(item.href);
+            const invalidXML = !!new DOMParser().parseFromString(source,'application/xhtml+xml').querySelector('parsererror');
+            const detached = await view.book.sections[1].createDocument();
+            const matches = [];
+            let done = false;
+            for await (const result of view.search({query:'needle'})) {
+                if (result === 'done') done = true;
+                for (const match of result?.subitems ?? []) {
+                    const resolved = view.resolveCFI(match.cfi);
+                    const range = resolved.anchor(detached);
+                    matches.push({match:match.excerpt.match,index:resolved.index,text:range.toString()});
+                }
+            }
+            return {initialType,invalidXML,contentType:detached.contentType,
+                body:!!detached.body,matches,done};
+        }''')
+        self.assertEqual(result['initialType'], 'application/xhtml+xml')
+        self.assertTrue(result['invalidXML'])
+        self.assertEqual(result['contentType'], 'text/html')
+        self.assertTrue(result['body'])
+        self.assertEqual(result['matches'], [{'match':'needle','index':1,'text':'needle'}])
+        self.assertTrue(result['done'])
+
+    def test_uri_navigation_snapshot_and_raw_warm_identity(self):
+        for with_toc in (True, False):
+            with self.subTest(with_toc=with_toc):
+                archive, directory, names = make_uri_epub(with_toc)
+                self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+                path = f'/uri-navigation-{with_toc}.epub'
+                self.server.epub_fixtures[path] = archive
+                self.addCleanup(self.server.epub_fixtures.pop, path)
+                page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+                self.addCleanup(page.close)
+                page.add_init_script(BRIDGE)
+                page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+                wait_for_reader(page, 'typeof window.loadEBook === "function"')
+                page.evaluate('(path) => loadEBook({url:location.origin+path,layoutMode:"paginated"})', path)
+                wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+                canonical = [quote(directory + '/' + name, safe='/') for name in names]
+                raw = [directory + '/' + name for name in names]
+                self.assertEqual(page.evaluate('reader.view.book.sections.map(s => s.id)'), raw)
+                self.assertEqual(page.evaluate('reader.view.book.sections.map(s => s.href)'), canonical)
+                first = page.evaluate('reader.buildGoToSheetSnapshot()')
+                self.assertEqual(first['currentChapterHref'], canonical[0])
+                self.assertEqual(first['currentChapterTitle'], 'Chapter 0' if with_toc else '100%')
+                self.assertTrue(all(item['percent'] is not None for item in first['chapters']))
+                locale = page.evaluate('''async () => {
+                    const matches = [];
+                    for await (const item of reader.view.search({query:'ı', index:0, matchDiacritics:true})) {
+                        if (item?.excerpt) matches.push(item.excerpt.match);
+                    }
+                    return matches;
+                }''')
+                self.assertEqual(locale, ['I'])
+                for i in range(1, len(names)):
+                    page.evaluate('''() => reader.view.renderer.getContents()[0].doc.getElementById('uri-next').click()''')
+                    wait_for_reader(page, f'reader.view.renderer.displayedIndex === {i} && reader.view.lastLocation?.index === {i}')
+                    snapshot = page.evaluate('reader.buildGoToSheetSnapshot()')
+                    self.assertEqual(snapshot['currentChapterHref'], canonical[i])
+                warm = page.evaluate('''(raw) => {
+                    manabi_syncLiveSettledSections({hrefs:raw.slice(0,2), firstLiveHref:raw[0]});
+                    return {hrefs:[...__manabiLiveProcessedSectionHrefs], first:__manabiFirstLiveSectionHref};
+                }''', raw)
+                self.assertEqual(warm, {'hrefs': sorted(raw[:2]), 'first': raw[0]})
+
+    def test_search_preserves_inline_words_blocks_locale_and_cfi_ranges(self):
+        def chapter(name):
+            examples = ('<p id="search-inline">read<span>ing</span></p>'
+                        '<p id="search-prefix">read</p><p id="search-suffix">ing</p>'
+                        '<div id="search-empty">read<div></div>ing</div>'
+                        '<p id="search-locale">I zzz</p>')
+            return prepared_chapter(name).replace('</body>', examples + '</body>')
+
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-boundaries.epub'
+        self.server.epub_fixtures[path] = make_epub(chapter)
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-boundaries.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        results = page.evaluate('''async () => {
+            const view = reader.view;
+            const doc = await view.book.sections[0].createDocument();
+            const run = async (query, options = {}) => {
+                const matches = [];
+                for await (const result of view.search({query, index:0, matchWholeWords:true, ...options})) {
+                    if (!result?.excerpt) continue;
+                    const resolved = view.resolveCFI(result.cfi);
+                    const range = resolved.anchor(doc);
+                    matches.push({match:result.excerpt.match, index:resolved.index,
+                        start:range.startContainer.parentElement.closest('[id^="search-"]')?.id,
+                        end:range.endContainer.parentElement.closest('[id^="search-"]')?.id,
+                        startOffset:range.startOffset, endOffset:range.endOffset});
+                }
+                return matches;
+            };
+            return {joined:await run('reading'), partial:await run('read'),
+                separated:await run('read ing'),
+                locale:await run('ı', {matchWholeWords:false, matchDiacritics:true, defaultLocale:'tr'})};
+        }''')
+        def match(text, start, end, end_offset):
+            return {'match': text, 'index': 0, 'start': start, 'end': end,
+                    'startOffset': 0, 'endOffset': end_offset}
+        self.assertEqual(results['joined'], [match('reading', 'search-inline', 'search-inline', 3)])
+        self.assertEqual(results['partial'], [match('read', 'search-prefix', 'search-prefix', 4),
+                                               match('read', 'search-empty', 'search-empty', 4)])
+        self.assertEqual(results['separated'], [match('read\ning', 'search-prefix', 'search-suffix', 3),
+                                                 match('read\ning', 'search-empty', 'search-empty', 3)])
+        self.assertEqual(results['locale'], [match('I', 'search-locale', 'search-locale', 1)])
+
+    def test_search_normalization_and_unicode_ranges(self):
+        def chapter(name):
+            examples = ('<p id="normalized-space">cat  <span>dog</span></p>'
+                        '<p id="normalized-format">ca&#xAD;<span>t</span></p>'
+                        '<p id="normalized-sharp">Stra<span>ße</span></p>'
+                        '<p id="normalized-ligature">o<span>ﬃ</span>ce</p>'
+                        '<p id="normalized-oe">c<span>œ</span>ur</p>'
+                        '<p id="normalized-ae">c<span>æ</span>lum</p>')
+            return prepared_chapter(name).replace('</body>', examples + '</body>')
+
+        self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+        path = '/search-normalization.epub'
+        self.server.epub_fixtures[path] = make_epub(chapter)
+        self.addCleanup(self.server.epub_fixtures.pop, path)
+        page = self.browser.new_page(viewport={'width':390, 'height':844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/search-normalization.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        results = page.evaluate('''async () => {
+            const view = reader.view;
+            const doc = await view.book.sections[0].createDocument();
+            const run = async (query, options = {}) => {
+                const matches = [];
+                for await (const result of view.search({query,index:0,defaultLocale:'de',...options})) {
+                    if (!result?.excerpt) continue;
+                    const range = view.resolveCFI(result.cfi).anchor(doc);
+                    matches.push({match:result.excerpt.match, text:range.toString(),
+                        start:range.startContainer.parentElement.closest('p')?.id,
+                        end:range.endContainer.parentElement.closest('p')?.id,
+                        startOffset:range.startOffset, endOffset:range.endOffset});
+                }
+                return matches;
+            };
+            return {space:await run('cat  dog'), format:await run('ca\u00ADt'),
+                sharp:await run('strasse'), ligature:await run('office'),
+                oe:await run('coeur',{defaultLocale:'fr'}), ae:await run('caelum',{defaultLocale:'en'}),
+                strict:await run('strasse', {matchDiacritics:true})};
+        }''')
+        def match(text, element_id, end_offset):
+            return {'match':text, 'text':text, 'start':element_id, 'end':element_id,
+                    'startOffset':0, 'endOffset':end_offset}
+        self.assertEqual(results['space'], [match('cat  dog', 'normalized-space', 3)])
+        self.assertEqual(results['format'], [match('cat', 'normalized-space', 3),
+                                             match('ca\u00ADt', 'normalized-format', 1)])
+        self.assertEqual(results['sharp'], [match('Straße', 'normalized-sharp', 2)])
+        self.assertEqual(results['ligature'], [match('oﬃce', 'normalized-ligature', 2)])
+        self.assertEqual(results['oe'], [match('cœur', 'normalized-oe', 2)])
+        self.assertEqual(results['ae'], [match('cælum', 'normalized-ae', 3)])
+        self.assertEqual(results['strict'], [])
+
+    def test_xml_chapter_language_precedence_search_ranges_and_rendering(self):
+        cases = [
+            ('root', 'xml:lang="tr"', '', 'ı', None, 'ltr'),
+            ('body', 'lang="en"', 'xml:lang="tr"', 'ı', 'en', 'ltr'),
+            ('conflict', 'xml:lang="tr" lang="en"', '', 'ı', 'en', 'ltr'),
+            ('unknown-root', 'xml:lang=""', '', 'i', None, ''),
+            ('unknown-body', 'lang="tr"', 'xml:lang=""', 'i', 'tr', ''),
+            ('html-body', 'xml:lang="tr"', 'lang="en"', 'i', None, 'ltr'),
+            ('arabic', 'xml:lang="ar"', '', 'i', None, 'rtl'),
+        ]
+        for key, root_attrs, body_attrs, expected_query, root_lang, direction in cases:
+            with self.subTest(language=key):
+                def chapter(name):
+                    value = prepared_chapter(name).replace('<html ', '<html ' + root_attrs + ' ', 1)
+                    value = value.replace('<body ', '<body ' + body_attrs + ' ', 1)
+                    return value.replace('</body>', '<p id="xml-language">I</p></body>')
+                self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})
+                path = f'/xml-language-{key}.epub'
+                self.server.epub_fixtures[path] = make_epub(chapter)
+                self.addCleanup(self.server.epub_fixtures.pop, path)
+                page = self.browser.new_page(viewport={'width':390, 'height':844})
+                self.addCleanup(page.close)
+                page.add_init_script(BRIDGE)
+                page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+                wait_for_reader(page, 'typeof window.loadEBook === "function"')
+                page.evaluate('(path) => loadEBook({url:location.origin+path,layoutMode:"paginated"})', path)
+                wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+                results = page.evaluate('''async () => {
+                    const view = reader.view;
+                    const doc = await view.book.sections[0].createDocument();
+                    const run = async query => {
+                        const matches = [];
+                        for await (const result of view.search({query,index:0,matchDiacritics:true})) {
+                            if (!result?.excerpt) continue;
+                            const range = view.resolveCFI(result.cfi).anchor(doc);
+                            if (range.startContainer.parentElement.closest('p')?.id !== 'xml-language') continue;
+                            matches.push({match:result.excerpt.match,text:range.toString(),
+                                start:range.startOffset,end:range.endOffset});
+                        }
+                        return matches;
+                    };
+                    const root = view.renderer.getContents()[0].doc.documentElement;
+                    return {i:await run('i'), dotless:await run('ı'),
+                        rootLanguage:root.getAttribute('lang'),direction:root.dir};
+                }''')
+                expected = [{'match':'I','text':'I','start':0,'end':1}]
+                self.assertEqual(results['i'], expected if expected_query == 'i' else [])
+                self.assertEqual(results['dotless'], expected if expected_query == 'ı' else [])
+                self.assertEqual(results['rootLanguage'], root_lang)
+                self.assertEqual(results['direction'], direction)
+                page.close()
 
     def test_skipped_spine_entry_preserves_href_and_cfi_navigation(self):
         self.server.epub_fixtures = getattr(self.server, 'epub_fixtures', {})

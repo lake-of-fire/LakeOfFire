@@ -1,4 +1,5 @@
 import * as CFI from './epubcfi.js'
+import { getDocumentLanguage } from './content-language.js'
 import { TOCProgress, SectionProgress } from './progress.js'
 import { Overlayer } from './overlayer.js'
 import {
@@ -86,29 +87,78 @@ class History extends EventTarget {
     }
 }
 
+// Parsed search documents have no rendered layout. Preserve semantic HTML
+// block boundaries without asking a detached document for computed styles.
+const SEARCH_BLOCK_ELEMENTS = new Set([
+    'address', 'article', 'aside', 'blockquote', 'dd', 'details', 'dialog', 'div',
+    'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2',
+    'h3', 'h4', 'h5', 'h6', 'header', 'li', 'main', 'nav', 'ol', 'p', 'pre',
+    'section', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul',
+])
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
+const IGNORED_SVG_ELEMENTS = new Set(['title', 'desc', 'metadata', 'defs', 'symbol'])
+const isSearchBlock = element => {
+    const name = element.localName?.toLowerCase()
+    return SEARCH_BLOCK_ELEMENTS.has(name)
+        || (element.namespaceURI === SVG_NAMESPACE && name === 'text')
+}
+const searchBlockForNode = (node, root) => {
+    for (let parent = node.parentElement; parent && parent !== root; parent = parent.parentElement) {
+        const name = parent.localName?.toLowerCase()
+        if (name === 'script' || name === 'style' || name === 'rt' || name === 'rp' || name === 'rtc')
+            continue
+        if (parent.namespaceURI === SVG_NAMESPACE && IGNORED_SVG_ELEMENTS.has(name)) continue
+        if (isSearchBlock(parent)) return parent
+    }
+    return root
+}
+
 const textWalker = function* (doc, func) {
     const filter = NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
     | NodeFilter.SHOW_CDATA_SECTION
     const { FILTER_ACCEPT, FILTER_REJECT, FILTER_SKIP } = NodeFilter
+    const root = doc.body ?? doc.documentElement
+    if (!root) return
     const acceptNode = node => {
         const name = node.localName?.toLowerCase()
-        if (name === 'script' || name === 'style') return FILTER_REJECT
+        if (name === 'script' || name === 'style' || name === 'rt' || name === 'rp' || name === 'rtc')
+            return FILTER_REJECT
+        if (node.namespaceURI === SVG_NAMESPACE && IGNORED_SVG_ELEMENTS.has(name)) return FILTER_REJECT
+        if (name === 'br' || name === 'hr' || isSearchBlock(node)) return FILTER_ACCEPT
             if (node.nodeType === 1) return FILTER_SKIP
                 return FILTER_ACCEPT
                 }
-    const walker = doc.createTreeWalker(doc.body, filter, { acceptNode })
-    const nodes = []
-    for (let node = walker.nextNode(); node; node = walker.nextNode())
-        nodes.push(node)
-        const strs = nodes.map(node => node.nodeValue)
-        const makeRange = (startIndex, startOffset, endIndex, endOffset) => {
-            const range = doc.createRange()
-            range.setStart(nodes[startIndex], startOffset)
-            range.setEnd(nodes[endIndex], endOffset)
-            return range
+    const walker = doc.createTreeWalker(root, filter, { acceptNode })
+    const entries = []
+    let previousNode, previousBlock, lineBreak = false
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node.nodeType === 1) {
+            lineBreak = true
+            continue
         }
+        const block = searchBlockForNode(node, root)
+        if (previousNode && (lineBreak || block !== previousBlock)) {
+            entries.push({ before: previousNode, after: node })
+        }
+        entries.push({ node })
+        previousNode = node
+        previousBlock = block
+        lineBreak = false
+    }
+    const strs = entries.map(entry => entry.node?.nodeValue ?? '\n')
+    const rangePoint = (index, offset) => {
+        const entry = entries[index]
+        if (entry.node) return [entry.node, offset]
+        return offset === 0 ? [entry.before, entry.before.nodeValue.length] : [entry.after, 0]
+    }
+    const makeRange = (startIndex, startOffset, endIndex, endOffset) => {
+        const range = doc.createRange()
+        range.setStart(...rangePoint(startIndex, startOffset))
+        range.setEnd(...rangePoint(endIndex, endOffset))
+        return range
+    }
     for (const match of func(strs, makeRange)) yield match
-        }
+}
 
 const languageInfo = lang => {
     if (!lang) return {}
@@ -440,10 +490,14 @@ export class View extends HTMLElement {
             this.#emit('relocate', this.lastLocation)
             }
     #onLoad({ doc, location, index }) {
-        // set language and dir if not already set
-        doc.documentElement.lang ||= this.language.canonical ?? ''
-        if (!this.language.isCJK)
-            doc.documentElement.dir ||= this.language.direction ?? ''
+        const declaredLanguage = getDocumentLanguage(doc)
+        const language = languageInfo(declaredLanguage ?? this.language?.canonical)
+        // A package fallback cannot overwrite a chapter declaration, including
+        // xml:lang or an explicit empty (unknown) language.
+        if (declaredLanguage == null && language.canonical)
+            doc.documentElement.lang = language.canonical
+        if (!language.isCJK && language.direction)
+            doc.documentElement.dir ||= language.direction
 
         this.#handleLinks(doc, index)
         this.#emit('load', { doc, location, index })
@@ -709,10 +763,18 @@ export class View extends HTMLElement {
             && owner.book === this.book
             && owner.renderer === this.renderer
     }
+    async #createSearchDocument(section, owner) {
+        try {
+            return await section.createDocument()
+        } catch (error) {
+            if (this.#isSearchCurrent(owner)) throw error
+            return null
+        }
+    }
     async * #searchSection(matcher, query, index, owner) {
         const section = owner.book?.sections?.[index]
         if (!section?.createDocument) return
-        const doc = await section.createDocument()
+        const doc = await this.#createSearchDocument(section, owner)
         if (!this.#isSearchCurrent(owner)) return
         for (const { range, excerpt } of matcher(doc, query)) {
             if (!this.#isSearchCurrent(owner)) return
@@ -721,10 +783,10 @@ export class View extends HTMLElement {
     }
     async * #searchBook(matcher, query, owner) {
         const { sections } = owner.book
-        for (const [index, { createDocument }] of sections.entries()) {
+        for (const [index, section] of sections.entries()) {
             if (!this.#isSearchCurrent(owner)) return
-            if (!createDocument) continue
-            const doc = await createDocument()
+            if (!section.createDocument) continue
+            const doc = await this.#createSearchDocument(section, owner)
             if (!this.#isSearchCurrent(owner)) return
             const subitems = Array.from(matcher(doc, query), ({ range, excerpt }) =>
                 ({ cfi: this.getCFI(index, range), excerpt }))
@@ -748,7 +810,7 @@ export class View extends HTMLElement {
         if (!this.#isSearchCurrent(owner)) return
         const { query, index } = opts
         const matcher = searchMatcher(textWalker,
-            { defaultLocale: this.language, ...opts })
+            { defaultLocale: this.language?.canonical, ...opts })
         const iter = index != null
             ? this.#searchSection(matcher, query, index, owner)
             : this.#searchBook(matcher, query, owner)

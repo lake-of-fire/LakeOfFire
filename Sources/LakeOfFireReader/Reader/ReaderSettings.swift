@@ -7,7 +7,6 @@ import LakeOfFireCore
 import RealmSwift
 import SwiftUIDownloads
 import SwiftUtilities
-import SwiftUIBackports
 import RealmSwiftGaps
 import SwiftUIWebView
 

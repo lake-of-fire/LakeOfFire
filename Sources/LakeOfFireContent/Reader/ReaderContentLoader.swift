@@ -1,5 +1,7 @@
 import SwiftUI
 import LakeOfFireCore
+import struct LakeKit.AccountSessionAccess
+import struct LakeKit.AccountSessionSnapshot
 import RealmSwift
 import MarkdownKit
 import SwiftSoup
@@ -10,6 +12,30 @@ import UIKit
 #endif
 import RealmSwiftGaps
 import UniformTypeIdentifiers
+
+/// Wrap only the synchronous durable commit in an already captured replica fence.
+/// Lake runs this outside Session, then takes its captured account fence inside.
+public typealias ReaderContentPublicationFence = @Sendable (() throws -> Void) throws -> Void
+
+public struct ReaderContentMutationOutcome: Sendable {
+    public let matchedObjectCount: Int
+    /// Durable or already-applied representations, including earlier stores
+    /// when cancellation or a later failure prevents the rest of this batch.
+    public let committedObjectCount: Int
+    public let mutatedObjectCount: Int
+    public let cancelledBeforeCommit: Bool
+    public let errorMessage: String?
+
+    public init(matchedObjectCount: Int, committedObjectCount: Int, mutatedObjectCount: Int = 0,
+                cancelledBeforeCommit: Bool, errorMessage: String?) {
+        self.matchedObjectCount = matchedObjectCount
+        self.committedObjectCount = committedObjectCount
+        self.mutatedObjectCount = mutatedObjectCount
+        self.cancelledBeforeCommit = cancelledBeforeCommit
+        self.errorMessage = errorMessage
+    }
+}
+
 
 
 
@@ -23,6 +49,7 @@ fileprivate extension URL {
 
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
+#if DEBUG
     // Task-scoped input lets behavior tests exercise the public pasteboard route.
     @TaskLocal static var pasteboardStringsForTesting: (html: String?, text: String?)? = nil
 
@@ -30,17 +57,18 @@ public struct ReaderContentLoader {
     // joining without adding a scheduling point to production admission.
     enum GetContentEvent: Sendable { case capturedStorage, joinedTask }
     @TaskLocal static var getContentObservationForTesting: (@Sendable (GetContentEvent) -> Void)? = nil
+#endif
 
     /// Immutable Realm routing for one reader discovery operation. Capture this
     /// before an actor hop: account replacement may otherwise make one query
     /// read one store and a later write land in another.
-    private struct DiscoveryStorageIdentity: Hashable, Sendable {
+    fileprivate struct DiscoveryStorageIdentity: Hashable, Sendable {
         let bookmark: String
         let history: String
         let feed: String
     }
 
-    private struct DiscoveryStorage: @unchecked Sendable {
+    fileprivate struct DiscoveryStorage: @unchecked Sendable {
         let bookmarkConfiguration: Realm.Configuration
         let historyConfiguration: Realm.Configuration
         let feedConfiguration: Realm.Configuration
@@ -105,14 +133,16 @@ public struct ReaderContentLoader {
     private static var inFlightGetContentTasks: [GetContentTaskKey: Task<(any ReaderContentProtocol)?, Error>] = [:]
     @RealmBackgroundActor
     private static var inFlightLoadAllTasks: [LoadAllTaskKey: Task<[ContentReference], Error>] = [:]
+#if DEBUG
     @RealmBackgroundActor
     static var loadAllDiscoveryGateForTesting: (@Sendable () async -> Void)?
 
     enum ContentWriteOperation: Sendable, Equatable {
-        case historyCreation, loadedContent, clipboard, demotion
+        case historyCreation, loadedContent, clipboard, demotion, contentMutation
     }
     @RealmBackgroundActor
     static var contentWriteGateForTesting: (@Sendable (ContentWriteOperation) async -> Void)?
+#endif
 
     public struct ContentReference {
         public let contentType: RealmSwift.Object.Type
@@ -160,9 +190,59 @@ public struct ReaderContentLoader {
         }
     }
     
-    public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
-    public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
-    public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    // Routing is read synchronously by both UI and Realm actors. Only copied
+    // configurations escape this lock; no Realm access or callback runs under it.
+    private final class RealmConfigurationStorage: @unchecked Sendable {
+        private let lock = NSLock()
+        private var configuration: Realm.Configuration = .defaultConfiguration
+
+        var value: Realm.Configuration {
+            get { lock.withLock { configuration } }
+            set { lock.withLock { configuration = newValue } }
+        }
+    }
+
+    private static let bookmarkConfigurationStorage = RealmConfigurationStorage()
+    private static let historyConfigurationStorage = RealmConfigurationStorage()
+    private static let feedEntryConfigurationStorage = RealmConfigurationStorage()
+
+    public static var bookmarkRealmConfiguration: Realm.Configuration {
+        get { bookmarkConfigurationStorage.value }
+        set { bookmarkConfigurationStorage.value = newValue }
+    }
+    public static var historyRealmConfiguration: Realm.Configuration {
+        get { historyConfigurationStorage.value }
+        set { historyConfigurationStorage.value = newValue }
+    }
+    public static var feedEntryRealmConfiguration: Realm.Configuration {
+        get { feedEntryConfigurationStorage.value }
+        set { feedEntryConfigurationStorage.value = newValue }
+    }
+
+    /// Immutable storage routing and optional originating Session. Capture this
+    /// before media acquisition; callbacks cannot replace either after an await.
+    public struct MutationStorage: @unchecked Sendable {
+        fileprivate let storage: DiscoveryStorage
+        fileprivate let account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)?
+
+        public init(
+            bookmarkConfiguration: Realm.Configuration = ReaderContentLoader.bookmarkRealmConfiguration,
+            historyConfiguration: Realm.Configuration = ReaderContentLoader.historyRealmConfiguration,
+            feedConfiguration: Realm.Configuration = ReaderContentLoader.feedEntryRealmConfiguration,
+            account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil
+        ) {
+            storage = DiscoveryStorage(bookmarkConfiguration: bookmarkConfiguration,
+                historyConfiguration: historyConfiguration, feedConfiguration: feedConfiguration)
+            self.account = account
+        }
+
+        @MainActor
+        public static func capture(
+            account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil
+        ) -> Self {
+            Self(account: account)
+        }
+    }
 
     /// The storage selected when a snippet edit began. A delayed save must not
     /// follow mutable global configurations into another account's Realm.
@@ -170,21 +250,71 @@ public struct ReaderContentLoader {
         public let bookmarkConfiguration: Realm.Configuration
         public let historyConfiguration: Realm.Configuration
 
+        fileprivate let bookmarkAdmission: RealmStorageAdmission
+        fileprivate let historyAdmission: RealmStorageAdmission
+        // Frozen rows are immutable and cross-actor safe. Recreate a one-use
+        // reference per operation so repeated saves retain the original ObjKey,
+        // even if a row is deleted and recreated with the same primary key.
+        private let target: CapturedSnippetTarget?
+
+        private final class CapturedSnippetTarget: @unchecked Sendable {
+            let row: any ReaderContentProtocol
+            init(_ content: any ReaderContentProtocol) { row = content.freeze() }
+        }
+
+        fileprivate func containsCapturedTarget(in realm: Realm) -> Bool {
+            guard let target else { return true } // Legacy multi-store API.
+            return Self.containsFrozenTarget(target.row, in: realm)
+        }
+
+        // Open the existential only within this generic call. The invariant
+        // ThreadSafeReference<T> stays local; no erased reference escapes.
+        private static func containsFrozenTarget<T: ReaderContentProtocol>(
+            _ target: T, in realm: Realm
+        ) -> Bool {
+            guard let row = realm.resolve(ThreadSafeReference(to: target)),
+                  !row.isInvalidated, !row.isDeleted,
+                  row.url.matchesReaderURL(target.url) else { return false }
+            return true
+        }
+
+        @MainActor
         private init(
             bookmarkConfiguration: Realm.Configuration,
-            historyConfiguration: Realm.Configuration
+            historyConfiguration: Realm.Configuration,
+            target: (any ReaderContentProtocol)? = nil
         ) {
+            self.target = target.map(CapturedSnippetTarget.init)
             self.bookmarkConfiguration = bookmarkConfiguration
             self.historyConfiguration = historyConfiguration
+            let actor = RealmBackgroundActor.shared
+            let bookmarkAdmission = actor.captureStorageAdmission(for: bookmarkConfiguration)
+            self.bookmarkAdmission = bookmarkAdmission
+            historyAdmission = actor.realmCacheKey(for: historyConfiguration) == actor.realmCacheKey(for: bookmarkConfiguration)
+                ? bookmarkAdmission : actor.captureStorageAdmission(for: historyConfiguration)
         }
 
         /// The app stores both snippet representations in the selected
         /// content's Reader Realm. Its owning Realm outranks mutable globals.
         @MainActor
         public init?(content: any ReaderContentProtocol) {
-            guard let configuration = content.realm?.configuration else { return nil }
-            bookmarkConfiguration = configuration
-            historyConfiguration = configuration
+            guard !content.isInvalidated, !content.isDeleted,
+                  let configuration = content.realm?.configuration else { return nil }
+            self.init(bookmarkConfiguration: configuration, historyConfiguration: configuration, target: content)
+        }
+
+        @MainActor
+        public func containsOriginalTarget(for content: any ReaderContentProtocol) -> Bool {
+            guard !content.isInvalidated, !content.isDeleted, let realm = content.realm else { return false }
+            return containsCapturedTarget(in: realm)
+        }
+
+        public func validateStorage() throws {
+            guard bookmarkAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: bookmarkConfiguration)
+            }), historyAdmission.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: historyConfiguration)
+            }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
         }
 
         /// Legacy storage can span two Realms. Its edits are atomic per Realm,
@@ -198,6 +328,7 @@ public struct ReaderContentLoader {
         }
     }
 
+#if DEBUG
     public static func resetTransientCachesForTesting() async {
         await MainActor.run {
             inFlightGetContentTasks.removeAll()
@@ -209,6 +340,7 @@ public struct ReaderContentLoader {
         }()
     }
 
+#endif
     @MainActor
     public static func hasLocallyRetrievableHTML(
         for content: any ReaderContentProtocol,
@@ -234,7 +366,8 @@ public struct ReaderContentLoader {
     }
     
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
-        pageURL.isReaderURLLoaderURL ? pageURL.readerContentURL : nil
+        if pageURL.isTranscriptPageURL { return pageURL.transcriptBackingContentURL }
+        return pageURL.isReaderURLLoaderURL ? pageURL.readerContentURL : nil
     }
 
     // The fragment on a loader document belongs to same-page navigation.
@@ -267,6 +400,107 @@ public struct ReaderContentLoader {
         }
     }
     
+    /// Capture account-selected stores before the processing actor can suspend.
+    public struct ReaderModePropagationStorage: @unchecked Sendable {
+        fileprivate let storage: DiscoveryStorage
+        public init() { storage = DiscoveryStorage() }
+    }
+
+    private struct ReaderModePropagationTarget: @unchecked Sendable {
+        let row: any ReaderContentProtocol
+        let configuration: Realm.Configuration
+        let admission: RealmStorageAdmission
+    }
+
+    @RealmBackgroundActor
+    private static func resolvePropagationTarget<T: ReaderContentProtocol>(
+        _ frozen: T, in realm: Realm
+    ) -> T? {
+        realm.resolve(ThreadSafeReference(to: frozen))
+    }
+
+    /// Every related row keeps its physical identity and commits under the
+    /// initiating account. A recreated primary key cannot inherit queued work.
+    @RealmBackgroundActor
+    public static func propagateReaderModeDefaults(
+        for url: URL,
+        excludingPrimaryKey primaryKey: String,
+        primaryClassName: String,
+        storage capturedStorage: ReaderModePropagationStorage,
+        readabilityHTML: String,
+        resolvedTitle: String?,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
+        permitsCommit: @escaping @Sendable () -> Bool
+    ) async throws {
+        func validateLifetime() throws {
+            try Task.checkCancellation()
+            guard permitsCommit() else { throw CancellationError() }
+            if let account, account.snapshot.identity == .transitioning {
+                throw CancellationError()
+            }
+        }
+        try validateLifetime()
+        let storage = capturedStorage.storage
+        let records = try await loadAll(url: url, skipContentFiles: false,
+            skipFeedEntries: false, storage: storage)
+        try validateLifetime()
+        let targets = records.compactMap { record -> ReaderModePropagationTarget? in
+            guard !record.isInvalidated, !record.isDeleted,
+                  !(record.compoundKey == primaryKey && record.objectSchema.className == primaryClassName),
+                  let configuration = record.realm?.configuration,
+                  let reference = storage.reference(for: record) else { return nil }
+            return ReaderModePropagationTarget(row: record.freeze(), configuration: configuration,
+                admission: reference.storageAdmission)
+        }
+        for target in targets {
+            try validateLifetime()
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: target.configuration, storageAdmission: target.admission)
+            try await realm.asyncWritePreservingOwnership {
+                try validateLifetime()
+                func validateStorage() throws {
+                    guard target.admission.matchesCurrentStorageIdentity({
+                        RealmBackgroundActor.shared.realmCacheKey(for: target.configuration)
+                    }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+                }
+                try validateStorage()
+                guard let record = resolvePropagationTarget(target.row, in: realm),
+                      !record.isInvalidated, !record.isDeleted,
+                      record.url == target.row.url else { return }
+                record.isReaderModeByDefault = true
+                record.isReaderModeAvailable = false
+                if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                    if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
+                        record.html = readabilityHTML
+                    }
+                    if let resolvedTitle,
+                       record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        record.title = resolvedTitle
+                    }
+                    record.rssContainsFullContent = true
+                }
+                record.refreshChangeMetadata(explicitlyModified: true)
+                try validateLifetime()
+                try validateStorage()
+                if let account {
+                    var didCommit = false
+                    do {
+                        _ = try account.access.publish(ifCurrent: account.snapshot) {
+                            guard !didCommit else { return }
+                            try Task.checkCancellation()
+                            try validateStorage()
+                            try realm.commitWrite()
+                            didCommit = true
+                        }
+                    } catch {
+                        if !didCommit { throw error }
+                    }
+                    guard didCommit else { throw CancellationError() }
+                }
+            }
+        }
+    }
+
     @RealmBackgroundActor
     public static func loadAll(url: URL, skipContentFiles: Bool = false, skipFeedEntries: Bool = false) async throws -> [(any ReaderContentProtocol)] {
         try await loadAll(
@@ -315,58 +549,102 @@ public struct ReaderContentLoader {
 
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
             try Task.checkCancellation()
+#if DEBUG
             await loadAllDiscoveryGateForTesting?()
+#endif
 
-            let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: storage.historyConfiguration, storageAdmission: storage.historyAdmission
+            return try await discoverCapturedContent(
+                url: url, skipContentFiles: skipContentFiles,
+                skipFeedEntries: skipFeedEntries, storage: storage,
+                capture: { storage.reference(for: $0) }
             )
-            let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: storage.bookmarkConfiguration, storageAdmission: storage.bookmarkAdmission
-            )
-            await historyRealm.asyncRefresh()
-            await bookmarkRealm.asyncRefresh()
-
-            let feedRealm: Realm?
-            if skipFeedEntries {
-                feedRealm = nil
-            } else {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.feedConfiguration, storageAdmission: storage.feedAdmission)
-                await realm.asyncRefresh()
-                feedRealm = realm
-            }
-            try Task.checkCancellation()
-
-            try storage.validate(includeFeed: !skipFeedEntries)
-            var contentFile: ContentFile?
-            if !skipContentFiles {
-                contentFile = historyRealm.objects(ContentFile.self)
-                    .filter(NSPredicate(format: "isDeleted == false AND url == %@", url.absoluteString as CVarArg))
-                    .sorted(byKeyPath: "createdAt", ascending: false)
-                    .first
-            }
-            let history = HistoryRecord.getOpenedRecord(forURL: url, in: historyRealm)
-            let bookmark = Bookmark.get(forURL: url, realm: bookmarkRealm)
-
-            var feed: FeedEntry?
-            if let feedRealm {
-                let feeds = feedRealm.objects(FeedEntry.self)
-                    .where { !$0.isDeleted }
-                    .sorted(by: \.createdAt, ascending: false)
-
-                if url.scheme == "https" {
-                    feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
-                } else if !url.isReaderFileURL {
-                    feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
-                }
-            }
-
-            let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
-            return candidates.compactMap { storage.reference(for: $0) }
         }
 
         inFlightLoadAllTasks[taskKey] = task
         defer { inFlightLoadAllTasks[taskKey] = nil }
         return try await task.value
+    }
+
+    /// Capture on the discovery actor immediately after matching, before another
+    /// suspension can retarget or replace a selected row. Legacy references keep
+    /// their existing semantics; only scoped Reader writes retain row lifetimes.
+    @RealmBackgroundActor
+    private static func discoverCapturedContent<Value>(
+        url: URL, skipContentFiles: Bool, skipFeedEntries: Bool,
+        storage: DiscoveryStorage,
+        capture: (any ReaderContentProtocol) -> Value?
+    ) async throws -> [Value] {
+        let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: storage.historyConfiguration, storageAdmission: storage.historyAdmission
+        )
+        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: storage.bookmarkConfiguration, storageAdmission: storage.bookmarkAdmission
+        )
+        await historyRealm.asyncRefresh()
+        await bookmarkRealm.asyncRefresh()
+
+        let feedRealm: Realm?
+        if skipFeedEntries {
+            feedRealm = nil
+        } else {
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.feedConfiguration, storageAdmission: storage.feedAdmission)
+            await realm.asyncRefresh()
+            feedRealm = realm
+        }
+        try Task.checkCancellation()
+
+        try storage.validate(includeFeed: !skipFeedEntries)
+        var contentFile: ContentFile?
+        if !skipContentFiles {
+            contentFile = historyRealm.objects(ContentFile.self)
+                .filter(NSPredicate(format: "isDeleted == false AND url == %@", url.absoluteString as CVarArg))
+                .sorted(byKeyPath: "createdAt", ascending: false)
+                .first
+        }
+        let history = HistoryRecord.getOpenedRecord(forURL: url, in: historyRealm)
+        let bookmark = Bookmark.get(forURL: url, realm: bookmarkRealm)
+
+        var feed: FeedEntry?
+        if let feedRealm {
+            let feeds = feedRealm.objects(FeedEntry.self)
+                .where { !$0.isDeleted }
+                .sorted(by: \.createdAt, ascending: false)
+
+            if url.scheme == "https" {
+                feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
+            } else if !url.isReaderFileURL {
+                feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
+            }
+        }
+
+        let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
+        return candidates.compactMap(capture)
+    }
+
+    private final class CapturedReaderPropagationRow: @unchecked Sendable {
+        let reference: ContentReference
+        let row: any ReaderContentProtocol
+        let intendedURL: URL
+
+        init?(content: any ReaderContentProtocol, storage: DiscoveryStorage) {
+            guard let reference = storage.reference(for: content) else { return nil }
+            self.reference = reference
+            intendedURL = content.url
+            row = content.freeze()
+        }
+
+        func resolve(in realm: Realm, allowingDeleted: Bool = false) -> (Object & ReaderContentProtocol)? {
+            Self.resolve(row, intendedURL: intendedURL, in: realm, allowingDeleted: allowingDeleted)
+        }
+
+        private static func resolve<T: ReaderContentProtocol>(
+            _ row: T, intendedURL: URL, in realm: Realm, allowingDeleted: Bool
+        ) -> (Object & ReaderContentProtocol)? {
+            guard let live = realm.resolve(ThreadSafeReference(to: row)),
+                  !live.isInvalidated, (allowingDeleted || !live.isDeleted),
+                  live.url == intendedURL else { return nil }
+            return live as? (Object & ReaderContentProtocol)
+        }
     }
 
     @RealmBackgroundActor
@@ -375,7 +653,7 @@ public struct ReaderContentLoader {
         storage: DiscoveryStorage
     ) async throws -> ReaderContentLoader.ContentReference? {
         try Task.checkCancellation()
-        guard !(url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/")) else {
+        guard !url.isInternalReaderLoadingURL else {
             return nil
         }
         guard url.absoluteString != "about:blank" else {
@@ -463,17 +741,31 @@ public struct ReaderContentLoader {
         source: String = "ReaderContentLoader.getContent"
     ) async throws -> (any ReaderContentProtocol)? {
         let backingURL = backingContentURL(fromLoaderURL: pageURL)
+        if pageURL.isTranscriptURL {
+            try Task.checkCancellation()
+            let content = await TranscriptPageRegistry.shared.makeReaderContent(for: pageURL)
+            try Task.checkCancellation()
+            return content
+        }
         guard !pageURL.isReaderURLLoaderURL || backingURL != nil else { return nil }
         let resolvedURL = backingURL ?? pageURL
         let storage = DiscoveryStorage()
+#if DEBUG
+#if DEBUG
         getContentObservationForTesting?(.capturedStorage)
+#endif
+#endif
         let taskKey = GetContentTaskKey(
             url: resolvedURL.absoluteString,
             countsAsHistoryVisit: countsAsHistoryVisit,
             storage: storage.identity
         )
         if let existingTask = inFlightGetContentTasks[taskKey] {
+#if DEBUG
+#if DEBUG
             getContentObservationForTesting?(.joinedTask)
+#endif
+#endif
             return try await existingTask.value
         }
 
@@ -508,37 +800,222 @@ public struct ReaderContentLoader {
         return try await task.value
     }
 
-    /// Update all reader-content objects that share the given URL. The updater returns true if it mutated the object.
+    /// Propagate prepared Reader HTML only while its originating selection remains
+    /// live. Discovery and queued Realm writes can each suspend; the lifetime
+    /// fence must be checked by the final, storage-admitted transaction.
+    @RealmBackgroundActor
+    public static func propagateReaderModeDefaults(
+        for url: URL,
+        excludingPrimaryKey primaryKey: String,
+        primaryClassName: String,
+        readabilityHTML: String,
+        resolvedTitle: String?,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
+        permitsCommit: @escaping @Sendable () -> Bool
+    ) async throws {
+        guard permitsCommit() else { return }
+        try Task.checkCancellation()
+        try await updateContent(url: url, account: account, permitsCommit: permitsCommit) { record in
+            guard permitsCommit(), !Task.isCancelled,
+                  !(record.compoundKey == primaryKey
+                    && record.objectSchema.className == primaryClassName) else {
+                return false
+            }
+
+            var changed = false
+            if !record.isReaderModeByDefault {
+                record.isReaderModeByDefault = true
+                changed = true
+            }
+            if record.isReaderModeAvailable {
+                record.isReaderModeAvailable = false
+                changed = true
+            }
+            if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                if !url.isReaderFileURL,
+                   (record.content?.isEmpty ?? true),
+                   record.html != readabilityHTML {
+                    record.html = readabilityHTML
+                    changed = true
+                }
+                if let resolvedTitle,
+                   record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   record.title != resolvedTitle {
+                    record.title = resolvedTitle
+                    changed = true
+                }
+                if !record.rssContainsFullContent {
+                    record.rssContainsFullContent = true
+                    changed = true
+                }
+            }
+            // updateContent journals just once, and only for an actual change.
+            return changed
+        }
+    }
+
+    /// Update every selected representation using the same owned mutation lane.
     @RealmBackgroundActor
     public static func updateContent(
         url: URL,
         skipContentFiles: Bool = false,
         skipFeedEntries: Bool = false,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
+        permitsCommit: (@Sendable () -> Bool)? = nil,
+        publicationFence: ReaderContentPublicationFence? = nil,
         mutate: (Object & ReaderContentProtocol) -> Bool
     ) async throws {
-        let storage = DiscoveryStorage()
-        let references = try await discoverContentReferences(
-            url: url,
-            skipContentFiles: skipContentFiles,
-            skipFeedEntries: skipFeedEntries,
-            storage: storage
-        )
-        let timestamp = Date()
-        for reference in references {
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
-            try await realm.asyncWritePreservingOwnership {
-                // Realm's async transaction can begin after its caller was
-                // cancelled (for example by a superseding WebView document).
-                // Fence the actual commit, not only the preceding lookup.
-                guard !Task.isCancelled else { return }
-                try reference.validateStorage()
-                guard let object = realm.object(ofType: reference.contentType,
-                    forPrimaryKey: reference.contentKey) as? (Object & ReaderContentProtocol),
-                    !object.isDeleted else { return }
-                if mutate(object) {
-                    object.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
-                }
+        let result = await performContentMutation(
+            url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries,
+            storage: MutationStorage(account: account), account: nil, permitsCommit: permitsCommit,
+            publicationFence: publicationFence,
+            allowsTombstone: account == nil && permitsCommit == nil && publicationFence == nil,
+            validateAuthority: {}, mutate: mutate)
+        if let error = result.error { throw error }
+    }
+
+    @RealmBackgroundActor
+    public static func updateContentWithOutcome(
+        url: URL,
+        skipContentFiles: Bool = false,
+        skipFeedEntries: Bool = false,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
+        permitsCommit: (@Sendable () -> Bool)? = nil,
+        publicationFence: ReaderContentPublicationFence? = nil,
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async -> ReaderContentMutationOutcome {
+        await performContentMutation(
+            url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries,
+            storage: MutationStorage(account: account), account: nil, permitsCommit: permitsCommit,
+            publicationFence: publicationFence, validateAuthority: {}, mutate: mutate).outcome
+    }
+
+    /// Capture storage/account before media acquisition; arbitrary authority and
+    /// selection callbacks run outside Session's nonrecursive publication lock.
+    @RealmBackgroundActor
+    public static func updateContentWithOutcome(
+        url: URL, storage: MutationStorage,
+        skipContentFiles: Bool = false, skipFeedEntries: Bool = false,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
+        permitsCommit: (@Sendable () -> Bool)? = nil,
+        publicationFence: ReaderContentPublicationFence? = nil,
+        validateAuthority: @Sendable () throws -> Void,
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async -> ReaderContentMutationOutcome {
+        await performContentMutation(
+            url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries,
+            storage: storage, account: account, permitsCommit: permitsCommit,
+            publicationFence: publicationFence, validateAuthority: validateAuthority, mutate: mutate).outcome
+    }
+
+    @RealmBackgroundActor
+    private static func performContentMutation(
+        url: URL, skipContentFiles: Bool, skipFeedEntries: Bool,
+        storage captured: MutationStorage,
+        account suppliedAccount: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)?,
+        permitsCommit: (@Sendable () -> Bool)?,
+        publicationFence: ReaderContentPublicationFence?,
+        allowsTombstone: Bool = false,
+        validateAuthority: @Sendable () throws -> Void,
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async -> (outcome: ReaderContentMutationOutcome, error: Error?) {
+        let storage = captured.storage
+        let account = suppliedAccount ?? captured.account
+        var matched = 0, committed = 0, mutated = 0
+        func validateLifetime() throws {
+            try Task.checkCancellation()
+            guard permitsCommit?() != false else { throw CancellationError() }
+            try validateAuthority()
+            try Task.checkCancellation()
+            if let suppliedAccount, let storedAccount = captured.account {
+                guard suppliedAccount.access.boundaryID == storedAccount.access.boundaryID,
+                      suppliedAccount.snapshot == storedAccount.snapshot else { throw CancellationError() }
             }
+            if let account {
+                guard account.snapshot.identity != .transitioning,
+                      account.access.snapshot == account.snapshot else { throw CancellationError() }
+            }
+            try storage.validate(includeFeed: !skipFeedEntries)
+        }
+        do {
+            try validateLifetime()
+            // Freeze each physical row as soon as it matches, before any further
+            // suspension. A same-primary-key successor never inherits this work.
+            let rows = try await discoverCapturedContent(
+                url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries,
+                storage: storage, capture: { CapturedReaderPropagationRow(content: $0, storage: storage) })
+            matched = rows.count
+#if DEBUG
+            await contentWriteGateForTesting?(.contentMutation)
+#endif
+            try validateLifetime()
+            let timestamp = Date()
+            for capturedRow in rows {
+                try validateLifetime()
+                let reference = capturedRow.reference
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
+                let changed: Bool? = try await realm.asyncWritePreservingOwnership {
+                    try validateLifetime()
+                    try reference.validateStorage()
+                    guard let object = capturedRow.resolve(in: realm) else {
+                        // An ordinary multi-representation edit can remove a later
+                        // candidate itself. Fenced publications still reject a lost
+                        // captured row; they cannot silently adopt another owner.
+                        if allowsTombstone { return nil }
+                        throw CancellationError()
+                    }
+                    let changed = mutate(object)
+                    guard !object.isInvalidated else { throw CancellationError() }
+                    if changed { object.refreshChangeMetadata(explicitlyModified: true, at: timestamp) }
+                    try validateLifetime()
+                    func validateStorageAndRow() throws {
+                        try Task.checkCancellation()
+                        try reference.validateStorage()
+                        guard capturedRow.resolve(in: realm, allowingDeleted: allowsTombstone) != nil else { throw CancellationError() }
+                    }
+                    try validateStorageAndRow()
+                    if let publicationFence {
+                        var didCommit = false
+                        do {
+                            // The external replica fence is entered before Session.
+                            // It may call commit once; a later callback failure cannot
+                            // reclassify an already durable transaction as failure.
+                            try publicationFence {
+                                guard !didCommit else { return }
+                                try validateStorageAndRow()
+                                if let account {
+                                    try ReaderContentAccountCommit.commit(in: realm, account: account,
+                                        validateCommit: validateStorageAndRow)
+                                } else {
+                                    try realm.commitWrite()
+                                }
+                                didCommit = true
+                            }
+                        } catch {
+                            if !didCommit { throw error }
+                        }
+                        guard didCommit else { throw CancellationError() }
+                    } else if let account {
+                        try ReaderContentAccountCommit.commit(in: realm, account: account,
+                            validateCommit: validateStorageAndRow)
+                    }
+                    return changed
+                }
+                // The writer joins durable settlement even if cancelled after a
+                // submitted commit. Later failures cannot erase these outcomes.
+                guard let changed else { continue }
+                committed += 1
+                if changed { mutated += 1 }
+            }
+            return (ReaderContentMutationOutcome(matchedObjectCount: matched,
+                committedObjectCount: committed, mutatedObjectCount: mutated,
+                cancelledBeforeCommit: false, errorMessage: nil), nil)
+        } catch {
+            return (ReaderContentMutationOutcome(matchedObjectCount: matched,
+                committedObjectCount: committed, mutatedObjectCount: mutated,
+                cancelledBeforeCommit: error is CancellationError || Task.isCancelled,
+                errorMessage: error.localizedDescription), error)
         }
     }
     
@@ -549,7 +1026,13 @@ public struct ReaderContentLoader {
         countsAsHistoryVisit: Bool = false,
         source: String = "ReaderContentLoader.load"
     ) async throws -> (any ReaderContentProtocol)? {
-        try await load(
+        if url.isTranscriptURL {
+            try Task.checkCancellation()
+            let content = await TranscriptPageRegistry.shared.makeReaderContent(for: url)
+            try Task.checkCancellation()
+            return content
+        }
+        return try await load(
             url: url,
             persist: persist,
             countsAsHistoryVisit: countsAsHistoryVisit,
@@ -569,7 +1052,7 @@ public struct ReaderContentLoader {
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
             
-            if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
+            if url.isInternalReaderLoadingURL {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
                 return nil
@@ -698,7 +1181,9 @@ public struct ReaderContentLoader {
                 !content.isDeleted else { return nil }
             return reference
         }
+#if DEBUG
         await contentWriteGateForTesting?(.loadedContent)
+#endif
         return try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             try reference.validateStorage()
@@ -1031,7 +1516,9 @@ public struct ReaderContentLoader {
     @RealmBackgroundActor
     static func markSnippetFromClipboard(_ reference: ContentReference) async throws -> ContentReference? {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: reference.realmConfiguration, storageAdmission: reference.storageAdmission)
+#if DEBUG
         await contentWriteGateForTesting?(.clipboard)
+#endif
         return try await realm.asyncWritePreservingOwnership {
             try Task.checkCancellation()
             try reference.validateStorage()
@@ -1054,7 +1541,11 @@ public struct ReaderContentLoader {
 
     @MainActor
     private static func pasteboardImportStrings() -> (html: String?, text: String?) {
+#if DEBUG
+#if DEBUG
         if let strings = pasteboardStringsForTesting { return strings }
+#endif
+#endif
 
 #if os(macOS)
         let html = NSPasteboard.general.string(forType: .html)
@@ -1359,13 +1850,14 @@ This snippet loads when the pasteboard is empty in a debug build.
         _ appendedHTML: String,
         toContentURL contentURL: URL,
         storage: SnippetStorage,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool
     ) async throws -> Bool {
         guard contentURL.isSnippetURL, permitsCommit() else { return false }
         let normalizedAppendedHTML = normalizeSnippetSourceHTML(appendedHTML)
         return try await { @RealmBackgroundActor in
             try await updateCapturedSnippetRecords(
-                contentURL: contentURL, storage: storage, permitsCommit: permitsCommit
+                contentURL: contentURL, storage: storage, account: account, permitsCommit: permitsCommit
             ) { object in
                 let currentHTML = object.html
                 guard let mergedHTML = try? appendSnippetHTML(
@@ -1471,13 +1963,14 @@ This snippet loads when the pasteboard is empty in a debug build.
         contentURL: URL,
         title: String,
         storage: SnippetStorage,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool
     ) async throws -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard contentURL.isSnippetURL, !trimmedTitle.isEmpty, permitsCommit() else { return false }
         return try await { @RealmBackgroundActor in
             try await updateCapturedSnippetRecords(
-                contentURL: contentURL, storage: storage, permitsCommit: permitsCommit
+                contentURL: contentURL, storage: storage, account: account, permitsCommit: permitsCommit
             ) { object in
                 let isTitlePrefixOfContent = snippetTitleMatchesGeneratedPrefix(
                     trimmedTitle, sourceHTML: object.html
@@ -1515,19 +2008,20 @@ This snippet loads when the pasteboard is empty in a debug build.
         html: String,
         originalEditorHTML: String? = nil,
         storage: SnippetStorage,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool
     ) async throws -> Bool {
         guard contentURL.isSnippetURL, permitsCommit() else { return false }
         let normalizedHTML = snippetHTML(fromHTML: html)
         return try await { @RealmBackgroundActor in
             try await updateCapturedSnippetRecords(
-                contentURL: contentURL, storage: storage, permitsCommit: permitsCommit
+                contentURL: contentURL, storage: storage, account: account, permitsCommit: permitsCommit
             ) { object in
                 // The unchanged draft is the exact source supplied to the
                 // editor. Do not reserialize its body, even if current storage
                 // has since received a newer body from another writer.
-                let bodyIsUnchanged = html == object.html
-                    || originalEditorHTML.map { $0 == html } == true
+                let bodyIsUnchanged = object.html.map { html.utf8.elementsEqual($0.utf8) } == true
+                    || originalEditorHTML.map { $0.utf8.elementsEqual(html.utf8) } == true
                 let currentHTML = snippetHTML(fromHTML: object.html ?? "<html><body></body></html>")
                 let updatedHTML = bodyIsUnchanged ? currentHTML : normalizedHTML
                 let resolvedTitleUpdate = resolvedSnippetTitleAfterHTMLUpdate(
@@ -1539,11 +2033,11 @@ This snippet loads when the pasteboard is empty in a debug build.
                 )
                 let objectDidChange = object.title != resolvedTitleUpdate.title
                     || object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent
-                    || (!bodyIsUnchanged && currentHTML != normalizedHTML)
+                    || (!bodyIsUnchanged && !currentHTML.utf8.elementsEqual(normalizedHTML.utf8))
                 guard objectDidChange else { return false }
                 object.title = resolvedTitleUpdate.title
                 object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
-                if !bodyIsUnchanged && currentHTML != normalizedHTML {
+                if !bodyIsUnchanged && !currentHTML.utf8.elementsEqual(normalizedHTML.utf8) {
                     object.html = normalizedHTML
                 }
                 return true
@@ -1559,14 +2053,16 @@ This snippet loads when the pasteboard is empty in a debug build.
     static func updateCapturedSnippetRecords(
         contentURL: URL,
         storage: SnippetStorage,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool,
         mutate: (any ReaderContentProtocol) -> Bool
     ) async throws -> Bool {
+        try storage.validateStorage()
         let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: storage.bookmarkConfiguration
+            for: storage.bookmarkConfiguration, storageAdmission: storage.bookmarkAdmission
         )
         let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(
-            for: storage.historyConfiguration
+            for: storage.historyConfiguration, storageAdmission: storage.historyAdmission
         )
         // App-owned snippets put both representations in the same Realm.
         // Group before writing so an account/cancellation change cannot commit
@@ -1577,7 +2073,10 @@ This snippet loads when the pasteboard is empty in a debug build.
         var didChange = false
         for group in groups {
             let groupDidChange = try await group.realm.asyncWritePreservingOwnership { () throws -> Bool in
+                try storage.validateStorage()
+                guard storage.containsCapturedTarget(in: group.realm) else { return false }
                 guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                try storage.validateStorage()
                 // Query live records only after acquiring the write. No
                 // managed object selected before an await can be revived or
                 // mutated after another writer deletes/replaces it.
@@ -1599,7 +2098,13 @@ This snippet loads when the pasteboard is empty in a debug build.
                         changed = true
                     }
                 }
-                guard !Task.isCancelled, permitsCommit() else { throw CancellationError() }
+                try storage.validateStorage()
+                guard !Task.isCancelled, permitsCommit(),
+                      storage.containsCapturedTarget(in: group.realm) else { throw CancellationError() }
+                try storage.validateStorage()
+                if let account {
+                    try ReaderContentAccountCommit.commit(in: group.realm, account: account)
+                }
                 return changed
             }
             didChange = didChange || groupDidChange
@@ -1736,7 +2241,7 @@ open class PasteboardHTMLGenerator: HtmlGenerator {
 
 fileprivate extension URL {
     var contentType: UTType {
-        return UTType(filenameExtension: self.pathExtension) ?? .data
+        return UTType(filenameExtension: (self as NSURL).pathExtension ?? "") ?? .data
     }
 }
 
@@ -1827,7 +2332,7 @@ public extension ReaderContentLoader {
 
         case let .url(url, fromClipboard):
             guard url.absoluteString != "about:blank",
-                  !(url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/")) else {
+                  !url.isInternalReaderLoadingURL else {
                 return nil
             }
             let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: storage.bookmarks)

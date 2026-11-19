@@ -27,6 +27,18 @@ enum OPDSParserError: LocalizedError {
 }
 
 public enum OPDSParser {
+    /// The structured operation owns its URLSession request. Cancelling the
+    /// caller cancels the native data task instead of abandoning its callback.
+    public static func parseURL(url: URL, session: URLSession = .shared) async throws -> sending ParseData {
+        try Task.checkCancellation()
+        let (data, response) = try await session.data(for: URLRequest(url: url))
+        try Task.checkCancellation()
+        let validated = try validateDocument(data: data, response: response, error: nil)
+        let document = try parseDocument(data: validated.0, url: url, response: validated.1)
+        try Task.checkCancellation()
+        return document
+    }
+
     /// Parse an OPDS feed or publication.
     /// Feed can be v1 (XML) or v2 (JSON).
     /// - parameter url: The feed URL
@@ -43,17 +55,22 @@ public enum OPDSParser {
                 return
             }
 
-            // We try to parse as an OPDS v1 feed,
-            // then, if it fails, we try as an OPDS v2 feed.
-            if let parseData = try? OPDS1Parser.parse(xmlData: data, url: url, response: response) {
-                completion(parseData, nil)
-            } else if let parseData = try? OPDS2Parser.parse(jsonData: data, url: url, response: response) {
-                completion(parseData, nil)
-            } else {
-                // Not a valid OPDS ressource
-                completion(nil, OPDSParserError.documentNotValid)
+            do {
+                completion(try parseDocument(data: data, url: url, response: response), nil)
+            } catch {
+                completion(nil, error)
             }
         }
+    }
+
+    private static func parseDocument(data: Data, url: URL, response: URLResponse) throws -> ParseData {
+        if let document = try? OPDS1Parser.parse(xmlData: data, url: url, response: response) {
+            return document
+        }
+        if let document = try? OPDS2Parser.parse(jsonData: data, url: url, response: response) {
+            return document
+        }
+        throw OPDSParserError.documentNotValid
     }
 
     static func loadDocument(url: URL, session: URLSession = .shared, completion: @escaping (Data?, URLResponse?, Error?) -> Void) {

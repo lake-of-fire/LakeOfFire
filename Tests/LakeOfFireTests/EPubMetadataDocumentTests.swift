@@ -146,6 +146,48 @@ final class EPubMetadataDocumentTests: XCTestCase {
         XCTAssertEqual(value.title, "Primary")
     }
 
+    func testPercentEncodedMainTitleReferenceSelectsDecodedXMLID() throws {
+        for reference in ["#%6dain", "#%6Dain", "#ma%69n"] {
+            let value = try XCTUnwrap(EPubMetadataDocument.metadata(opf("""
+            <meta refines="\(reference)" property="title-type">main</meta>
+            <dc:title id="subtitle">Subtitle</dc:title><dc:title id="main">Book title</dc:title>
+            """)))
+            XCTAssertEqual(value.title, "Book title", reference)
+        }
+    }
+
+    func testPercentEncodedJapaneseMainTitleReferenceSelectsXMLID() throws {
+        let value = try XCTUnwrap(EPubMetadataDocument.metadata(opf("""
+        <dc:title id="subtitle">Subtitle</dc:title><dc:title id="題名">日本語の本</dc:title>
+        <meta refines="#%E9%A1%8C%E5%90%8D" property="title-type">main</meta>
+        """)))
+        XCTAssertEqual(value.title, "日本語の本")
+    }
+
+    func testPercentDecodedTitleReferencesPreserveExactUnicodeIDs() throws {
+        for (first, main, reference) in [
+            ("caf&#xE9;", "cafe&#x301;", "#cafe%CC%81"),
+            ("cafe&#x301;", "caf&#xE9;", "#caf%C3%A9")
+        ] {
+            let value = try XCTUnwrap(EPubMetadataDocument.metadata(opf("""
+            <dc:title id="\(first)">Subtitle</dc:title><dc:title id="\(main)">Book title</dc:title>
+            <meta refines="\(reference)" property="title-type">main</meta>
+            """)))
+            XCTAssertEqual(value.title, "Book title", reference)
+        }
+    }
+
+    func testInvalidOrNonlocalTitleReferencesKeepFallback() throws {
+        for reference in ["#main%", "#main%2", "#main%GG", "#main%C3%28",
+                          "other.opf#%6Dain", "https://example.test/book.opf#main", "#", "#%256Dain"] {
+            let value = try XCTUnwrap(EPubMetadataDocument.metadata(opf("""
+            <dc:title id="first">First title</dc:title><dc:title id="main">Other title</dc:title>
+            <meta refines="\(reference)" property="title-type">main</meta>
+            """)))
+            XCTAssertEqual(value.title, "First title", reference)
+        }
+    }
+
     func testEmptyTitleDoesNotCountAsSuccessfulMetadata() throws {
         XCTAssertNil(try EPubMetadataDocument.metadata(opf("<dc:title> \n\t </dc:title>", manifest: cover())))
     }

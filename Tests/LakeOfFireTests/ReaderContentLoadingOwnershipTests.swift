@@ -956,6 +956,7 @@ final class ReaderContentLoadingOwnershipTests: XCTestCase, @unchecked Sendable 
             }
         }
         await gate.waitForEntry()
+        let producerFence = reader.makeSelectionCommitFence(requiring: reader.currentSelectionID)
         let entry = XCTestExpectation(description: "coalesced waiter entered")
         let waiter = Task { @MainActor in
             entry.fulfill()
@@ -963,7 +964,15 @@ final class ReaderContentLoadingOwnershipTests: XCTestCase, @unchecked Sendable 
         }
         await fulfillment(of: [entry], timeout: 5)
         waiter.cancel()
-        gate.open(); try await first.value; try await waiter.value
+        gate.open()
+        do { try await first.value }
+        catch { XCTFail("Canceling a waiter must not fail its producer: \(error)") }
+        do {
+            try await waiter.value
+            XCTFail("The canceled waiter must report cancellation")
+        } catch is CancellationError { }
+        catch { XCTFail("Unexpected waiter failure: \(error)") }
+        XCTAssertTrue(producerFence(), "Waiter cancellation must retain the producer's selection")
         XCTAssertTrue(reader.content === a)
         XCTAssertFalse(Task.isCancelled)
     }

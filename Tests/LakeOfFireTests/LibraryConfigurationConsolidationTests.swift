@@ -6,6 +6,55 @@ import XCTest
 
 final class LibraryConfigurationConsolidationTests: XCTestCase, @unchecked Sendable {
     @RealmBackgroundActor
+    func testAdditiveOPMLPreservesArchivedSlotsAndDoesNotAdmitUnrelatedOrphans() async throws {
+        let (configuration, realm) = try await makeRealm()
+        let library = LibraryConfiguration()
+        let archived = FeedCategory()
+        archived.isArchived = true
+        let unresolved = UUID()
+        let orphanCategory = FeedCategory()
+        let orphanScript = UserScript()
+        library.categoryIDs.append(objectsIn: [archived.id, unresolved])
+        try realm.write {
+            realm.add(library)
+            realm.add([archived, orphanCategory])
+            realm.add(orphanScript)
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("V4AdditiveOPML-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("import.opml")
+        let importedID = UUID()
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="2.0"><head><title>Additive import</title></head><body>
+          <outline text="Imported category" title="Imported category" uuid="\(importedID.uuidString)" />
+        </body></opml>
+        """
+        try Data(xml.utf8).write(to: fileURL)
+        try await LibraryDataManager.shared.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+        realm.refresh()
+        XCTAssertEqual(Array(library.categoryIDs), [archived.id, unresolved, importedID])
+        XCTAssertTrue(library.userScriptIDs.isEmpty)
+        XCTAssertTrue(archived.isArchived)
+        XCTAssertFalse(archived.isDeleted)
+        XCTAssertFalse(orphanCategory.isDeleted)
+        XCTAssertFalse(orphanScript.isDeleted)
+        XCTAssertNil(archived.explicitlyModifiedAt)
+        XCTAssertNil(orphanCategory.explicitlyModifiedAt)
+        XCTAssertNil(orphanScript.explicitlyModifiedAt)
+        let imported = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: importedID))
+        XCTAssertEqual(imported.title, "Imported category")
+        let libraryGeneration = try XCTUnwrap(pendingMutation(for: library, in: realm)?.generation)
+        let categoryGeneration = try XCTUnwrap(pendingMutation(for: imported, in: realm)?.generation)
+        try await LibraryDataManager.shared.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+        realm.refresh()
+        XCTAssertEqual(Array(library.categoryIDs), [archived.id, unresolved, importedID])
+        XCTAssertEqual(pendingMutation(for: library, in: realm)?.generation, libraryGeneration)
+        XCTAssertEqual(pendingMutation(for: imported, in: realm)?.generation, categoryGeneration)
+    }
+
+    @RealmBackgroundActor
     func testScriptRefreshDoesNotSkipCommittedLibraryDuringForeignDeletion() async throws {
         let (configuration, _) = try await makeRealm()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)

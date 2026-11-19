@@ -224,6 +224,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         )
         let feed = Feed()
         feed.rssUrl = rssURL
+        feed.lastFetchedRSSURL = rssURL
         feed.lastFetchedETag = "\"stale-validator\""
         try realm.write {
             realm.add(feed)

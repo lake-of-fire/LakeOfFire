@@ -15,7 +15,7 @@ public extension Feed {
     }
 
     public var hasRecentlyRefreshedEntries: Bool {
-        guard let lastRefreshedEntriesAt else { return false }
+        guard lastFetchedRSSURL == rssUrl, let lastRefreshedEntriesAt else { return false }
         return Date().timeIntervalSince(lastRefreshedEntriesAt) < Self.automaticEntriesRefreshInterval
     }
 

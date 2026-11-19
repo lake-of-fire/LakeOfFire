@@ -268,11 +268,22 @@ public struct Link: Hashable {
         guard let href = json["href"] as? String else {
             throw OPDS2ParserError.invalidLink
         }
+        // OPDS 2.0 section 5.3 permits these short full-book acquisition
+        // relations as aliases of the historical URI forms. Normalize at the
+        // JSON boundary so exact typed relation consumers share one meaning;
+        // Atom, custom relations and restricted acquisition roles are unchanged.
+        let relations = LinkRelation.array(from: json["rel"]).map { relation in
+            switch relation.string {
+            case "acquisition": return LinkRelation.opdsAcquisition
+            case "download": return LinkRelation.opdsAcquisitionOpenAccess
+            default: return relation
+            }
+        }
         self.init(
             href: normalizeHREF(href),
             type: json["type"] as? String,
             title: json["title"] as? String,
-            rels: LinkRelation.array(from: json["rel"])
+            rels: relations
         )
     }
 

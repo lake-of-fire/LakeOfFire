@@ -508,6 +508,7 @@ final class FeedStateIndicatorTests: XCTestCase {
         let realm = try XCTUnwrap(feed.realm)
         try realm.write {
             feed.lastRefreshedEntriesAt = Date().addingTimeInterval(-60)
+            feed.lastFetchedRSSURL = feed.rssUrl
         }
 
         XCTAssertFalse(feed.shouldRefreshOnCategoryAppear)
@@ -520,6 +521,7 @@ final class FeedStateIndicatorTests: XCTestCase {
         let realm = try XCTUnwrap(feed.realm)
         try realm.write {
             feed.lastRefreshedEntriesAt = Date().addingTimeInterval(-60)
+            feed.lastFetchedRSSURL = feed.rssUrl
         }
 
         XCTAssertFalse(feed.shouldRefreshAutomaticallyOnFeedAppear)
@@ -687,11 +689,14 @@ final class FeedStateIndicatorTests: XCTestCase {
     func testConcurrentHistoryVisitsConvergeOnOneCanonicalRecord() async throws {
         let configuration = makeConfiguration()
         let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
         ReaderContentLoader.historyRealmConfiguration = configuration
         defer {
             ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
             ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
         }
 

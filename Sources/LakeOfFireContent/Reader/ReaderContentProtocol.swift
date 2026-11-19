@@ -1,4 +1,6 @@
 import Foundation
+import struct LakeKit.AccountSessionAccess
+import struct LakeKit.AccountSessionSnapshot
 import LakeOfFireCore
 import RealmSwift
 import SwiftUIWebView
@@ -268,7 +270,17 @@ public extension ReaderContentProtocol {
     }
     
     @MainActor
-    func asyncWrite(_ block: @escaping ((Realm, any ReaderContentProtocol) -> Void)) async throws {
+    func asyncWrite(
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
+        admittingMutation: @escaping @Sendable () -> Bool = { true },
+        _ block: @escaping @RealmBackgroundActor (Realm, any ReaderContentProtocol) throws -> Void
+    ) async throws {
+        try Task.checkCancellation()
+        guard admittingMutation() else { throw CancellationError() }
+        if let account {
+            guard account.snapshot.identity != .transitioning,
+                  account.access.snapshot == account.snapshot else { throw CancellationError() }
+        }
         guard !isInvalidated, !isDeleted, let owningRealm = realm else { return }
         let config = owningRealm.configuration
         // Preserve the physical row, including when nominated by a frozen
@@ -280,13 +292,40 @@ public extension ReaderContentProtocol {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config, storageAdmission: admission)
             try await realm.asyncWritePreservingOwnership {
                 try Task.checkCancellation()
+                guard admittingMutation() else { throw CancellationError() }
                 guard admission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: config) }) else {
                     throw RealmBackgroundActorError.realmFileChangedDuringOpen
                 }
                 guard let content = realm.resolve(reference),
                       !content.isInvalidated, !content.isDeleted,
                       content.url == sourceURL else { return }
-                block(realm, content)
+                try block(realm, content)
+                func validateStorageAndRow() throws {
+                    try Task.checkCancellation()
+                    guard !content.isInvalidated, !content.isDeleted,
+                          content.url == sourceURL else { throw CancellationError() }
+                    guard admission.matchesCurrentStorageIdentity({ RealmBackgroundActor.shared.realmCacheKey(for: config) }) else {
+                        throw RealmBackgroundActorError.realmFileChangedDuringOpen
+                    }
+                }
+                // Permission callbacks may consult Session themselves; finish
+                // them before entering its nonrecursive publication lock.
+                guard admittingMutation() else { throw CancellationError() }
+                try validateStorageAndRow()
+                if let account {
+                    var didCommit = false
+                    do {
+                        _ = try account.access.publish(ifCurrent: account.snapshot) {
+                            guard !didCommit else { return }
+                            try validateStorageAndRow()
+                            try realm.commitWrite()
+                            didCommit = true
+                        }
+                    } catch {
+                        if !didCommit { throw error }
+                    }
+                    guard didCommit else { throw CancellationError() }
+                }
             }
         }()
         if !owningRealm.isFrozen {
@@ -971,4 +1010,31 @@ public func makeReaderContentCompoundKey(url: URL?, html: String?) -> String? {
         key.append((String(format: "%02X", stableHash(html))))
     }
     return key
+}
+
+/// Settle the admitted mutation while its captured Session boundary is held.
+/// Permission callbacks and Session reads must finish before entering this helper.
+enum ReaderContentAccountCommit {
+    @RealmBackgroundActor
+    static func commit(
+        in realm: Realm,
+        account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot),
+        validateCommit: () throws -> Void = {}
+    ) throws {
+        guard account.snapshot.identity != .transitioning else { throw CancellationError() }
+        var didCommit = false
+        do {
+            _ = try account.access.publish(ifCurrent: account.snapshot) {
+                guard !didCommit else { return }
+                try Task.checkCancellation()
+                // Internal row/storage checks only; arbitrary admission stays outside this lock.
+                try validateCommit()
+                try realm.commitWrite()
+                didCommit = true
+            }
+        } catch {
+            if !didCommit { throw error }
+        }
+        guard didCommit else { throw CancellationError() }
+    }
 }

@@ -3,7 +3,7 @@ import Foundation
 import RealmSwift
 import RealmSwiftGaps
 import SwiftCloudDrive
-import SwiftUIDownloads
+@testable import SwiftUIDownloads
 import UniformTypeIdentifiers
 import XCTest
 import ZIPFoundation
@@ -149,6 +149,8 @@ final class ReaderFileLibraryBoundaryTests: XCTestCase {
             let second = try await self.download("https://example.com/book.txt?id=2", manager: f.manager)
             try self.write("first book", to: first.localDestination)
             try self.write("second book", to: second.localDestination)
+            try await recordBoundaryFixtureInstallation(first)
+            try await recordBoundaryFixtureInstallation(second)
             let firstResult = try await f.manager.ensureImported(downloadable: first)
             let secondResult = try await f.manager.ensureImported(downloadable: second)
             let firstURL = try XCTUnwrap(firstResult)
@@ -1328,4 +1330,11 @@ extension ReaderFileLibraryBoundaryTests {
             XCTAssertFalse(record.isDeleted)
         }
     }
+}
+
+@DownloadActor
+private func recordBoundaryFixtureInstallation(_ download: Downloadable) throws {
+    let receipt = try download.makeInstalledArtifactReceipt(finalResponseURL: download.url)
+    try download.persistInstalledArtifactReceipt(receipt)
+    XCTAssertTrue(download.hasVerifiedInstalledArtifact())
 }

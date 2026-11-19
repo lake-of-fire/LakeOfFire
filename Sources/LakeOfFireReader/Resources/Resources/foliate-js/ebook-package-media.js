@@ -60,25 +60,50 @@ export const hydratePackageMedia = async ({
         return promise.then(objectURL => objectURL === null ? null : `${objectURL}${fragment}`);
     };
 
-    const mediaElements = new Set();
-    const results = await Promise.all(Array.from(doc.querySelectorAll(mediaSourceSelector), async element => {
+    const workItems = Array.from(doc.querySelectorAll(mediaSourceSelector), element => {
         const sourceURL = element.src;
-        if (!isPackageMediaURL(sourceURL)) return false;
+        if (!isPackageMediaURL(sourceURL)) return { element, sourceURL };
         const owningMedia = element.matches?.('audio, video')
             ? element
             : element.closest?.('audio, video');
-        const objectURL = await objectURLFor(sourceURL);
-        // A closed/replaced document or explicitly changed media source does
-        // not inherit a late response from its former package capability.
-        if (closed || objectURL === null || element.isConnected === false
-            || element.src !== sourceURL) return false;
-        element.src = objectURL;
-        if (owningMedia) mediaElements.add(owningMedia);
-        return true;
+        return { element, sourceURL, owningMedia };
+    });
+    const ownerGroups = new Map();
+    for (const item of workItems) {
+        if (!item.owningMedia) continue;
+        let group = ownerGroups.get(item.owningMedia);
+        if (!group) {
+            group = { remaining: 0, changed: false };
+            ownerGroups.set(item.owningMedia, group);
+        }
+        group.remaining++;
+        item.ownerGroup = group;
+    }
+
+    const outcomes = await Promise.allSettled(workItems.map(async item => {
+        try {
+            if (!isPackageMediaURL(item.sourceURL)) return false;
+            const objectURL = await objectURLFor(item.sourceURL);
+            // A closed/replaced document or explicitly changed media source does
+            // not inherit a late response from its former package capability.
+            if (closed || objectURL === null || item.element.isConnected === false
+                || item.element.src !== item.sourceURL) return false;
+            item.element.src = objectURL;
+            if (item.ownerGroup) item.ownerGroup.changed = true;
+            return true;
+        } finally {
+            if (item.ownerGroup) {
+                item.ownerGroup.remaining--;
+                if (item.ownerGroup.remaining === 0 && item.ownerGroup.changed && !closed) {
+                    item.owningMedia.load?.();
+                }
+            }
+        }
     }));
 
-    if (!closed) for (const media of mediaElements) media.load?.();
-    return results;
+    const failure = outcomes.find(outcome => outcome.status === 'rejected');
+    if (failure) throw failure.reason;
+    return outcomes.map(outcome => outcome.value);
 };
 
 export const installPackageMediaHydration = ({

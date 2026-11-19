@@ -793,10 +793,18 @@ public class ReaderFileManager: ObservableObject {
         return readerFileURL
     }
 
+    /// Retained transfer bytes can be retried, but only an admitted successful
+    /// install may enter the Reader import/open path immediately.
+    @MainActor
+    public static func isDownloadReadyForImport(_ downloadable: Downloadable) async -> Bool {
+        let hasVerifiedArtifact = await downloadable.hasVerifiedInstalledArtifact()
+        return hasVerifiedArtifact && !downloadable.isFailed
+    }
+
     @MainActor
     public func ensureImported(downloadable: Downloadable) async throws -> URL? {
         try await ensureImported(downloadable: downloadable, existsLocally: {
-            await $0.existsLocally()
+            await Self.isDownloadReadyForImport($0)
         })
     }
 

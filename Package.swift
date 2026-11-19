@@ -30,7 +30,7 @@ let package = Package(
         .package(path: "../JapaneseLanguageTools"),
         .package(path: "../SwiftUtilities"),
         .package(path: "../LakeImage"),
-        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5"),
+        .package(url: "https://github.com/aehlke/realm-swift.git", revision: "31e0a0a3064f10497a9a504bcb357873c4c66b4d"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.5.0"),
@@ -217,6 +217,8 @@ let package = Package(
         .testTarget(
             name: "LakeOfFireTests",
             dependencies: [
+                .product(name: "JapaneseLanguageTools", package: "JapaneseLanguageTools"),
+                .product(name: "LakeKit", package: "LakeKit"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
@@ -229,6 +231,7 @@ let package = Package(
                 "LakeOfFireLibrary",
                 "LakeOfFireReader",
                 "LakeOfFireWeb",
+                "LakeOfFireOPDS",
                 .product(name: "SwiftReadability", package: "swift-readability"),
                 .product(name: "ZIPFoundation", package: "ZipFoundation"),
             ],
