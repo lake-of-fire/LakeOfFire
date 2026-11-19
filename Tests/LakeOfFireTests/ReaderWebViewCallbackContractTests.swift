@@ -9,6 +9,7 @@ import Combine
 import RealmSwift
 import BigSyncKit
 import LakeKit
+import LakeOfFire
 import WebKit
 @testable import SwiftUIWebView
 @testable import LakeOfFireContent
@@ -395,14 +396,18 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         try await withSharedFontWebView { mode, caller, webView, fixture, _ in
             _ = try await webView.evaluateJavaScript("""
                 window.__lateFontBlobCount = 0;
-                URL.createObjectURL = () => 'internal://local/manabi-fonts.css?late=' + (++window.__lateFontBlobCount);
+                window.__lateFontBlobs = [];
+                URL.createObjectURL = blob => {
+                    window.__lateFontBlobs.push(blob);
+                    return 'internal://local/manabi-fonts.css?late=' + (++window.__lateFontBlobCount);
+                };
                 URL.revokeObjectURL = () => {};
                 null;
                 """)
             // Exercise real CSS FontFaces. The missing local face deterministically
             // enters error; a revision must create another face even with identical CSS.
             fixture.stylesheetCSS = "@font-face { font-family: 'YuKyokasho'; src: local('__ManabiMissingLateFont__'); }"
-            let css = fixture.stylesheetCSS
+            let css = fixture.stylesheetCSS + "\n@font-face { font-family: 'Routed Test'; src: url('internal://local/manabi-fonts/system-test?revision=\(sharedReaderFontRevisionPlaceholder)'); }"
             mode.sharedFontCSSBase64Provider = { Data(css.utf8).base64EncodedString() }
             var revision: UInt64 = 1
             mode.readerFontAvailabilityRevisionProvider = { revision }
@@ -432,6 +437,17 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             try await self.awaitCurrentFontGate(webView)
             let refreshed = try await webView.evaluateJavaScript("Array.from(document.fonts).some(face => face.family.includes('YuKyokasho') && face !== window.__failedLateFace) && document.getElementById('mnb-custom-fonts-inline').dataset.mnbFontRevision === '2' && window.__lateFontBlobCount === 2")
             XCTAssertEqual(refreshed as? Bool, true)
+            let resourceURLs = try await webView.callAsyncJavaScript("""
+                return await Promise.all(window.__lateFontBlobs.map(async blob => {
+                    const css = await blob.text();
+                    const match = css.match(new RegExp("internal://local/manabi-fonts/system-test[?]revision=[0-9]+"));
+                    return match?.[0];
+                }));
+                """, arguments: [:], in: nil, contentWorld: .page)
+            XCTAssertEqual(resourceURLs as? [String], [
+                "internal://local/manabi-fonts/system-test?revision=1",
+                "internal://local/manabi-fonts/system-test?revision=2",
+            ])
             fixture.onStylesheetRequest = nil
             await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
             try await self.awaitCurrentFontGate(webView)

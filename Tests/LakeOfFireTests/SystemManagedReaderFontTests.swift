@@ -1,5 +1,6 @@
 import CoreText
 import XCTest
+import WebKit
 @testable import LakeOfFire
 
 final class SystemManagedReaderFontTests: XCTestCase {
@@ -69,7 +70,106 @@ final class SystemManagedReaderFontTests: XCTestCase {
         XCTAssertFalse(availableResponse.data.isEmpty)
         let unavailableResponse = try XCTUnwrap(sharedReaderFontResponse(for: unavailable, asset: asset))
         XCTAssertEqual(unavailableResponse.response.statusCode, 404)
+        XCTAssertEqual(unavailableResponse.response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
         XCTAssertTrue(unavailableResponse.data.isEmpty, "CoreText fallback is not the requested font")
+    }
+
+    @MainActor
+    func testInternalFontFaceCSSRendersBothAliasesAcrossPreviewReloads() async throws {
+        let horizontalName = "Helvetica"
+        let verticalName = "Menlo-Regular"
+        let horizontalFamily = "Reader Horizontal Test"
+        let verticalFamily = "Reader Vertical Test"
+        let asset = SharedReaderFontAsset(
+            systemFontNames: [horizontalFamily: horizontalName, verticalFamily: verticalName],
+            horizontalFamilyName: horizontalFamily, verticalFamilyName: verticalFamily,
+            enablesRuntimeResourceDelivery: true
+        )
+        let handler = InternalURLSchemeHandler()
+        handler.sharedReaderFontAsset = asset
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(handler, forURLScheme: "internal")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 640, height: 200), configuration: configuration)
+        defer { webView.stopLoading() }
+        let origin = try XCTUnwrap(URL(string: "internal://local"))
+
+        for revision in ["1", "2"] {
+            var source = URLComponents(url: origin, resolvingAgainstBaseURL: false)
+            source?.path = "/manabi-fonts.css"
+            source?.queryItems = [URLQueryItem(name: "revision", value: revision)]
+            let sourceURL = try XCTUnwrap(source?.url)
+            let css = try XCTUnwrap(sharedReaderFontFaceCSS(for: sourceURL, asset: asset))
+            let routes = try fontRoutes(in: css)
+            let horizontalRoute = try XCTUnwrap(routes.first { $0.fragment == horizontalName })
+            let verticalRoute = try XCTUnwrap(routes.first { $0.fragment == verticalName })
+            for route in [horizontalRoute, verticalRoute] {
+                XCTAssertEqual(URLComponents(url: route, resolvingAgainstBaseURL: false)?.queryItems,
+                               [URLQueryItem(name: "revision", value: revision)])
+            }
+
+            let navigation = SystemManagedFontPreviewNavigation()
+            webView.navigationDelegate = navigation
+            webView.loadHTMLString("""
+                <!doctype html>
+                <meta charset="utf-8">
+                <style>\(css)</style>
+                <canvas width="560" height="90"></canvas>
+                """, baseURL: origin)
+            await fulfillment(of: [navigation.completed], timeout: 5)
+            if let error = navigation.error { throw error }
+
+            let result = try await webView.callAsyncJavaScript("""
+                const sample = "iii WWW agile fox 123";
+                const canvas = document.querySelector("canvas");
+                const context = canvas.getContext("2d");
+                const font = family => '400 42px "' + family + '", serif';
+                const raster = family => {
+                    context.clearRect(0, 0, canvas.width, canvas.height);
+                    context.font = font(family);
+                    context.fillText(sample, 8, 56);
+                    return canvas.toDataURL();
+                };
+                const check = async (alias, url, reference) => {
+                    const faces = await document.fonts.load(font(alias), sample);
+                    const aliasPixels = raster(alias);
+                    // The reference has only the routed URL, so local() cannot hide
+                    // a transport failure or an unreadable font file.
+                    const face = await new FontFace(reference, 'url(' + JSON.stringify(url) + ')').load();
+                    document.fonts.add(face);
+                    return {
+                        loaded: faces.length === 1 && faces[0].status === "loaded",
+                        usesRoutedGlyphs: aliasPixels === raster(reference),
+                        differsFromFallback: aliasPixels !== raster("Missing Reader Test Face"),
+                        pixels: aliasPixels
+                    };
+                };
+                const horizontal = await check(horizontalFamily, horizontalURL, "Horizontal URL Reference");
+                const vertical = await check(verticalFamily, verticalURL, "Vertical URL Reference");
+                return {
+                    horizontalLoaded: horizontal.loaded,
+                    horizontalUsesRoutedGlyphs: horizontal.usesRoutedGlyphs,
+                    horizontalDiffersFromFallback: horizontal.differsFromFallback,
+                    verticalLoaded: vertical.loaded,
+                    verticalUsesRoutedGlyphs: vertical.usesRoutedGlyphs,
+                    verticalDiffersFromFallback: vertical.differsFromFallback,
+                    aliasesPaintDifferentGlyphs: horizontal.pixels !== vertical.pixels
+                };
+                """, arguments: [
+                    "horizontalFamily": horizontalFamily,
+                    "verticalFamily": verticalFamily,
+                    "horizontalURL": horizontalRoute.absoluteString,
+                    "verticalURL": verticalRoute.absoluteString,
+                ], in: nil, contentWorld: .page)
+            let checks = try XCTUnwrap(result as? [String: Bool])
+            for key in [
+                "horizontalLoaded", "horizontalUsesRoutedGlyphs", "horizontalDiffersFromFallback",
+                "verticalLoaded", "verticalUsesRoutedGlyphs", "verticalDiffersFromFallback",
+                "aliasesPaintDifferentGlyphs",
+            ] {
+                XCTAssertEqual(checks[key], true, "\(key) at revision \(revision)")
+            }
+        }
     }
 
     private func fontRoutes(in css: String) throws -> [URL] {
@@ -119,5 +219,25 @@ final class SystemManagedReaderFontTests: XCTestCase {
             XCTAssertEqual(fontResponse.response.statusCode, 404)
             XCTAssertTrue(fontResponse.data.isEmpty)
         }
+    }
+}
+
+@MainActor
+private final class SystemManagedFontPreviewNavigation: NSObject, WKNavigationDelegate {
+    let completed = XCTestExpectation(description: "Font preview HTML loaded")
+    private(set) var error: Error?
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        completed.fulfill()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        self.error = error
+        completed.fulfill()
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        self.error = error
+        completed.fulfill()
     }
 }

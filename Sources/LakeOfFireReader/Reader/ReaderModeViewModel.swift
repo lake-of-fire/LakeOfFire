@@ -2266,8 +2266,9 @@ public class ReaderModeViewModel: ObservableObject {
                         root.dataset.mnbFontReady = '1';
                     }
                 };
-                const css = atob(fontCSSBase64);
-                globalThis.manabiReaderFontCSSText = css;
+                const cssTemplate = atob(fontCSSBase64);
+                const css = cssTemplate.replaceAll("\(sharedReaderFontRevisionPlaceholder)", revision);
+                globalThis.manabiReaderFontCSSText = cssTemplate;
                 globalThis.manabiReaderFontCSSHash = fontHash;
                 globalThis.manabiReaderFontInjectionMode = 'blob';
                 const ensureReaderFontStyle = desiredFamily => {

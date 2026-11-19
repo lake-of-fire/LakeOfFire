@@ -160,7 +160,7 @@ private func sharedReaderFontRuntimeFilename(postScriptName: String) -> String {
 
 private func sharedReaderFontRuntimeResource(
     postScriptName: String
-) -> (url: URL, mimeType: String, format: String)? {
+) -> (url: URL, mimeType: String)? {
     let font = CTFontCreateWithName(postScriptName as CFString, 17, nil)
     guard CTFontCopyPostScriptName(font) as String == postScriptName,
           let resourceURL = CTFontCopyAttribute(font, kCTFontURLAttribute) as? URL,
@@ -169,17 +169,13 @@ private func sharedReaderFontRuntimeResource(
     guard fileURL.isFileURL,
           FileManager.default.isReadableFile(atPath: fileURL.path) else { return nil }
     let mimeType: String
-    let format: String
     switch fileURL.pathExtension.lowercased() {
     case "ttf":
         mimeType = "font/ttf"
-        format = "truetype"
     case "otf":
         mimeType = "font/otf"
-        format = "opentype"
     case "ttc", "otc":
         mimeType = "font/collection"
-        format = "opentype"
     default:
         return nil
     }
@@ -187,7 +183,7 @@ private func sharedReaderFontRuntimeResource(
           descriptors.contains(where: {
               CTFontDescriptorCopyAttribute($0, kCTFontNameAttribute) as? String == postScriptName
           }) else { return nil }
-    return (fileURL, mimeType, format)
+    return (fileURL, mimeType)
 }
 
 public struct SharedReaderFontServedResponse {
@@ -358,6 +354,42 @@ private func sharedReaderFontHTTPResponse(
     )
 }
 
+/// Substituted when a blob stylesheet is attached to a specific Reader revision.
+public let sharedReaderFontRevisionPlaceholder = "__MANABI_READER_FONT_REVISION__"
+
+/// The font-face rules used by the reader and its settings preview.
+/// The source URL supplies the reader scheme and the current availability revision.
+public func sharedReaderFontFaceCSS(for sourceURL: URL, asset: SharedReaderFontAsset) -> String? {
+    var rules: [String] = []
+    for family in asset.supportedFamilyNames {
+        let source: String
+        if let postScriptName = asset.systemFontNames[family] {
+            let local = "local('\(postScriptName)')"
+            if asset.enablesRuntimeResourceDelivery {
+                guard let url = sharedReaderFontFontURL(
+                    for: sourceURL, asset: asset, postScriptName: postScriptName
+                ) else { return nil }
+                source = "url(\"\(url.absoluteString)\"), \(local)"
+            } else {
+                source = local
+            }
+        } else {
+            guard let url = sharedReaderFontFontURL(for: sourceURL, asset: asset) else { return nil }
+            source = "url(\"\(url.absoluteString)\") format(\"\(asset.format)\")"
+        }
+        rules.append("""
+        @font-face {
+          font-family: '\(family)';
+          font-weight: 400 700;
+          font-style: normal;
+          src: \(source);
+          font-display: swap;
+        }
+        """)
+    }
+    return rules.joined(separator: "\n")
+}
+
 public func sharedReaderFontResponse(
     for requestURL: URL,
     asset: SharedReaderFontAsset?
@@ -375,10 +407,8 @@ public func sharedReaderFontResponse(
 
     switch route {
     case .stylesheet(let familyName):
-        let supportsFamily = asset.supportsFamily(familyName)
-        let fontURL = sharedReaderFontFontURL(for: requestURL, asset: asset)
-        guard supportsFamily,
-              let fontURL else {
+        guard asset.supportsFamily(familyName),
+              let fontFaces = sharedReaderFontFaceCSS(for: requestURL, asset: asset) else {
             let response = sharedReaderFontHTTPResponse(
                 url: requestURL,
                 statusCode: 404,
@@ -388,43 +418,6 @@ public func sharedReaderFontResponse(
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
 
-        // Keep CSS literals and joining on String rather than imported SQL overloads.
-        var fontFaceRules: [String] = []
-        for supportedFamilyName in asset.supportedFamilyNames {
-            let source: String
-            if asset.enablesRuntimeResourceDelivery {
-                guard let postScriptName = asset.systemFontNames[supportedFamilyName],
-                      let resourceURL = sharedReaderFontFontURL(
-                          for: requestURL, asset: asset, postScriptName: postScriptName
-                      ) else {
-                    let response = sharedReaderFontHTTPResponse(
-                        url: requestURL, statusCode: 404, contentType: "text/plain", textEncodingName: "utf-8"
-                    )
-                    return SharedReaderFontServedResponse(response: response, data: Data())
-                }
-                // Publish both logical routes while downloads are in flight.
-                // Each byte request validates its own exact installed face and
-                // returns 404 until ready; an unavailable vertical face must not
-                // prevent the horizontal face from being used.
-                let formatHint = sharedReaderFontRuntimeResource(postScriptName: postScriptName)
-                    .map { " format(\"\($0.format)\")" } ?? ""
-                source = "url(\"\(resourceURL.absoluteString)\")" + formatHint
-            } else if let postScriptName = asset.systemFontNames[supportedFamilyName] {
-                source = "local('\(postScriptName)')"
-            } else {
-                source = "url(\"\(fontURL.absoluteString)\") format(\"\(asset.format)\")"
-            }
-            fontFaceRules.append("""
-            @font-face {
-              font-family: '\(supportedFamilyName)';
-              font-weight: 400 700;
-              font-style: normal;
-              src: \(source);
-              font-display: swap;
-            }
-            """)
-        }
-        let fontFaces = fontFaceRules.joined(separator: "\n")
         let css = """
         \(fontFaces)
         :root {
@@ -480,7 +473,8 @@ public func sharedReaderFontResponse(
                 url: requestURL,
                 statusCode: 404,
                 contentType: "text/plain",
-                textEncodingName: "utf-8"
+                textEncodingName: "utf-8",
+                extraHeaders: ["Cache-Control": "no-store"]
             )
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
