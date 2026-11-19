@@ -17,6 +17,31 @@ import UIKit
 #endif
 
 
+internal let readerContentTitleUpdateJavaScript = """
+(function() {
+  const el = document.getElementById('reader-title');
+  const body = document.body;
+  // Article metadata may be shortened or stale. Native article headings own
+  // their ruby, lookup IDs and sidecar identity, even before observer adoption.
+  const hasNativeReaderTitle = body?.classList.contains('readability-mode') === true
+    && el != null
+    && el.dataset.mnbTitleGeneratedByObserver !== 'true'
+    && el.querySelector('m-c, [data-mnb-display-token="1"]') !== null;
+  if (el && (!hasNativeReaderTitle || isSnippet)) {
+    // Snippets can be renamed. Ignore ruby only for the equality check so a
+    // redundant refresh preserves the live markup and its lookup identities.
+    const plainTitle = el.cloneNode(true);
+    plainTitle.querySelectorAll('rt, rp, rtc').forEach(node => node.remove());
+    if (plainTitle.textContent !== title) {
+      el.textContent = title;
+    }
+  }
+  if (body) {
+    body.classList.toggle(bodyClassName, !!hideReaderTitle);
+  }
+})();
+"""
+
 #if os(iOS)
 private func currentWindowTopSafeAreaInset() -> CGFloat {
     UIApplication.shared.connectedScenes
@@ -1447,20 +1472,10 @@ public struct Reader: View {
                     readerContent.snippetTitleIsGeneratedFromPrefix
                 do {
                     try await scriptCaller.evaluateJavaScript(
-                        """
-                        (function() {
-                          const el = document.getElementById('reader-title');
-                          const body = document.body;
-                          if (el && el.textContent !== title) {
-                            el.textContent = title;
-                          }
-                          if (body) {
-                            body.classList.toggle(bodyClassName, !!hideReaderTitle);
-                          }
-                        })();
-                        """,
+                        readerContentTitleUpdateJavaScript,
                         arguments: [
                             "title": displayTitle,
+                            "isSnippet": readerContent.content?.url.isSnippetURL == true,
                             "bodyClassName": ReaderContentLoader.snippetReaderTitleSuppressionBodyClass,
                             "hideReaderTitle": hideRedundantSnippetTitle,
                         ],
