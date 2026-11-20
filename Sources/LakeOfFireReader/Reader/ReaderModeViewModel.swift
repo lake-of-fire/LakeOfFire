@@ -4032,21 +4032,20 @@ public class ReaderModeViewModel: ObservableObject {
                 requiring: navigationBindingToken
             )
             ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
-        }
-        try requireCurrentDocument()
-        if !scriptCaller.hasAsyncCaller {
-        } else {
-            do {
-                _ = try await evaluateReaderDocumentJavaScript(
-                    "window.paginationTrackingBookKey = bookKey;",
-                    arguments: ["bookKey": newState.pageURL.absoluteString],
-                    duplicateInMultiTargetFrames: true,
-                    scriptCaller: scriptCaller,
-                    requiring: navigationBindingToken
-                )
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
+            try requireCurrentDocument()
+            if scriptCaller.hasAsyncCaller {
+                do {
+                    _ = try await evaluateReaderDocumentJavaScript(
+                        "window.paginationTrackingBookKey = bookKey;",
+                        arguments: ["bookKey": newState.pageURL.absoluteString],
+                        duplicateInMultiTargetFrames: true,
+                        scriptCaller: scriptCaller,
+                        requiring: navigationBindingToken
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                }
             }
         }
         try requireCurrentDocument()
@@ -4099,18 +4098,17 @@ public class ReaderModeViewModel: ObservableObject {
             }
             try requireCurrentDocument()
             if let html {
-                let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
-                try requireCurrentDocument()
-                if committedURL.isSnippetURL,
-                   let snippetHTML = buildSnippetCanonicalReadabilityHTML(
-                    html: html,
-                    contentURL: committedURL,
-                    fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
-                    publishedTime: publicationDateFallback,
-                    preferredTitle: content.title,
-                    hideReaderTitleOverride: content.isTitlePrefixOfContent
-                   ) {
-                    readabilityContent = snippetHTML
+                if committedURL.isSnippetURL {
+                    let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                    try requireCurrentDocument()
+                    readabilityContent = buildSnippetCanonicalReadabilityHTML(
+                        html: html,
+                        contentURL: committedURL,
+                        fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
+                        publishedTime: publicationDateFallback,
+                        preferredTitle: content.title,
+                        hideReaderTitleOverride: content.isTitlePrefixOfContent
+                    ) ?? (hasCanonicalReadabilityMarkup(in: html) ? html : nil)
                 } else if hasCanonicalReadabilityMarkup(in: html) {
                     readabilityContent = html
                 } else {
