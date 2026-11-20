@@ -156,8 +156,8 @@ final class SystemManagedReaderFontTests: XCTestCase {
                     aliasesPaintDifferentGlyphs: horizontal.pixels !== vertical.pixels
                 };
                 """, arguments: [
-                    "horizontalFamily": horizontalFamily,
-                    "verticalFamily": verticalFamily,
+                    "horizontalFamily": asset.cssFontFaceFamilyName(for: horizontalFamily),
+                    "verticalFamily": asset.cssFontFaceFamilyName(for: verticalFamily),
                     "horizontalURL": horizontalRoute.absoluteString,
                     "verticalURL": verticalRoute.absoluteString,
                 ], in: nil, contentWorld: .page)
@@ -169,6 +169,66 @@ final class SystemManagedReaderFontTests: XCTestCase {
             ] {
                 XCTAssertEqual(checks[key], true, "\(key) at revision \(revision)")
             }
+        }
+    }
+
+    @MainActor
+    func testFailedRuntimeFaceDoesNotHideInstalledFamily() async throws {
+        let installedFamily = "Menlo"
+        let missingPostScriptName = "ManabiMissingFont-\(UUID().uuidString)"
+        let asset = SharedReaderFontAsset(
+            systemFontNames: [installedFamily: missingPostScriptName],
+            horizontalFamilyName: installedFamily, verticalFamilyName: installedFamily,
+            enablesRuntimeResourceDelivery: true
+        )
+        let handler = InternalURLSchemeHandler()
+        handler.sharedReaderFontAsset = asset
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(handler, forURLScheme: "internal")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 640, height: 200), configuration: configuration)
+        defer { webView.stopLoading() }
+        let origin = try XCTUnwrap(URL(string: "internal://local/"))
+        let css = try XCTUnwrap(sharedReaderFontFaceCSS(for: origin, asset: asset))
+        let navigation = SystemManagedFontPreviewNavigation()
+        webView.navigationDelegate = navigation
+        webView.loadHTMLString("<canvas width=\"560\" height=\"90\"></canvas>", baseURL: origin)
+        await fulfillment(of: [navigation.completed], timeout: 5)
+        if let error = navigation.error { throw error }
+
+        let result = try await webView.callAsyncJavaScript("""
+            const sample = "iii WWW agile fox 123";
+            const canvas = document.querySelector("canvas");
+            const context = canvas.getContext("2d");
+            const raster = cssFamilies => {
+                context.clearRect(0, 0, canvas.width, canvas.height);
+                context.font = "400 42px " + cssFamilies;
+                context.fillText(sample, 8, 56);
+                return canvas.toDataURL();
+            };
+            const nativeStack = JSON.stringify(installedFamily) + ", serif";
+            const nativePixels = raster(nativeStack);
+            const genericPixels = raster("serif");
+
+            const style = document.createElement("style");
+            style.textContent = css;
+            document.head.append(style);
+            try { await document.fonts.load("400 42px " + JSON.stringify(alias), sample); } catch (_) {}
+            const routeFailed = Array.from(document.fonts).some(face => face.family === alias && face.status === "error");
+            return {
+                nativeDiffersFromGeneric: nativePixels !== genericPixels,
+                routeFailed,
+                newStackUsesNativeFace: raster(familyList + ", serif") === nativePixels,
+            };
+            """, arguments: [
+                "installedFamily": installedFamily,
+                "css": css,
+                "alias": asset.cssFontFaceFamilyName(for: installedFamily),
+                "familyList": asset.cssFontFamilyList(for: installedFamily),
+            ], in: nil, contentWorld: .page)
+        let checks = try XCTUnwrap(result as? [String: Bool])
+        for key in ["nativeDiffersFromGeneric", "routeFailed", "newStackUsesNativeFace"] {
+            XCTAssertEqual(checks[key], true, key)
         }
     }
 

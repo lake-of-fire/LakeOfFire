@@ -2099,6 +2099,9 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         let fontValues = readerFontCSSValues(horizontalFamily: readerFontFamilyName)
+        let fontFaceFamilies = Dictionary(uniqueKeysWithValues: (sharedReaderFontAsset?.supportedFamilyNames ?? []).map { family in
+            (family, sharedReaderFontAsset?.cssFontFaceFamilyName(for: family) ?? family)
+        })
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
             let js = """
             (function() {
@@ -2188,7 +2191,8 @@ public class ReaderModeViewModel: ObservableObject {
                         const fontSet = document.fonts;
                         if (!fontSet) return;
                         if (desiredFamily && typeof fontSet.load === 'function') {
-                            try { await fontSet.load("1em '" + desiredFamily + "'"); } catch (_) {}
+                            const faceFamily = fontFaceFamilies[desiredFamily] || desiredFamily;
+                            try { await fontSet.load("1em '" + faceFamily + "'", '日本語'); } catch (_) {}
                         }
                         if (!ownsInstallation()) return;
                         const ready = fontSet.ready;
@@ -2264,6 +2268,7 @@ public class ReaderModeViewModel: ObservableObject {
                     "fontRevision": String(readerFontAvailabilityRevisionProvider()),
                     "horizontalFontFamily": fontValues.horizontalFamily,
                     "verticalFontFamily": fontValues.verticalFamily,
+                    "fontFaceFamilies": fontFaceFamilies,
                 ],
                 duplicateInMultiTargetFrames: true,
                 scriptCaller: scriptCaller,
@@ -2385,7 +2390,8 @@ public class ReaderModeViewModel: ObservableObject {
                         const fontSet = document.fonts;
                         if (!fontSet) return;
                         if (desiredFamily && typeof fontSet.load === 'function') {
-                            try { await fontSet.load("1em '" + desiredFamily + "'"); } catch (_) {}
+                            const faceFamily = fontFaceFamilies[desiredFamily] || desiredFamily;
+                            try { await fontSet.load("1em '" + faceFamily + "'", '日本語'); } catch (_) {}
                         }
                         if (!ownsInstallation()) return;
                         const ready = fontSet.ready;
@@ -2439,6 +2445,7 @@ public class ReaderModeViewModel: ObservableObject {
                 "fontRevision": String(readerFontAvailabilityRevisionProvider()),
                 "horizontalFontFamily": fontValues.horizontalFamily,
                 "verticalFontFamily": fontValues.verticalFamily,
+                "fontFaceFamilies": fontFaceFamilies,
             ],
             duplicateInMultiTargetFrames: true,
             scriptCaller: scriptCaller,
