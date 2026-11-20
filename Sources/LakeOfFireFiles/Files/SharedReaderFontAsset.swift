@@ -402,6 +402,25 @@ public func sharedReaderFontFaceCSS(for sourceURL: URL, asset: SharedReaderFontA
     return rules.joined(separator: "\n")
 }
 
+/// Supplies system-managed font files for a native-generated Reader document.
+/// Each collection is read once even when both faces refer to the same file.
+public func sharedReaderFontDocumentResources(
+    asset: SharedReaderFontAsset, sourceURL: URL, stylesheet: String
+) -> [(base64: String, mimeType: String, sourceURLs: [String])] {
+    guard asset.enablesRuntimeResourceDelivery else { return [] }
+    var files: [URL: (mimeType: String, sourceURLs: [String])] = [:]
+    for postScriptName in Set(asset.systemFontNames.values) {
+        guard let source = sharedReaderFontFontURL(for: sourceURL, asset: asset, postScriptName: postScriptName),
+              stylesheet.contains(source.absoluteString),
+              let file = sharedReaderFontRuntimeResource(postScriptName: postScriptName) else { continue }
+        files[file.url, default: (file.mimeType, [])].sourceURLs.append(source.absoluteString)
+    }
+    return files.compactMap { fileURL, resource in
+        guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else { return nil }
+        return (data.base64EncodedString(), resource.mimeType, resource.sourceURLs)
+    }
+}
+
 public func sharedReaderFontResponse(
     for requestURL: URL,
     asset: SharedReaderFontAsset?
