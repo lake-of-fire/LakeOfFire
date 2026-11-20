@@ -4020,14 +4020,20 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
 
-        ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
-        await injectSharedFontIfNeeded(
-            scriptCaller: scriptCaller,
-            pageURL: committedURL,
-            requiring: navigationBindingToken
-        )
+        // The synthetic loader is only a handoff to the rendered document.
+        // Font setup may wait for optional stylesheet delivery, so doing it
+        // here delays the first Reader HTML dispatch without styling visible
+        // content. Inject on the final document's commit instead.
+        if Self.shouldInjectSharedFontForCommittedNavigation(at: newState.pageURL) {
+            ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
+            await injectSharedFontIfNeeded(
+                scriptCaller: scriptCaller,
+                pageURL: committedURL,
+                requiring: navigationBindingToken
+            )
+            ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
+        }
         try requireCurrentDocument()
-        ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
         if !scriptCaller.hasAsyncCaller {
         } else {
             do {
@@ -4120,6 +4126,10 @@ public class ReaderModeViewModel: ObservableObject {
                 navigator.load(URLRequest(url: committedURL))
             }
         }
+    }
+
+    static func shouldInjectSharedFontForCommittedNavigation(at pageURL: URL) -> Bool {
+        !pageURL.isReaderURLLoaderURL
     }
     
     @MainActor

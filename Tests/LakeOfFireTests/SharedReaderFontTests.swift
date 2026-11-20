@@ -1,5 +1,6 @@
 import XCTest
 @testable import LakeOfFireFiles
+@testable import LakeOfFireReader
 
 final class SharedReaderFontTests: XCTestCase {
     private func makeFontAsset() throws -> SharedReaderFontAsset {
@@ -54,6 +55,21 @@ final class SharedReaderFontTests: XCTestCase {
         XCTAssertTrue(sharedReaderFontUsesLocalScheme(for: URL(string: "internal://local/snippet?key=test")!))
         XCTAssertTrue(sharedReaderFontUsesLocalScheme(for: URL(string: "reader-file://file/example.html")!))
         XCTAssertFalse(sharedReaderFontUsesLocalScheme(for: URL(string: "https://example.com/article")!))
+    }
+
+    func testLoaderCommitDefersSharedFontInjectionUntilRenderedDocument() {
+        XCTAssertFalse(
+            ReaderModeViewModel.shouldInjectSharedFontForCommittedNavigation(
+                at: URL(string: "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.com%2Farticle")!
+            ),
+            "The synthetic loader must not wait for optional font delivery before dispatching Reader HTML"
+        )
+        XCTAssertTrue(
+            ReaderModeViewModel.shouldInjectSharedFontForCommittedNavigation(
+                at: URL(string: "https://example.com/article")!
+            ),
+            "The rendered destination still receives its normal font setup"
+        )
     }
 
     func testSharedReaderFontInjectionModeUsesLocalSchemesAndBlobFallbackElsewhere() {
