@@ -17,6 +17,18 @@ private actor ReaderSnippetRecoveryTestRecorder {
 }
 
 final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
+    func testUnchangedSnippetTitlePreservesPreparedRubyAndLookupIdentity() throws {
+        let document = try SwiftSoup.parse("""
+        <html><body><h1 id="reader-title"><m-c><m-s><m-m id="native-title-word"><ruby class="mnb-gen"><m-t>学校</m-t><rt>がっこう</rt><rp>(</rp></ruby></m-m>へ行く</m-s></m-c></h1>
+        <script id="mnb-segment-metadata">{"version":1}</script></body></html>
+        """)
+        let before = try document.outerHtml()
+
+        XCTAssertFalse(try updateSnippetReaderTitleIfNeeded(in: document, title: "学校へ行く"))
+        XCTAssertEqual(try document.outerHtml(), before)
+        XCTAssertEqual(try document.getElementById("native-title-word")?.select("rt").text(), "がっこう")
+    }
+
     func testZeroJapaneseSnippetSnapshotDistinguishesRenderMarkerAndFontGate() throws {
         let url = try XCTUnwrap(URL(string: "internal://local/snippet?key=zero-japanese"))
         let source = ReaderContentLoader.snippetHTML(fromRawText:
