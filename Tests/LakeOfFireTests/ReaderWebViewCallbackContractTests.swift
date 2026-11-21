@@ -278,7 +278,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             receive: { _ in }, nativeIsReady: { false })
         let controller = WKUserContentController()
         controller.add(fixture, name: "readerDocState")
-        let script = ReaderDocStateUserScript().userScript
+        var script = ReaderDocStateUserScript().userScript
         controller.addUserScript(script.webKitUserScript)
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = controller
