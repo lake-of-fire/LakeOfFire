@@ -800,9 +800,19 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             }
             await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
             await self.fulfillment(of: [firstRequest], timeout: 5)
+            try await self.awaitCurrentFontGate(webView)
+            fixture.holdsStylesheets = true
             revision = 8
             await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
             await self.fulfillment(of: [refreshRequest], timeout: 5)
+            let readableDuringRefresh = try await webView.evaluateJavaScript("""
+                globalThis.manabiReaderFontStyleInstallation.stylesheet.state === 'pending'
+                    && document.documentElement.dataset.mnbFontPending !== '1'
+                    && document.documentElement.dataset.mnbFontReady === '1'
+                """)
+            XCTAssertEqual(readableDuringRefresh as? Bool, true)
+            fixture.releaseStylesheets()
+            try await self.awaitCurrentFontGate(webView)
             revision = 0
             await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
             let href = try await webView.evaluateJavaScript("document.getElementById('mnb-custom-fonts-inline').href") as? String
@@ -892,8 +902,12 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             fixture.onStylesheetRequest = { _ in requested.fulfill() }
             await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
             await self.fulfillment(of: [requested], timeout: 2)
-            let pending = try await webView.evaluateJavaScript("globalThis.manabiReaderFontStyleInstallation.stylesheet.state === 'pending' && document.documentElement.dataset.mnbFontReady === '0'")
-            XCTAssertEqual(pending as? Bool, true)
+            let readableDuringRefresh = try await webView.evaluateJavaScript("""
+                globalThis.manabiReaderFontStyleInstallation.stylesheet.state === 'pending'
+                    && document.documentElement.dataset.mnbFontPending !== '1'
+                    && document.documentElement.dataset.mnbFontReady === '1'
+                """)
+            XCTAssertEqual(readableDuringRefresh as? Bool, true)
             fixture.releaseStylesheets()
             try await self.awaitCurrentFontGate(webView)
             let refreshed = try await webView.evaluateJavaScript("Array.from(document.fonts).some(face => face.family.includes('YuKyokasho') && face !== window.__failedLateFace) && document.getElementById('mnb-custom-fonts-inline').dataset.mnbFontRevision === '2' && window.__lateFontBlobCount === 2")
@@ -1160,6 +1174,58 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         }
     }
 
+
+    func testStoredSnippetLoaderUsesPublicationDateOnceBeforeDispatch() async throws {
+        for publicationDate in [nil, "20 November 2026"] as [String?] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let mode = fixture.readerModeViewModel
+            let reader = fixture.readerContent
+            let navigator = fixture.handler.navigator
+            let url = URL(string: "internal://local/snippet?key=restore-single-preparation")!
+            let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+            let (realm, row) = try cachedHistoryRecord(url: url, in: makeReaderHTMLRenderingRealm())
+            try realm.write {
+                row.title = "Saved snippet title"
+                row.html = "<html><body><p>The harbor bell rang twice.</p></body></html>"
+                row.isReaderModeByDefault = true
+                row.isReaderModeAvailable = false
+                row.rssContainsFullContent = true
+            }
+            reader.pageURL = loaderURL
+            reader.content = row
+            var dateLookups: [URL] = []
+            mode.readerPublicationDateLoader = { url in
+                dateLookups.append(url)
+                return publicationDate
+            }
+            var generatedHTML: Data?
+            mode.processHTMLBytes = { bytes, _ in
+                await MainActor.run { generatedHTML = Data(bytes) }
+                return bytes
+            }
+            defer {
+                mode.readerPublicationDateLoader = nil
+                mode.processHTMLBytes = nil
+                withExtendedLifetime(realm) {}
+            }
+
+            var state = WebViewState.empty
+            state.pageURL = loaderURL
+            try await mode.onNavigationCommitted(
+                readerContent: reader, newState: state,
+                scriptCaller: fixture.handler.scriptCaller, navigator: navigator
+            )
+            await mode.waitForReaderModeRender(for: url)
+
+            XCTAssertEqual(dateLookups, [url])
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+            let html = try XCTUnwrap(generatedHTML)
+            let doc = try SwiftSoup.parse(String(decoding: html, as: UTF8.self))
+            XCTAssertEqual(try doc.getElementById("reader-content")?.text(), "The harbor bell rang twice.")
+            XCTAssertEqual(try doc.getElementById("reader-title")?.text(), "Saved snippet title")
+            XCTAssertEqual(try doc.getElementById("reader-publication-date")?.text(), publicationDate)
+        }
+    }
 
     func testGeneratedReadableDocumentFontSettlementPublishesNativeReadiness() async throws {
         let fixture = makeReaderWebViewHandlerFixture()
@@ -3241,6 +3307,33 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         )
 
         await fulfillment(of: [replacementEvaluation], timeout: 0.05)
+    }
+
+    func testPlaceholderNavigationFinishSkipsFontSetupAndKeepsArticlePending() async throws {
+        let viewModel = ReaderModeViewModel()
+        let caller = WebViewScriptCaller()
+        let owner = UUID()
+        caller.installBinding(
+            ownedBy: owner,
+            asyncCaller: { _, _, _, _ in
+                XCTFail("The placeholder finish must not request font setup")
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        defer { _ = caller.clearBinding(ownedBy: owner) }
+
+        let articleURL = try XCTUnwrap(URL(string: "https://example.invalid/saved-article"))
+        viewModel.beginReaderModeLoad(for: articleURL)
+        var state = WebViewState.empty
+        state.pageURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: articleURL))
+
+        await viewModel.onNavigationFinished(newState: state, scriptCaller: caller)
+
+        XCTAssertTrue(viewModel.isReaderModeLoading)
+        XCTAssertTrue(viewModel.isReaderModeLoadPending(for: articleURL))
     }
 
     func testNavigationFinishedCannotSettleReplacementBindingAfterFontWait()
