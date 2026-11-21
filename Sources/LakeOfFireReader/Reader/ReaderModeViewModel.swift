@@ -4272,11 +4272,13 @@ public class ReaderModeViewModel: ObservableObject {
                 && self.renderAccountIsCurrent(for: newState.pageURL)
         }
         guard accountIsCurrent() else { return }
-        await injectSharedFontIfNeeded(
-            scriptCaller: scriptCaller,
-            pageURL: newState.pageURL,
-            requiring: navigationBindingToken
-        )
+        if !newState.pageURL.isReaderURLLoaderURL {
+            await injectSharedFontIfNeeded(
+                scriptCaller: scriptCaller,
+                pageURL: newState.pageURL,
+                requiring: navigationBindingToken
+            )
+        }
         guard !Task.isCancelled, documentIsCurrent(), accountIsCurrent(),
               ownsReaderDocumentBinding(
                 navigationBindingToken,

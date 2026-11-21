@@ -2941,6 +2941,33 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         await fulfillment(of: [replacementEvaluation], timeout: 0.05)
     }
 
+    func testPlaceholderNavigationFinishSkipsFontSetupAndKeepsArticlePending() async throws {
+        let viewModel = ReaderModeViewModel()
+        let caller = WebViewScriptCaller()
+        let owner = UUID()
+        caller.installBinding(
+            ownedBy: owner,
+            asyncCaller: { _, _, _, _ in
+                XCTFail("The placeholder finish must not request font setup")
+                return .init(nil)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        defer { _ = caller.clearBinding(ownedBy: owner) }
+
+        let articleURL = try XCTUnwrap(URL(string: "https://example.invalid/saved-article"))
+        viewModel.beginReaderModeLoad(for: articleURL)
+        var state = WebViewState.empty
+        state.pageURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: articleURL))
+
+        await viewModel.onNavigationFinished(newState: state, scriptCaller: caller)
+
+        XCTAssertTrue(viewModel.isReaderModeLoading)
+        XCTAssertTrue(viewModel.isReaderModeLoadPending(for: articleURL))
+    }
+
     func testNavigationFinishedCannotSettleReplacementBindingAfterFontWait()
     async throws {
         let viewModel = ReaderModeViewModel()
