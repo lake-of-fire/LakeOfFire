@@ -2138,6 +2138,8 @@ public class ReaderModeViewModel: ObservableObject {
                     const root = document.documentElement;
                     if (!ownsInstallation() || !root) return;
                     if (pending) {
+                        // Once readable, this document keeps its text visible during font refreshes.
+                        if (root.dataset.mnbFontReady === '1') return;
                         root.dataset.mnbFontPending = '1';
                         root.dataset.mnbFontReady = '0';
                     } else {
@@ -2391,6 +2393,7 @@ public class ReaderModeViewModel: ObservableObject {
                 const setFontPendingState = pending => {
                     if (!ownsInstallation()) return;
                     if (pending) {
+                        if (root.dataset.mnbFontReady === '1') return;
                         root.dataset.mnbFontPending = '1';
                         root.dataset.mnbFontReady = '0';
                     } else {

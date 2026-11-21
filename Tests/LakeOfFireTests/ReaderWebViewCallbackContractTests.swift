@@ -446,9 +446,19 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             }
             await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
             await self.fulfillment(of: [firstRequest], timeout: 5)
+            try await self.awaitCurrentFontGate(webView)
+            fixture.holdsStylesheets = true
             revision = 8
             await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
             await self.fulfillment(of: [refreshRequest], timeout: 5)
+            let readableDuringRefresh = try await webView.evaluateJavaScript("""
+                globalThis.manabiReaderFontStyleInstallation.stylesheet.state === 'pending'
+                    && document.documentElement.dataset.mnbFontPending !== '1'
+                    && document.documentElement.dataset.mnbFontReady === '1'
+                """)
+            XCTAssertEqual(readableDuringRefresh as? Bool, true)
+            fixture.releaseStylesheets()
+            try await self.awaitCurrentFontGate(webView)
             revision = 0
             await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
             let href = try await webView.evaluateJavaScript("document.getElementById('mnb-custom-fonts-inline').href") as? String
@@ -538,8 +548,12 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             fixture.onStylesheetRequest = { _ in requested.fulfill() }
             await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: sourceURL)
             await self.fulfillment(of: [requested], timeout: 2)
-            let pending = try await webView.evaluateJavaScript("globalThis.manabiReaderFontStyleInstallation.stylesheet.state === 'pending' && document.documentElement.dataset.mnbFontReady === '0'")
-            XCTAssertEqual(pending as? Bool, true)
+            let readableDuringRefresh = try await webView.evaluateJavaScript("""
+                globalThis.manabiReaderFontStyleInstallation.stylesheet.state === 'pending'
+                    && document.documentElement.dataset.mnbFontPending !== '1'
+                    && document.documentElement.dataset.mnbFontReady === '1'
+                """)
+            XCTAssertEqual(readableDuringRefresh as? Bool, true)
             fixture.releaseStylesheets()
             try await self.awaitCurrentFontGate(webView)
             let refreshed = try await webView.evaluateJavaScript("Array.from(document.fonts).some(face => face.family.includes('YuKyokasho') && face !== window.__failedLateFace) && document.getElementById('mnb-custom-fonts-inline').dataset.mnbFontRevision === '2' && window.__lateFontBlobCount === 2")
