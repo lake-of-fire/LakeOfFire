@@ -518,8 +518,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             let font = CTFontCreateWithName(name as CFString, 17, nil)
             return CTFontCopyPostScriptName(font) as String == name ? name : fallback
         }
-        let horizontalFace = installedFace("YuKyo-Medium", fallback: "HiraMinProN-W3")
-        let verticalFace = installedFace("YuKyo_Yoko-Medium", fallback: "HiraMinProN-W6")
+        let horizontalFace = installedFace("YuKyo-Medium", fallback: "HiraMinProN-W6")
+        let verticalFace = installedFace("YuKyo_Yoko-Medium", fallback: "HiraMinProN-W3")
         XCTContext.runActivity(named: "Managed Japanese faces: \(horizontalFace), \(verticalFace)") { _ in }
         let asset = SharedReaderFontAsset(
             systemFontNames: [horizontal: horizontalFace, vertical: verticalFace],
@@ -540,6 +540,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             // The installed local face would hide a transport regression.
             .replacingOccurrences(of: ", local('\(horizontalFace)')", with: "")
         let acquireCSS = ReaderCallbackGate()
+        addTeardownBlock { await acquireCSS.release() }
         let sourcePrepared = ReaderCallbackGate()
         let fixture = makeReaderWebViewHandlerFixture()
         let callbackReader = ReaderCallbackViewModel(
@@ -598,90 +599,115 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             fixture.handler.onNavigationCommitted(state: state)
             await sourcePrepared.wait()
 
-            func captureVisibleRaster() async throws -> [String: Any] {
-                let value = try await webView.callAsyncJavaScript("""
-                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-                const text = document.querySelector('p');
-                let canvas = document.querySelector('canvas');
-                if (!canvas) {
-                    canvas = document.createElement('canvas');
-                    canvas.width = 640;
-                    canvas.height = 90;
-                    document.body.append(canvas);
-                }
+            let alias = asset.cssFontFaceFamilyName(for: horizontal)
+            _ = try await webView.callAsyncJavaScript("""
+                const text = document.querySelector('#reader-content p');
+                const canvas = document.createElement('canvas');
+                canvas.width = 640;
+                canvas.height = 90;
                 const context = canvas.getContext('2d');
-                const stack = getComputedStyle(text).fontFamily;
+                const readFrame = () => {
+                    const rect = text.getBoundingClientRect();
+                    let visible = rect.width > 0 && rect.height > 0;
+                    for (let node = text; visible && node; node = node.parentElement) {
+                        const style = getComputedStyle(node);
+                        visible = style.display !== 'none' && style.visibility !== 'hidden'
+                            && Number(style.opacity) > 0;
+                    }
+                    const root = document.documentElement;
+                    return { visible, stack: getComputedStyle(text).fontFamily,
+                        fontPending: root.dataset.mnbFontPending === '1',
+                        renderReady: root.dataset.mnbReaderRenderReady === '1' };
+                };
+                const selectedFaceLoaded = () => Array.from(document.fonts).some(face =>
+                    face.family.replace(/^["']|["']$/g, '') === alias && face.status === 'loaded');
                 const raster = family => {
                     context.clearRect(0, 0, canvas.width, canvas.height);
                     context.font = '42px ' + family;
                     context.fillText(text.textContent, 8, 56);
                     return context.getImageData(0, 0, canvas.width, canvas.height).data;
                 };
-                const actualRaster = raster(stack);
-                const systemFallbackRaster = raster('system-ui');
-                const standardFallbackRaster = raster('-webkit-standard');
-                const equalsRaster = (left, right) => {
-                    if (left.length !== right.length) return false;
-                    for (let index = 0; index < left.length; index++) {
-                        if (left[index] !== right[index]) return false;
-                    }
-                    return true;
+                const captureFrame = state => {
+                    if (!state.visible) return state;
+                    const actual = raster(state.stack);
+                    const matches = family => actual.every((value, index) => value === family[index]);
+                    return { ...state,
+                        matchesFallback: matches(raster('system-ui')),
+                        matchesStandardFallback: matches(raster('-webkit-standard')),
+                        matchesSelected: selectedFaceLoaded() && matches(raster('"' + alias + '"')) };
                 };
-                const rect = text.getBoundingClientRect();
-                let visible = true;
-                for (let node = text; node && node.nodeType === 1; node = node.parentElement) {
-                    const ancestorStyle = getComputedStyle(node);
-                    if (ancestorStyle.display === 'none' || ancestorStyle.visibility === 'hidden'
-                        || Number(ancestorStyle.opacity) <= 0) {
-                        visible = false;
-                        break;
-                    }
-                }
-                return {
-                    visible: visible && rect.width > 0 && rect.height > 0,
-                    stack,
-                    matchesFallback: equalsRaster(actualRaster, systemFallbackRaster),
-                    matchesStandardFallback: equalsRaster(actualRaster, standardFallbackRaster),
-                    fontPending: document.documentElement.dataset.mnbFontPending === '1',
-                    renderReady: document.documentElement.dataset.mnbReaderRenderReady === '1'
+                const nextFrame = predicate => new Promise(resolve => {
+                    let frame;
+                    const timeout = setTimeout(() => {
+                        cancelAnimationFrame(frame);
+                        resolve(null);
+                    }, 5000);
+                    const check = () => {
+                        const state = readFrame();
+                        if (predicate(state)) {
+                            clearTimeout(timeout);
+                            resolve(captureFrame(state));
+                        } else {
+                            frame = requestAnimationFrame(check);
+                        }
+                    };
+                    frame = requestAnimationFrame(check);
+                });
+                window.__readerFontPaint = {
+                    snapshot: () => nextFrame(() => true),
+                    firstVisible: nextFrame(state => state.visible),
+                    afterRevision: revision => nextFrame(state => {
+                        if (!state.visible) return true;
+                        const link = document.getElementById('mnb-custom-fonts-inline');
+                        const sheet = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
+                        return link?.dataset.mnbFontRevision === revision
+                            && sheet?.style === link && sheet.href === link.href
+                            && sheet.state === 'loaded' && selectedFaceLoaded();
+                    })
                 };
-                """, arguments: [:], in: nil, contentWorld: .page)
-                return try XCTUnwrap(value as? [String: Any])
+                return null;
+                """, arguments: ["alias": alias], in: nil, contentWorld: .page)
+
+            func capture(_ expression: String) async throws -> [String: Any] {
+                let value = try await webView.callAsyncJavaScript(
+                    "return await \(expression);", arguments: [:], in: nil, contentWorld: .page
+                )
+                return try XCTUnwrap(value as? [String: Any], "Timed out waiting for a Reader paint")
             }
 
-            let firstPaint = try await captureVisibleRaster()
+            let initialPaint = try await capture("window.__readerFontPaint.snapshot()")
             try await Task.sleep(nanoseconds: 500_000_000)
-            let heldProviderPaint = try await captureVisibleRaster()
-            XCTAssertFalse(firstPaint["visible"] as? Bool ?? true, "The initial paint remains withheld until the selected face loads")
-            XCTAssertFalse(heldProviderPaint["visible"] as? Bool ?? true, "A stalled provider must not reveal fallback before its deadline")
+            let heldProviderPaint = try await capture("window.__readerFontPaint.snapshot()")
+            for paint in [initialPaint, heldProviderPaint] {
+                XCTAssertFalse(paint["visible"] as? Bool ?? true, "The article must stay hidden while the font provider is held")
+                XCTAssertTrue(paint["fontPending"] as? Bool == true)
+                XCTAssertFalse(paint["renderReady"] as? Bool ?? true)
+            }
+
             if stallsProviderPastDeadline {
-                try await Task.sleep(nanoseconds: 1_200_000_000)
-                let deadlinePaint = try await captureVisibleRaster()
-                XCTAssertTrue(deadlinePaint["visible"] as? Bool == true, "The document deadline must reveal readable fallback")
-                XCTAssertTrue(
-                    deadlinePaint["matchesFallback"] as? Bool == true
-                        || deadlinePaint["matchesStandardFallback"] as? Bool == true,
-                    "The document deadline must reveal readable system fallback glyphs"
-                )
+                let deadlinePaint = try await capture("window.__readerFontPaint.firstVisible")
+                XCTAssertTrue(deadlinePaint["visible"] as? Bool == true, "The deadline must reveal readable fallback")
+                XCTAssertTrue(deadlinePaint["matchesFallback"] as? Bool == true
+                    || deadlinePaint["matchesStandardFallback"] as? Bool == true)
                 XCTAssertFalse(deadlinePaint["fontPending"] as? Bool ?? true)
                 XCTAssertTrue(deadlinePaint["renderReady"] as? Bool == true)
             }
-            let nativeReadyBeforeFontDelivery = !mode.isReaderModeLoading
-                && !mode.isReaderModeLoadPending(for: url)
             await acquireCSS.release()
+            let selectedPaint = try await capture(stallsProviderPastDeadline
+                ? "window.__readerFontPaint.afterRevision('1')"
+                : "window.__readerFontPaint.firstVisible")
+            XCTAssertTrue(selectedPaint["visible"] as? Bool == true)
+            XCTAssertTrue(selectedPaint["matchesSelected"] as? Bool == true, "The visible article must paint the selected face")
+            XCTAssertFalse(selectedPaint["matchesFallback"] as? Bool ?? true)
+            XCTAssertFalse(selectedPaint["matchesStandardFallback"] as? Bool ?? true)
+            XCTAssertTrue(selectedPaint["renderReady"] as? Bool == true)
             try await XCTUnwrap(fixture.taskManager.onNavigationCommittedTask).value
-            // Sample immediately after the native provider resumes. This does
-            // not call document.fonts.load before measuring the first reveal.
-            let releasedPaint = try await captureVisibleRaster()
-            XCTAssertTrue(releasedPaint["visible"] as? Bool == true)
-            XCTAssertFalse(
-                releasedPaint["matchesFallback"] as? Bool ?? true,
-                "The first visible article paint must use selected glyphs; stack=\(releasedPaint["stack"] as? String ?? "missing"), fontPending=\(releasedPaint["fontPending"] as? Bool ?? false), renderReady=\(releasedPaint["renderReady"] as? Bool ?? false)"
-            )
 
             if stallsProviderPastDeadline {
                 let lateProviderStarted = expectation(description: "Late font refresh starts after fallback reveal")
+                lateProviderStarted.assertForOverFulfill = true
                 let lateProviderGate = ReaderCallbackGate()
+                addTeardownBlock { await lateProviderGate.release() }
                 revision = 2
                 mode.sharedFontCSSBase64Provider = {
                     lateProviderStarted.fulfill()
@@ -694,19 +720,34 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                     )
                 }
                 await fulfillment(of: [lateProviderStarted], timeout: 5)
-                let lateRefreshPaint = try await captureVisibleRaster()
-                XCTAssertTrue(lateRefreshPaint["visible"] as? Bool == true, "A late font refresh must not re-hide the revealed article")
+                await mode.refreshManagedFontsInSyntheticReaderDocument(
+                    scriptCaller: fixture.handler.scriptCaller, pageURL: url, fontAvailabilityRevision: 1
+                )
+                await mode.refreshManagedFontsInSyntheticReaderDocument(
+                    scriptCaller: fixture.handler.scriptCaller, pageURL: url, fontAvailabilityRevision: 2
+                )
+                let lateRefreshPaint = try await capture("window.__readerFontPaint.snapshot()")
+                XCTAssertTrue(lateRefreshPaint["visible"] as? Bool == true, "A late font refresh must keep the article visible")
+                _ = try await webView.evaluateJavaScript("""
+                    window.__readerLateRefreshPaint = window.__readerFontPaint.afterRevision('2');
+                    null;
+                    """)
                 await lateProviderGate.release()
                 await lateRefresh.value
-                let settledRefreshPaint = try await captureVisibleRaster()
+                let settledRefreshPaint = try await capture("window.__readerLateRefreshPaint")
                 XCTAssertTrue(settledRefreshPaint["visible"] as? Bool == true)
+                XCTAssertTrue(settledRefreshPaint["matchesSelected"] as? Bool == true)
+                XCTAssertFalse(settledRefreshPaint["matchesFallback"] as? Bool ?? true)
+                await mode.refreshManagedFontsInSyntheticReaderDocument(
+                    scriptCaller: fixture.handler.scriptCaller, pageURL: url, fontAvailabilityRevision: 2
+                )
             }
             let result: Any?
             do {
                 result = try await webView.callAsyncJavaScript("""
                 const sheet = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
                 const sheetState = sheet ? await sheet.ready : 'missing';
-                const text = document.querySelector('p');
+                const text = document.querySelector('#reader-content p');
                 let canvas = document.querySelector('canvas');
                 if (!canvas) {
                     canvas = document.createElement('canvas');
@@ -730,10 +771,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                     }
                     return true;
                 };
-                let faces = [];
-                let fontError = '';
-                try { faces = await document.fonts.load('42px ' + expected, text.textContent); }
-                catch (error) { fontError = String(error); }
+                const faces = Array.from(document.fonts).filter(face =>
+                    face.family.replace(/^["']|["']$/g, '') === alias);
                 const selectedRaster = raster(stack);
                 const expectedRaster = raster(expected);
                 const fallbackRaster = raster('system-ui');
@@ -741,7 +780,6 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                     base: document.baseURI,
                     href: document.getElementById('mnb-custom-fonts-inline')?.href || '',
                     sheetState,
-                    fontError,
                     horizontal: document.body.style.getPropertyValue('--mnb-content-font'),
                     vertical: document.body.style.getPropertyValue('--mnb-content-vertical-font'),
                     loaded: faces.length === 1 && faces[0].status === 'loaded',
@@ -757,7 +795,6 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             XCTAssertEqual(checks["base"] as? String, url.absoluteString)
             XCTAssertTrue((checks["href"] as? String)?.hasPrefix("blob:") == true)
             XCTAssertEqual(checks["sheetState"] as? String, "loaded")
-            XCTAssertEqual(checks["fontError"] as? String, "")
             let directionalStacks = ["horizontal": horizontal, "vertical": vertical]
             for (direction, family) in directionalStacks {
                 let expected = "\(asset.cssFontFamilyList(for: family)), system-ui"
@@ -766,22 +803,44 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             for key in ["loaded", "drawsSelectedGlyphs", "differsFromFallback"] {
                 XCTAssertEqual(checks[key] as? Bool, true, key)
             }
-            let firstVisibleFallback = (firstPaint["visible"] as? Bool == true)
-                && (firstPaint["matchesFallback"] as? Bool == true)
-            let heldVisibleFallback = (heldProviderPaint["visible"] as? Bool == true)
-                && (heldProviderPaint["matchesFallback"] as? Bool == true)
-            let flashObserved = (firstVisibleFallback || heldVisibleFallback)
-                && (checks["drawsSelectedGlyphs"] as? Bool == true)
-                && (checks["differsFromFallback"] as? Bool == true)
-                && (heldProviderPaint["fontPending"] as? Bool != true)
-            let firstFontPending = firstPaint["fontPending"] as? Bool ?? false
-            let heldFontPending = heldProviderPaint["fontPending"] as? Bool ?? false
-            let firstRenderReady = firstPaint["renderReady"] as? Bool ?? false
-            let heldRenderReady = heldProviderPaint["renderReady"] as? Bool ?? false
-            XCTAssertFalse(
-                flashObserved,
-                "Visible HTTPS fallback preceded selected Japanese glyphs; firstFallback=\(firstVisibleFallback), heldFallback=\(heldVisibleFallback), firstFontPending=\(firstFontPending), heldFontPending=\(heldFontPending), firstRenderReady=\(firstRenderReady), heldRenderReady=\(heldRenderReady), nativeReady=\(nativeReadyBeforeFontDelivery)"
-            )
+        }
+    }
+
+    func testOrdinaryHTTPSNavigationFinishDoesNotWaitForDocumentFonts() async throws {
+        let url = try XCTUnwrap(URL(string: "https://example.invalid/ordinary-page"))
+        try await withSharedFontWebView(syntheticDocument: (url, "<html><body>Ordinary page.</body></html>")) {
+            mode, caller, webView, _, _ in
+            _ = try await webView.evaluateJavaScript("""
+                let recordFontWait;
+                window.__readerFontWaitStarted = new Promise(resolve => { recordFontWait = resolve; });
+                const pendingPageFonts = new Promise(resolve => { window.__readerReleasePageFonts = resolve; });
+                Object.defineProperty(document, 'fonts', { configurable: true, value: {
+                    load: () => Promise.resolve([]),
+                    get ready() {
+                        recordFontWait();
+                        return pendingPageFonts;
+                    }
+                }});
+                null;
+                """)
+            mode.sharedFontCSSBase64Provider = { Data("html { font-family: serif; }".utf8).base64EncodedString() }
+            var state = WebViewState.empty
+            state.pageURL = url
+            let finished = expectation(description: "Navigation finish returns with page fonts still pending")
+            let finish = Task { @MainActor in
+                await mode.onNavigationFinished(newState: state, scriptCaller: caller)
+                finished.fulfill()
+            }
+            defer { finish.cancel() }
+            _ = try await webView.callAsyncJavaScript("""
+                return await Promise.race([
+                    window.__readerFontWaitStarted,
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Font readiness was not requested')), 5000))
+                ]);
+                """, arguments: [:], in: nil, contentWorld: .page)
+            await fulfillment(of: [finished], timeout: 1)
+            _ = try await webView.evaluateJavaScript("window.__readerReleasePageFonts(); null;")
+            await finish.value
         }
     }
 

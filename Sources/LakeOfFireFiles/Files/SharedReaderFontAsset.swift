@@ -91,7 +91,7 @@ public let sharedReaderFontSourcePreparationJavaScript = #"""
     let resolve;
     const previousStylesheet = previous?.stylesheet?.sourceID
         ? previous.stylesheet.previousStylesheet : previous?.stylesheet;
-    const receipt = { sourceID, root, previousStylesheet, state: 'pending',
+    const receipt = { sourceID, revision, root, previousStylesheet, state: 'pending',
         ready: new Promise(done => { resolve = done; }) };
     const settle = state => {
         if (receipt.state !== 'pending') return;

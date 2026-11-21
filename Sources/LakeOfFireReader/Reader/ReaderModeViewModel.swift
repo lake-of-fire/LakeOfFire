@@ -2089,7 +2089,8 @@ public class ReaderModeViewModel: ObservableObject {
     public func beginSharedFontInjection(
         scriptCaller: WebViewScriptCaller,
         pageURL: URL,
-        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil
+        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil,
+        managedRefreshRevision: UInt64? = nil
     ) async {
         guard !sharedReaderFontUsesLocalScheme(for: pageURL), !pageURL.isReaderURLLoaderURL else { return }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -2102,7 +2103,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 await self.injectSharedFontIfNeeded(
                     scriptCaller: scriptCaller, pageURL: pageURL, requiring: bindingToken,
-                    sourcePrepared: prepared)
+                    managedRefreshRevision: managedRefreshRevision, sourcePrepared: prepared)
                 prepared()
             }
         }
@@ -2120,16 +2121,27 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     /// The OS may finish installing a managed font after the reader first paints.
-    public func refreshManagedFontsInSyntheticReaderDocument(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
-        guard let binding = scriptCaller.currentJavaScriptBindingToken,
-              binding == managedFontDocumentBinding else { return }
-        await beginSharedFontInjection(scriptCaller: scriptCaller, pageURL: pageURL, requiring: binding)
+    public func refreshManagedFontsInSyntheticReaderDocument(
+        scriptCaller: WebViewScriptCaller,
+        pageURL: URL,
+        requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil,
+        fontAvailabilityRevision: UInt64? = nil
+    ) async {
+        let revision = fontAvailabilityRevision ?? readerFontAvailabilityRevisionProvider()
+        guard let binding = bindingToken ?? scriptCaller.currentJavaScriptBindingToken,
+              binding == scriptCaller.currentJavaScriptBindingToken,
+              binding == managedFontDocumentBinding,
+              sharedReaderFontAsset?.supportsFamily(readerFontFamilyName) == true else { return }
+        await beginSharedFontInjection(
+            scriptCaller: scriptCaller, pageURL: pageURL, requiring: binding, managedRefreshRevision: revision
+        )
     }
 
     func injectSharedFontIfNeeded(
         scriptCaller: WebViewScriptCaller,
         pageURL: URL,
         requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil,
+        managedRefreshRevision: UInt64? = nil,
         sourcePrepared: (@MainActor () -> Void)? = nil
     ) async {
         let bindingToken = bindingToken ?? scriptCaller.currentJavaScriptBindingToken
@@ -2330,14 +2342,24 @@ public class ReaderModeViewModel: ObservableObject {
         let managedAsset = bindingToken != nil && bindingToken == managedFontDocumentBinding
             && ["http", "https"].contains(pageURL.scheme?.lowercased() ?? "")
             ? sharedReaderFontAsset.flatMap { $0.enablesRuntimeResourceDelivery ? $0 : nil } : nil
+        let availabilityRevision = readerFontAvailabilityRevisionProvider()
+        if let managedRefreshRevision {
+            guard managedRefreshRevision == availabilityRevision,
+                  managedAsset?.supportsFamily(readerFontFamilyName) == true else { return }
+        }
         let duplicateInMultiTargetFrames = managedAsset == nil
-        let fontRevision = String(readerFontAvailabilityRevisionProvider())
+        let fontRevision = String(availabilityRevision)
         let sourceID = UUID().uuidString
         guard accountIsCurrent(), !Task.isCancelled else { return }
         let prepareSource = "(\(sharedReaderFontSourcePreparationJavaScript))(sourceID, fontRevision)"
         let preparationScript = managedAsset == nil ? "return \(prepareSource);" : """
+            const previous = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
+            if (previous?.sourceID && previous.root === document.documentElement
+                && previous.revision === fontRevision && previous.state === 'pending') return null;
+            const resourcesAreCurrent = globalThis.manabiReaderManagedFontResources?.revision === fontRevision;
+            if (resourcesAreCurrent && isManagedRefresh) return null;
             if (!\(prepareSource)) return null;
-            return globalThis.manabiReaderManagedFontResources?.revision === fontRevision ? 'reuse' : 'prepare';
+            return resourcesAreCurrent ? 'reuse' : 'prepare';
             """
         let failSource = """
             if (sourceReceipt.previousStylesheet) {
@@ -2363,7 +2385,11 @@ public class ReaderModeViewModel: ObservableObject {
         do {
             preparationResult = try await evaluateReaderDocumentJavaScript(
                 preparationScript,
-                arguments: ["sourceID": sourceID, "fontRevision": fontRevision],
+                arguments: [
+                    "sourceID": sourceID,
+                    "fontRevision": fontRevision,
+                    "isManagedRefresh": managedRefreshRevision != nil,
+                ],
                 duplicateInMultiTargetFrames: duplicateInMultiTargetFrames,
                 scriptCaller: scriptCaller, requiring: bindingToken)
         } catch {
@@ -2399,7 +2425,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
         let fontHash = blobPayload.identity
         let js = """
-            return (function() {
+            (function() {
                 const root = document.documentElement;
                 if (!root || window.location.href.startsWith('internal://local/load/reader')) return;
                 const sourceReceipt = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
@@ -2531,7 +2557,8 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     return false;
                 };
-                return (async () => {
+                // Let WebKit settle the face independently of native navigation.
+                (async () => {
                     // Restored HTML can carry inline values from its previous render.
                     // Apply the live selection to both scopes before opening the gate.
                     globalThis.manabiHorizontalFontFamilyName = horizontalFontFamily;
