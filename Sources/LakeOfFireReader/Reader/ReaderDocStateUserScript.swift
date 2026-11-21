@@ -1,6 +1,17 @@
 import SwiftUIWebView
 import WebKit
 
+let releaseManagedReaderFontFirstPaintJavaScript = #"""
+root => {
+    if (root !== document.documentElement || root?.dataset.mnbFontFirstPaint !== 'pending') return;
+    root.dataset.mnbFontFirstPaint = 'revealed';
+    delete root.dataset.mnbFontPending;
+    root.dataset.mnbFontReady = '1';
+    root.dataset.mnbReaderRenderReady = '1';
+    if (document.body) document.body.dataset.mnbReaderRenderReady = '1';
+}
+"""#
+
 /// Reports the explicit reader render-ready contract to the native reader host.
 /// Reader markup owns the `mnb` dataset keys; SwiftUIWebView only transports messages.
 @MainActor
@@ -11,6 +22,10 @@ struct ReaderDocStateUserScript {
         let contents = """
 (function () {
     try {
+        const fontRoot = document.documentElement;
+        if (fontRoot?.dataset.mnbFontFirstPaint === 'pending') {
+            setTimeout(() => (\(releaseManagedReaderFontFirstPaintJavaScript))(fontRoot), 1500);
+        }
         const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.readerDocState;
         if (!handler || typeof handler.postMessage !== "function") { return; }
         const bootstrapNow = (typeof performance !== "undefined" && typeof performance.now === "function")

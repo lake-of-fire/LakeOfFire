@@ -143,6 +143,8 @@ final class ReaderWebViewHandler {
         let navigationBinding = scriptCaller.currentJavaScriptBindingToken
         var loadedSelectionIsCurrent: (() -> Bool)?
         let isSyntheticReaderCommit = readerModeViewModel.expectsSyntheticReaderLoaderCommit(for: state.pageURL)
+            || (urlChangeContext == nil
+                && readerModeViewModel.isIssuedPreparedReaderDocument(for: state.pageURL, navigator: navigator))
         // Owned about:blank staging is physical, not the final article commit.
         let refreshCommitsCurrentArticle = state.pageURL.absoluteString != "about:blank"
             && readerContent.validCachedContent?.url.matchesReaderURL(state.pageURL) == true
@@ -290,6 +292,9 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationCommitted(state: WebViewState) {
+        readerModeViewModel.bindManagedFontsToPreparedReaderDocument(
+            pageURL: state.pageURL, scriptCaller: scriptCaller, navigator: navigator
+        )
         readerContent.withdrawSelectionIntent()
         navigationTaskManager.startOnNavigationCommitted {
             do {
@@ -353,7 +358,8 @@ final class ReaderWebViewHandler {
         // HTML preparation has its own task. Retire it with the physical
         // document, except for the final processed-HTML commit it just issued.
         let isExpectedReaderCommit = reason == .navigationCommitted
-            && readerModeViewModel.expectsSyntheticReaderLoaderCommit(for: state.pageURL)
+            && (readerModeViewModel.expectsSyntheticReaderLoaderCommit(for: state.pageURL)
+                || readerModeViewModel.isIssuedPreparedReaderDocument(for: state.pageURL, navigator: navigator))
         // A physical replacement retires script work, but an owned internal
         // rendering/refresh still belongs to the same article playback session.
         let refreshKeepsCurrentArticle = (state.pageURL.absoluteString == "about:blank"

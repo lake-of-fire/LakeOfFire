@@ -307,6 +307,19 @@ private func readerModeSharedFontCSSWithVerticalAlias(_ css: String) -> String {
     return yokoCSS == css ? css : css + "\n" + yokoCSS
 }
 
+/// Marks generated HTTPS Reader documents whose selected face is available by runtime delivery.
+private func armManagedReaderFontFirstPaint(in doc: SwiftSoup.Document) throws {
+    guard let root = try doc.getElementsByTag("html").first(), let head = doc.head() else { return }
+    let style = try doc.createElement("style")
+    try style.text("html[data-mnb-font-first-paint=\"pending\"] body { opacity: 0 !important; }")
+    try head.appendChild(style)
+    try root.attr("data-mnb-font-first-paint", "pending")
+    try root.attr("data-mnb-font-pending", "1")
+    try root.attr("data-mnb-font-ready", "0")
+    try root.attr("data-mnb-reader-render-ready", "0")
+    try doc.body()?.attr("data-mnb-reader-render-ready", "0")
+}
+
 internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) throws {
     let gateCSS = """
     html[data-mnb-font-pending="1"] body.readability-mode {
@@ -2025,6 +2038,14 @@ public class ReaderModeViewModel: ObservableObject {
         return false
     }
 
+    private func shouldGateManagedReaderFontFirstPaint(for pageURL: URL) -> Bool {
+        guard ["http", "https"].contains(pageURL.scheme?.lowercased() ?? ""),
+              let asset = sharedReaderFontAsset, asset.enablesRuntimeResourceDelivery,
+              asset.supportsFamily(readerFontFamilyName),
+              asset.systemFontNames[readerFontFamilyName] != nil else { return false }
+        return sharedFontCSSBase64Provider != nil || sharedFontCSSBase64?.isEmpty == false
+    }
+
     private func evaluateReaderDocumentJavaScript(
         _ js: String,
         arguments: [String: any Sendable]? = nil,
@@ -2089,6 +2110,15 @@ public class ReaderModeViewModel: ObservableObject {
 
     private var managedFontDocumentBinding: WebViewScriptCaller.JavaScriptBindingToken?
 
+    /// Capture the mounted document before semantic commit work can suspend.
+    /// Render readiness may already have dismissed the Reader loader by then.
+    func bindManagedFontsToPreparedReaderDocument(
+        pageURL: URL, scriptCaller: WebViewScriptCaller, navigator: WebViewNavigator
+    ) {
+        managedFontDocumentBinding = isIssuedPreparedReaderDocument(for: pageURL, navigator: navigator)
+            ? scriptCaller.currentJavaScriptBindingToken : nil
+    }
+
     /// The OS may finish installing a managed font after the reader first paints.
     public func refreshManagedFontsInSyntheticReaderDocument(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
         guard let binding = scriptCaller.currentJavaScriptBindingToken,
@@ -2100,7 +2130,6 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller,
         pageURL: URL,
         requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil,
-        ownsSyntheticReaderDocument: Bool = false,
         sourcePrepared: (@MainActor () -> Void)? = nil
     ) async {
         let bindingToken = bindingToken ?? scriptCaller.currentJavaScriptBindingToken
@@ -2298,9 +2327,6 @@ public class ReaderModeViewModel: ObservableObject {
         guard !pageURL.isReaderURLLoaderURL else {
             return
         }
-        if ownsSyntheticReaderDocument, let bindingToken {
-            managedFontDocumentBinding = bindingToken
-        }
         let managedAsset = bindingToken != nil && bindingToken == managedFontDocumentBinding
             && ["http", "https"].contains(pageURL.scheme?.lowercased() ?? "")
             ? sharedReaderFontAsset.flatMap { $0.enablesRuntimeResourceDelivery ? $0 : nil } : nil
@@ -2373,7 +2399,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
         let fontHash = blobPayload.identity
         let js = """
-            (function() {
+            return (function() {
                 const root = document.documentElement;
                 if (!root || window.location.href.startsWith('internal://local/load/reader')) return;
                 const sourceReceipt = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
@@ -2390,8 +2416,9 @@ public class ReaderModeViewModel: ObservableObject {
                 globalThis.manabiReaderFontAvailabilityRevision = revision;
                 const ownsInstallation = () => document.documentElement === root
                     && globalThis.manabiReaderFontStyleInstallation === installation;
+                const hasManagedFirstPaint = root.dataset.mnbFontFirstPaint !== undefined;
                 const setFontPendingState = pending => {
-                    if (!ownsInstallation()) return;
+                    if (!ownsInstallation() || hasManagedFirstPaint) return;
                     if (pending) {
                         if (root.dataset.mnbFontReady === '1') return;
                         root.dataset.mnbFontPending = '1';
@@ -2470,30 +2497,39 @@ public class ReaderModeViewModel: ObservableObject {
                     gateTimeout = setTimeout(() => {
                         // Readable fallback does not settle a valid stylesheet.
                         setFontPendingState(false);
-                        resolve();
+                        resolve(false);
                     }, 4000);
                 });
-                const waitForFontReady = async desiredFamily => {
+                const waitForFontReady = async currentFamily => {
                     while (ownsInstallation()) {
                         const sheet = installation.stylesheet;
                         if (sheet) {
                             const state = await sheet.ready;
-                            if (!ownsInstallation() || state === 'cancelled') return;
+                            if (!ownsInstallation() || state === 'cancelled') return false;
                             if (installation.stylesheet !== sheet) continue;
                         }
                         const fontSet = document.fonts;
-                        if (!fontSet) return;
+                        if (!fontSet) return false;
+                        const desiredFamily = typeof currentFamily === 'function' ? currentFamily() : currentFamily;
+                        let selectedFaceLoaded = false;
                         if (desiredFamily && typeof fontSet.load === 'function') {
                             const faceFamily = fontFaceFamilies[desiredFamily] || desiredFamily;
-                            try { await fontSet.load("1em '" + faceFamily + "'", '日本語'); } catch (_) {}
+                            try {
+                                const faces = await fontSet.load("1em '" + faceFamily + "'", '日本語');
+                                selectedFaceLoaded = faces.some(face => face.status === 'loaded');
+                            } catch (_) {}
                         }
-                        if (!ownsInstallation()) return;
+                        if (!ownsInstallation()) return false;
+                        if (installation.stylesheet !== sheet || (typeof currentFamily === 'function'
+                            && currentFamily() !== desiredFamily)) continue;
+                        if (hasManagedFirstPaint) return selectedFaceLoaded;
                         const ready = fontSet.ready;
                         try { await ready; } catch (_) {}
-                        if (!ownsInstallation()) return;
+                        if (!ownsInstallation()) return false;
                         if (installation.stylesheet !== sheet || document.fonts?.ready !== ready) continue;
-                        return;
+                        return true;
                     }
+                    return false;
                 };
                 return (async () => {
                     // Restored HTML can carry inline values from its previous render.
@@ -2519,7 +2555,16 @@ public class ReaderModeViewModel: ObservableObject {
                     window.manabiApplyDirectionalInjectedFont?.();
                     try { globalThis.manabiForwardReaderFontToEbookDocuments?.('readerMode-blob-inject'); } catch (_) {}
                     try { window.parent?.manabiForwardReaderFontToEbookDocuments?.('readerMode-blob-inject-child'); } catch (_) {}
-                    await Promise.race([waitForFontReady(root.dataset.mnbInjectedFontFamily || family), gateDeadline]);
+                    const readiness = waitForFontReady(() => root.dataset.mnbInjectedFontFamily || family);
+                    const fontIsReady = await Promise.race([readiness, gateDeadline]);
+                    if (hasManagedFirstPaint) {
+                        if (fontIsReady && ownsInstallation()) {
+                            (\(releaseManagedReaderFontFirstPaintJavaScript))(root);
+                        }
+                        clearTimeout(gateTimeout);
+                        gateTimeout = null;
+                        return;
+                    }
                     clearTimeout(gateTimeout);
                     gateTimeout = null;
                     setFontPendingState(false);
@@ -2576,6 +2621,13 @@ public class ReaderModeViewModel: ObservableObject {
         var urlTransitionIntentID: UUID?
     }
     private var expectedSyntheticReaderNavigation: PreparedReaderNavigation?
+
+    func isIssuedPreparedReaderDocument(for url: URL, navigator: WebViewNavigator) -> Bool {
+        guard let dispatched = expectedSyntheticReaderNavigation else { return false }
+        return dispatched.navigator === navigator
+            && navigator.isCurrent(dispatched.intent)
+            && urlsMatchWithoutHashForHotfix(dispatched.url, url)
+    }
 
     private func preparedReaderNavigationIsCurrent() -> Bool {
         guard let dispatched = expectedSyntheticReaderNavigation else { return false }
@@ -3701,6 +3753,9 @@ public class ReaderModeViewModel: ObservableObject {
                 in: doc,
                 renderGeneration: frameInfo?.isMainFrame == false ? nil : renderGeneration
             )
+            if frameInfo?.isMainFrame != false, await shouldGateManagedReaderFontFirstPaint(for: url) {
+                try? armManagedReaderFontFirstPaint(in: doc)
+            }
 
             let expectedNativeContentFingerprint =
                 (try? doc.body()?.attr("data-mnb-native-sidecar-content-fingerprint")) ?? ""
@@ -4142,8 +4197,7 @@ public class ReaderModeViewModel: ObservableObject {
             await injectSharedFontIfNeeded(
                 scriptCaller: scriptCaller,
                 pageURL: committedURL,
-                requiring: navigationBindingToken,
-                ownsSyntheticReaderDocument: ownsSyntheticReaderDocument
+                requiring: navigationBindingToken
             )
             try requireCurrentDocument()
             ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
@@ -4164,7 +4218,8 @@ public class ReaderModeViewModel: ObservableObject {
         }
         try requireCurrentDocument()
 
-        if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
+        if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL)
+            || (!isSameDocumentNavigation && isIssuedPreparedReaderDocument(for: newState.pageURL, navigator: navigator)) {
             return
         }
 
