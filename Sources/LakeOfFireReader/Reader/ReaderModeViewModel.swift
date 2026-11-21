@@ -4229,7 +4229,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
     }
 
-    static func shouldInjectSharedFontForCommittedNavigation(
+    nonisolated static func shouldInjectSharedFontForCommittedNavigation(
         at pageURL: URL,
         ownsSyntheticReaderDocument: Bool = false
     ) -> Bool {
