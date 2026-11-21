@@ -171,8 +171,20 @@ struct ReaderUnhandledTapUserScript {
     let accumulatedScroll = { value: 0 };
     let lastPostedScrollHidden = { value: null };
     let scrollNavigationEnabled = \(requiresUserScrollIntent ? "false" : "true");
+    let lastTrustedScrollInputAt = { value: 0 };
     const scrollInputEvents = ['touchmove', 'wheel', 'keydown'];
     const SCROLL_THRESHOLD = 24;
+    const USER_SCROLL_INTENT_LIFETIME_MS = 1500;
+    let bottomRevealAwaitingDeparture = false;
+    function documentScrollHeight() {
+        return (document.scrollingElement || document.documentElement)?.scrollHeight || 0;
+    }
+    function maximumScrollY() {
+        return Math.max(0, documentScrollHeight() - window.innerHeight);
+    }
+    let lastMaximumScrollY = maximumScrollY();
+    let lastViewportHeight = window.innerHeight;
+    let lastDocumentScrollHeight = documentScrollHeight();
     function isScrollInput(event) {
         if (event.isTrusted !== true || event.defaultPrevented) return false;
         switch (event.type) {
@@ -189,17 +201,36 @@ struct ReaderUnhandledTapUserScript {
     }
 
     function enableScrollNavigation(event) {
-        if (scrollNavigationEnabled || !isScrollInput(event)) return;
-        scrollNavigationEnabled = true;
-        lastScrollPosition.x = window.scrollX || 0;
-        lastScrollPosition.y = window.scrollY || 0;
-        accumulatedScroll.value = 0;
-        for (const type of scrollInputEvents) {
-            window.removeEventListener(type, enableScrollNavigation);
+        if (!isScrollInput(event)) return;
+        lastTrustedScrollInputAt.value = Date.now();
+        if (!scrollNavigationEnabled) {
+            scrollNavigationEnabled = true;
+            lastScrollPosition.x = window.scrollX || 0;
+            lastScrollPosition.y = window.scrollY || 0;
+            lastMaximumScrollY = maximumScrollY();
+            lastViewportHeight = window.innerHeight;
+            lastDocumentScrollHeight = documentScrollHeight();
+            accumulatedScroll.value = 0;
         }
     }
 
     function postHideNavigationForScroll(hidden, reason) {
+        const bottomArrival = reason === 'documentScrollBottom';
+        const bottomDeparture = reason === 'documentScrollUp' && bottomRevealAwaitingDeparture;
+        const visibilityHandler = window.webkit.messageHandlers.ebookNavigationVisibility;
+        if (window === window.top && visibilityHandler && (bottomArrival || bottomDeparture)) {
+            try {
+                visibilityHandler.postMessage({
+                    hideNavigationDueToScroll: hidden,
+                    reason,
+                    source: 'nonEBookDocumentScroll',
+                    direction: bottomDeparture ? 'backward' : 'forward'
+                });
+                bottomRevealAwaitingDeparture = bottomArrival;
+                lastPostedScrollHidden.value = hidden;
+                return;
+            } catch (_error) {}
+        }
         if (lastPostedScrollHidden.value === hidden) {
             return;
         }
@@ -219,15 +250,31 @@ struct ReaderUnhandledTapUserScript {
 
     function handleDocumentScroll() {
         const currentX = window.scrollX || 0;
-        const maximumY = Math.max(0,
-            ((document.scrollingElement || document.documentElement)?.scrollHeight || 0) - window.innerHeight);
+        const maximumY = maximumScrollY();
+        const viewportHeight = window.innerHeight;
+        const scrollHeight = documentScrollHeight();
+        const rangeChanged = Math.abs(maximumY - lastMaximumScrollY) > 0.5
+            || Math.abs(viewportHeight - lastViewportHeight) > 0.5
+            || Math.abs(scrollHeight - lastDocumentScrollHeight) > 0.5;
         const currentY = Math.min(maximumY, Math.max(0, window.scrollY || 0));
         const previousY = Math.min(maximumY, Math.max(0, lastScrollPosition.y));
         const dx = currentX - lastScrollPosition.x;
         const dy = currentY - previousY;
         lastScrollPosition.x = currentX;
         lastScrollPosition.y = currentY;
+        lastMaximumScrollY = maximumY;
+        lastViewportHeight = viewportHeight;
+        lastDocumentScrollHeight = scrollHeight;
+        if (rangeChanged) {
+            accumulatedScroll.value = 0;
+            return;
+        }
         if (!scrollNavigationEnabled) {
+            accumulatedScroll.value = 0;
+            return;
+        }
+        if (\(requiresUserScrollIntent ? "true" : "false")
+            && Date.now() - lastTrustedScrollInputAt.value > USER_SCROLL_INTENT_LIFETIME_MS) {
             accumulatedScroll.value = 0;
             return;
         }
@@ -235,8 +282,16 @@ struct ReaderUnhandledTapUserScript {
             return;
         }
 
-        if (maximumY > 0 && currentY >= maximumY - 2 && dy > 0) {
+        const bottomThreshold = Math.max(0, maximumY - 2);
+        if (maximumY > 0 && previousY < bottomThreshold
+            && currentY >= bottomThreshold && dy > 0) {
             postHideNavigationForScroll(false, 'documentScrollBottom');
+            accumulatedScroll.value = 0;
+            return;
+        }
+        if (bottomRevealAwaitingDeparture && dy < 0) {
+            bottomRevealAwaitingDeparture = false;
+            postHideNavigationForScroll(false, 'documentScrollUp');
             accumulatedScroll.value = 0;
             return;
         }
@@ -259,7 +314,8 @@ struct ReaderUnhandledTapUserScript {
     window.addEventListener('pointerup', handlePointerUp, { capture: true, passive: true });
     window.addEventListener('pointercancel', handlePointerCancel, { capture: true, passive: true });
     for (const type of scrollInputEvents) {
-        window.addEventListener(type, enableScrollNavigation, { capture: true, passive: true });
+        // Bubble after target handlers so canceled input is excluded.
+        window.addEventListener(type, enableScrollNavigation, { passive: true });
     }
     window.addEventListener('scroll', handleDocumentScroll, { capture: true, passive: true });
 })();
