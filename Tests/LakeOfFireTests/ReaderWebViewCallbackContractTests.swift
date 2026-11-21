@@ -1,3 +1,4 @@
+import CoreText
 import XCTest
 import SwiftSoup
 @preconcurrency import WebKit
@@ -255,6 +256,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     private func withSharedFontWebView(
         syntheticDocument: (url: URL, html: String)? = nil,
         fontAsset: SharedReaderFontAsset? = nil,
+        readerFixture: (mode: ReaderModeViewModel, caller: WebViewScriptCaller)? = nil,
         _ operation: @MainActor (ReaderModeViewModel, WebViewScriptCaller, WKWebView, ReaderGeneratedReadinessFixture, URL) async throws -> Void
     ) async throws {
         let loaded = expectation(description: "Font test document loads")
@@ -288,7 +290,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         window.makeKeyAndVisible()
         host.view.layoutIfNeeded()
 #endif
-        let caller = WebViewScriptCaller()
+        let caller = readerFixture?.caller ?? WebViewScriptCaller()
         let bindingOwner = UUID()
         caller.installBinding(ownedBy: bindingOwner, asyncCaller: { source, arguments, frame, world in
             let result = try await webView.callAsyncJavaScript(source,
@@ -318,7 +320,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         }
         defer { withExtendedLifetime(navigation) {} }
         await fulfillment(of: [loaded], timeout: 10)
-        try await operation(ReaderModeViewModel(), caller, webView, fixture, url)
+        try await operation(readerFixture?.mode ?? ReaderModeViewModel(), caller, webView, fixture, url)
     }
 
     private func awaitCurrentFontGate(_ webView: WKWebView) async throws {
@@ -342,43 +344,96 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     func testRestoredHTTPSReaderDocumentRendersSelectedRoutedFont() async throws {
         let horizontal = "YuKyokasho"
         let vertical = "YuKyokasho Yoko"
+        // Use the actual downloadable faces on runtimes where Core Text has
+        // them. A system Japanese collection exercises the same route offline.
+        func installedFace(_ name: String, fallback: String) -> String {
+            let font = CTFontCreateWithName(name as CFString, 17, nil)
+            return CTFontCopyPostScriptName(font) as String == name ? name : fallback
+        }
+        let horizontalFace = installedFace("YuKyo-Medium", fallback: "HiraMinProN-W3")
+        let verticalFace = installedFace("YuKyo_Yoko-Medium", fallback: "HiraMinProN-W6")
+        XCTContext.runActivity(named: "Managed Japanese faces: \(horizontalFace), \(verticalFace)") { _ in }
         let asset = SharedReaderFontAsset(
-            systemFontNames: [horizontal: "Menlo-Regular", vertical: "Helvetica"],
+            systemFontNames: [horizontal: horizontalFace, vertical: verticalFace],
             horizontalFamilyName: horizontal, verticalFamilyName: vertical,
             enablesRuntimeResourceDelivery: true
         )
         let url = try XCTUnwrap(URL(string: "https://example.invalid/saved-article"))
         let html = """
             <!doctype html>
-            <html data-mnb-horizontal-font-family="Old Font" data-mnb-vertical-font-family="Old Font"
-                  style="--mnb-content-font: serif; --mnb-content-vertical-font: serif;">
+            <html lang="ja" data-mnb-horizontal-font-family="Old Font" data-mnb-vertical-font-family="Old Font"
+                  style="--mnb-content-font: system-ui; --mnb-content-vertical-font: system-ui;">
             <head><style>p { font-family: var(--mnb-content-font); }</style></head>
-            <body style="--mnb-content-font: serif; --mnb-content-vertical-font: serif;">
-            <p>iii WWW agile fox 123</p><canvas width="640" height="90"></canvas>
+            <body style="--mnb-content-font: system-ui; --mnb-content-vertical-font: system-ui;">
+            <p>日本語の文章を読みます。</p><canvas width="640" height="90"></canvas>
             </body></html>
             """
         let source = try XCTUnwrap(URL(string: "internal://local/?revision=\(sharedReaderFontRevisionPlaceholder)"))
         let css = try XCTUnwrap(sharedReaderFontFaceCSS(for: source, asset: asset))
             // The installed local face would hide a transport regression.
-            .replacingOccurrences(of: ", local('Menlo-Regular')", with: "")
+            .replacingOccurrences(of: ", local('\(horizontalFace)')", with: "")
         let acquireCSS = ReaderCallbackGate()
         let sourcePrepared = expectation(description: "Restored Reader document requests font CSS")
-        try await withSharedFontWebView(syntheticDocument: (url, html), fontAsset: asset) { mode, caller, webView, _, _ in
+        let commitGate = ReaderCallbackGate()
+        let commitEntered = expectation(description: "Physical Reader commit entered the semantic callback")
+        let fixture = makeReaderWebViewHandlerFixture()
+        let callbackReader = ReaderCallbackViewModel(
+            realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []
+        )
+        fixture.handler.readerViewModel = callbackReader
+        fixture.handler.readerMediaPlayerViewModel = ReaderCallbackMediaViewModel(readAloudController: ReaderReadAloudController())
+        callbackReader.beforeCommitReturns = {
+            commitEntered.fulfill()
+            await commitGate.wait()
+        }
+        let reader = fixture.readerContent
+        let (realm, row) = try cachedHistoryRecord(url: url, in: makeReaderHTMLRenderingRealm())
+        try realm.write {
+            row.html = html
+            row.isReaderModeByDefault = true
+            row.rssContainsFullContent = true
+        }
+        defer { withExtendedLifetime(realm) {} }
+        reader.pageURL = url
+        reader.content = row
+        let mode = fixture.readerModeViewModel
+        let navigator = fixture.handler.navigator
+        mode.navigator = navigator
+        mode.readerPublicationDateLoader = { _ in nil }
+        mode.readabilityContent = "<html><body><div id='reader-content'><p>Saved article.</p></div></body></html>"
+        // Preserve the production renderer's dispatch and generation, using the
+        // stale inline styles above as the final HTML sent to WebKit.
+        mode.processHTMLBytes = { _, _ in Array(html.utf8) }
+        mode.showReaderView(readerContent: reader, scriptCaller: fixture.handler.scriptCaller)
+        await mode.waitForReaderModeRender(for: url)
+        let generationString = try XCTUnwrap(mode.currentRenderGenerationDescription(for: url))
+        let generation = try XCTUnwrap(UUID(uuidString: generationString))
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+
+        try await withSharedFontWebView(
+            syntheticDocument: (url, html), fontAsset: asset,
+            readerFixture: (mode, fixture.handler.scriptCaller)
+        ) { mode, _, webView, _, _ in
             mode.sharedReaderFontAsset = asset
             mode.readerFontFamilyName = "Old Font"
             mode.sharedFontCSSBase64Provider = {
+                sourcePrepared.fulfill()
                 await acquireCSS.wait()
                 return Data(css.utf8).base64EncodedString()
             }
-            let injection = Task { @MainActor in
-                await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url, ownsSyntheticReaderDocument: true) {
-                    sourcePrepared.fulfill()
-                }
-            }
+            var state = WebViewState.empty
+            state.pageURL = url
+            fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+            fixture.handler.onNavigationCommitted(state: state)
+            await fulfillment(of: [commitEntered], timeout: 5)
+            XCTAssertTrue(mode.handleRenderedReaderDocumentReady(pageURL: url, hasReaderContent: true,
+                                                                  renderGeneration: generation, navigator: navigator))
+            XCTAssertNil(mode.expectedSyntheticReaderLoaderURL)
+            await commitGate.release()
             await fulfillment(of: [sourcePrepared], timeout: 5)
             mode.readerFontFamilyName = horizontal
             await acquireCSS.release()
-            await injection.value
+            try await XCTUnwrap(fixture.taskManager.onNavigationCommittedTask).value
             let result: Any?
             do {
                 result = try await webView.callAsyncJavaScript("""
@@ -408,7 +463,7 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                     vertical: document.body.style.getPropertyValue('--mnb-content-vertical-font'),
                     loaded: faces.length === 1 && faces[0].status === 'loaded',
                     drawsSelectedGlyphs: raster(stack) === raster(expected),
-                    differsFromFallback: raster(stack) !== raster('serif')
+                    differsFromFallback: raster(stack) !== raster('system-ui')
                 };
                 """, arguments: ["alias": asset.cssFontFaceFamilyName(for: horizontal)], in: nil, contentWorld: .page)
             } catch {
@@ -3182,6 +3237,7 @@ extension ReaderWebViewCallbackContractTests {
         if supersededByUserNavigation {
             fixture.handler.navigator.load(URLRequest(url: url))
             XCTAssertFalse(mode.expectsSyntheticReaderLoaderCommit(for: url))
+            XCTAssertFalse(mode.isIssuedPreparedReaderDocument(for: url, navigator: fixture.handler.navigator))
             state.urlTransitionIntent = WebViewURLTransitionIntent(
                 destinationURL: url, javaScriptBindingToken: binding
             )

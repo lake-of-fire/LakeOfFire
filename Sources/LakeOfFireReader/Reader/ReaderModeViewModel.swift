@@ -2083,6 +2083,15 @@ public class ReaderModeViewModel: ObservableObject {
 
     private var managedFontDocumentBinding: WebViewScriptCaller.JavaScriptBindingToken?
 
+    /// Capture the mounted document before semantic commit work can suspend.
+    /// Render readiness may already have dismissed the Reader loader by then.
+    func bindManagedFontsToPreparedReaderDocument(
+        pageURL: URL, scriptCaller: WebViewScriptCaller, navigator: WebViewNavigator
+    ) {
+        managedFontDocumentBinding = isIssuedPreparedReaderDocument(for: pageURL, navigator: navigator)
+            ? scriptCaller.currentJavaScriptBindingToken : nil
+    }
+
     /// The OS may finish installing a managed font after the reader first paints.
     public func refreshManagedFontsInSyntheticReaderDocument(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
         guard let binding = scriptCaller.currentJavaScriptBindingToken,
@@ -2094,7 +2103,6 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller,
         pageURL: URL,
         requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil,
-        ownsSyntheticReaderDocument: Bool = false,
         sourcePrepared: (@MainActor () -> Void)? = nil
     ) async {
         let bindingToken = bindingToken ?? scriptCaller.currentJavaScriptBindingToken
@@ -2289,9 +2297,6 @@ public class ReaderModeViewModel: ObservableObject {
 
         guard !pageURL.isReaderURLLoaderURL else {
             return
-        }
-        if ownsSyntheticReaderDocument, let bindingToken {
-            managedFontDocumentBinding = bindingToken
         }
         let managedAsset = bindingToken != nil && bindingToken == managedFontDocumentBinding
             && ["http", "https"].contains(pageURL.scheme?.lowercased() ?? "")
@@ -2567,6 +2572,13 @@ public class ReaderModeViewModel: ObservableObject {
         var urlTransitionIntentID: UUID?
     }
     private var expectedSyntheticReaderNavigation: PreparedReaderNavigation?
+
+    func isIssuedPreparedReaderDocument(for url: URL, navigator: WebViewNavigator) -> Bool {
+        guard let dispatched = expectedSyntheticReaderNavigation else { return false }
+        return dispatched.navigator === navigator
+            && navigator.isCurrent(dispatched.intent)
+            && urlsMatchWithoutHashForHotfix(dispatched.url, url)
+    }
 
     private func preparedReaderNavigationIsCurrent() -> Bool {
         guard let dispatched = expectedSyntheticReaderNavigation else { return false }
@@ -4131,8 +4143,7 @@ public class ReaderModeViewModel: ObservableObject {
             await injectSharedFontIfNeeded(
                 scriptCaller: scriptCaller,
                 pageURL: committedURL,
-                requiring: navigationBindingToken,
-                ownsSyntheticReaderDocument: ownsSyntheticReaderDocument
+                requiring: navigationBindingToken
             )
             try requireCurrentDocument()
             ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
@@ -4153,7 +4164,8 @@ public class ReaderModeViewModel: ObservableObject {
         }
         try requireCurrentDocument()
 
-        if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
+        if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL)
+            || (!isSameDocumentNavigation && isIssuedPreparedReaderDocument(for: newState.pageURL, navigator: navigator)) {
             return
         }
 
