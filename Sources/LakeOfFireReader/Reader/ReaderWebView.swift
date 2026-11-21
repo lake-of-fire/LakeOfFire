@@ -575,8 +575,6 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.processHTML = readerModeViewModel.processHTML
             ebookURLSchemeHandler.sharedFontCSSBase64 = readerModeViewModel.sharedFontCSSBase64
             ebookURLSchemeHandler.sharedFontCSSBase64Provider = readerModeViewModel.sharedFontCSSBase64Provider
-            ebookURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
-            readerFileURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
         }
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
@@ -660,6 +658,11 @@ fileprivate struct ReaderWebViewInternal: View {
     }
     
     public var body: some View {
+        // Mount the scheme handlers with their font asset already configured.
+        // A restored page can request its stylesheet as soon as WebKit attaches.
+        let _ = internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
+        let _ = readerFileURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
+        let _ = ebookURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
 #if os(iOS)
         let webViewPrewarmer: WebViewPrewarmer? = self.webViewPrewarmer
 #else
@@ -737,9 +740,6 @@ fileprivate struct ReaderWebViewInternal: View {
         .onAppear {
         }
         .onDisappear {
-        }
-        .task(id: sharedReaderFontAsset) { @MainActor in
-            internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
         }
     }
 }

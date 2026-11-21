@@ -1,5 +1,6 @@
 import XCTest
 @testable import LakeOfFireFiles
+@testable import LakeOfFireReader
 
 final class SharedReaderFontTests: XCTestCase {
     private func makeFontAsset() throws -> SharedReaderFontAsset {
@@ -54,6 +55,29 @@ final class SharedReaderFontTests: XCTestCase {
         XCTAssertTrue(sharedReaderFontUsesLocalScheme(for: URL(string: "internal://local/snippet?key=test")!))
         XCTAssertTrue(sharedReaderFontUsesLocalScheme(for: URL(string: "reader-file://file/example.html")!))
         XCTAssertFalse(sharedReaderFontUsesLocalScheme(for: URL(string: "https://example.com/article")!))
+    }
+
+    func testPlaceholderLoaderSkipsFontWaitButOwnedSyntheticDocumentKeepsSetup() {
+        let loaderURL = URL(
+            string: "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.com%2Farticle"
+        )!
+        XCTAssertFalse(
+            ReaderModeViewModel.shouldInjectSharedFontForCommittedNavigation(at: loaderURL),
+            "An unowned placeholder loader must not wait for optional font delivery"
+        )
+        XCTAssertTrue(
+            ReaderModeViewModel.shouldInjectSharedFontForCommittedNavigation(
+                at: loaderURL,
+                ownsSyntheticReaderDocument: true
+            ),
+            "A loader commit explicitly owned by the prepared synthetic document retains font setup"
+        )
+        XCTAssertTrue(
+            ReaderModeViewModel.shouldInjectSharedFontForCommittedNavigation(
+                at: URL(string: "https://example.com/article")!
+            ),
+            "The rendered destination keeps its normal font setup"
+        )
     }
 
     func testSharedReaderFontInjectionModeUsesLocalSchemesAndBlobFallbackElsewhere() {

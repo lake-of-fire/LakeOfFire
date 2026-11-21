@@ -253,6 +253,8 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
 final class ReaderWebViewCallbackContractTests: XCTestCase {
 
     private func withSharedFontWebView(
+        syntheticDocument: (url: URL, html: String)? = nil,
+        fontAsset: SharedReaderFontAsset? = nil,
         _ operation: @MainActor (ReaderModeViewModel, WebViewScriptCaller, WKWebView, ReaderGeneratedReadinessFixture, URL) async throws -> Void
     ) async throws {
         let loaded = expectation(description: "Font test document loads")
@@ -264,7 +266,13 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = controller
         configuration.websiteDataStore = .nonPersistent()
-        configuration.setURLSchemeHandler(fixture, forURLScheme: "internal")
+        if let fontAsset {
+            let handler = InternalURLSchemeHandler()
+            handler.sharedReaderFontAsset = fontAsset
+            configuration.setURLSchemeHandler(handler, forURLScheme: "internal")
+        } else {
+            configuration.setURLSchemeHandler(fixture, forURLScheme: "internal")
+        }
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 430, height: 932), configuration: configuration)
         webView.navigationDelegate = fixture
 #if os(iOS)
@@ -300,8 +308,15 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             previousKeyWindow?.makeKeyAndVisible()
 #endif
         }
-        let url = URL(string: "internal://local/snippet?key=font-revision-fixture")!
-        webView.load(URLRequest(url: url))
+        let url = syntheticDocument?.url ?? URL(string: "internal://local/snippet?key=font-revision-fixture")!
+        let navigation: WKNavigation?
+        if let syntheticDocument {
+            navigation = webView.load(Data(syntheticDocument.html.utf8), mimeType: "text/html",
+                                      characterEncodingName: "UTF-8", baseURL: url)
+        } else {
+            navigation = webView.load(URLRequest(url: url))
+        }
+        defer { withExtendedLifetime(navigation) {} }
         await fulfillment(of: [loaded], timeout: 10)
         try await operation(ReaderModeViewModel(), caller, webView, fixture, url)
     }
@@ -322,6 +337,98 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             }
             return true;
             """, arguments: [:], in: nil, contentWorld: .page)
+    }
+
+    func testRestoredHTTPSReaderDocumentRendersSelectedRoutedFont() async throws {
+        let horizontal = "YuKyokasho"
+        let vertical = "YuKyokasho Yoko"
+        let asset = SharedReaderFontAsset(
+            systemFontNames: [horizontal: "Menlo-Regular", vertical: "Helvetica"],
+            horizontalFamilyName: horizontal, verticalFamilyName: vertical,
+            enablesRuntimeResourceDelivery: true
+        )
+        let url = try XCTUnwrap(URL(string: "https://example.invalid/saved-article"))
+        let html = """
+            <!doctype html>
+            <html data-mnb-horizontal-font-family="Old Font" data-mnb-vertical-font-family="Old Font"
+                  style="--mnb-content-font: serif; --mnb-content-vertical-font: serif;">
+            <head><style>p { font-family: var(--mnb-content-font); }</style></head>
+            <body style="--mnb-content-font: serif; --mnb-content-vertical-font: serif;">
+            <p>iii WWW agile fox 123</p><canvas width="640" height="90"></canvas>
+            </body></html>
+            """
+        let source = try XCTUnwrap(URL(string: "internal://local/?revision=\(sharedReaderFontRevisionPlaceholder)"))
+        let css = try XCTUnwrap(sharedReaderFontFaceCSS(for: source, asset: asset))
+            // The installed local face would hide a transport regression.
+            .replacingOccurrences(of: ", local('Menlo-Regular')", with: "")
+        let acquireCSS = ReaderCallbackGate()
+        let sourcePrepared = expectation(description: "Restored Reader document requests font CSS")
+        try await withSharedFontWebView(syntheticDocument: (url, html), fontAsset: asset) { mode, caller, webView, _, _ in
+            mode.sharedReaderFontAsset = asset
+            mode.readerFontFamilyName = "Old Font"
+            mode.sharedFontCSSBase64Provider = {
+                await acquireCSS.wait()
+                return Data(css.utf8).base64EncodedString()
+            }
+            let injection = Task { @MainActor in
+                await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url, ownsSyntheticReaderDocument: true) {
+                    sourcePrepared.fulfill()
+                }
+            }
+            await fulfillment(of: [sourcePrepared], timeout: 5)
+            mode.readerFontFamilyName = horizontal
+            await acquireCSS.release()
+            await injection.value
+            let result: Any?
+            do {
+                result = try await webView.callAsyncJavaScript("""
+                const sheet = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
+                const sheetState = sheet ? await sheet.ready : 'missing';
+                const text = document.querySelector('p');
+                const canvas = document.querySelector('canvas');
+                const context = canvas.getContext('2d');
+                const stack = getComputedStyle(text).fontFamily;
+                const expected = '"' + alias + '"';
+                const raster = family => {
+                    context.clearRect(0, 0, canvas.width, canvas.height);
+                    context.font = '42px ' + family;
+                    context.fillText(text.textContent, 8, 56);
+                    return canvas.toDataURL();
+                };
+                let faces = [];
+                let fontError = '';
+                try { faces = await document.fonts.load('42px ' + expected, text.textContent); }
+                catch (error) { fontError = String(error); }
+                return {
+                    base: document.baseURI,
+                    href: document.getElementById('mnb-custom-fonts-inline')?.href || '',
+                    sheetState,
+                    fontError,
+                    horizontal: document.body.style.getPropertyValue('--mnb-content-font'),
+                    vertical: document.body.style.getPropertyValue('--mnb-content-vertical-font'),
+                    loaded: faces.length === 1 && faces[0].status === 'loaded',
+                    drawsSelectedGlyphs: raster(stack) === raster(expected),
+                    differsFromFallback: raster(stack) !== raster('serif')
+                };
+                """, arguments: ["alias": asset.cssFontFaceFamilyName(for: horizontal)], in: nil, contentWorld: .page)
+            } catch {
+                XCTFail("Could not inspect the final HTTPS Reader document: \(error as NSError)")
+                return
+            }
+            let checks = try XCTUnwrap(result as? [String: Any])
+            XCTAssertEqual(checks["base"] as? String, url.absoluteString)
+            XCTAssertTrue((checks["href"] as? String)?.hasPrefix("blob:") == true)
+            XCTAssertEqual(checks["sheetState"] as? String, "loaded")
+            XCTAssertEqual(checks["fontError"] as? String, "")
+            let directionalStacks = ["horizontal": horizontal, "vertical": vertical]
+            for (direction, family) in directionalStacks {
+                let expected = "\(asset.cssFontFamilyList(for: family)), system-ui"
+                XCTAssertEqual((checks[direction] as? String)?.replacingOccurrences(of: "\"", with: "'"), expected)
+            }
+            for key in ["loaded", "drawsSelectedGlyphs", "differsFromFallback"] {
+                XCTAssertEqual(checks[key] as? Bool, true, key)
+            }
+        }
     }
 
     func testSharedFontInjectionRetriesFailedStylesheetWithCurrentRevisionAndRejectsDowngrade() async throws {
@@ -453,6 +560,51 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             try await self.awaitCurrentFontGate(webView)
             let stable = try await webView.evaluateJavaScript("window.__lateFontBlobCount")
             XCTAssertEqual(stable as? Int, 2)
+        }
+    }
+
+    func testAbandonedFontSourceSettlesAndPreservesInstalledStylesheet() async throws {
+        try await withSharedFontWebView { mode, caller, webView, _, _ in
+            let url = try XCTUnwrap(URL(string: "https://example.invalid/saved-article"))
+            mode.sharedFontCSSBase64Provider = { Data("html { color: inherit; }".utf8).base64EncodedString() }
+            mode.readerFontAvailabilityRevisionProvider = { 1 }
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
+            try await awaitCurrentFontGate(webView)
+
+            for cancelTask in [true, false] {
+                let preparing = self.expectation(description: "The replacement font source is preparing")
+                let gate = ReaderCallbackGate()
+                mode.sharedFontCSSBase64Provider = {
+                    await gate.wait()
+                    return Data("html { color: black; }".utf8).base64EncodedString()
+                }
+                let refresh = Task { @MainActor in
+                    await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url) {
+                        preparing.fulfill()
+                    }
+                }
+                await self.fulfillment(of: [preparing], timeout: 5)
+                do {
+                    _ = try await webView.callAsyncJavaScript("""
+                        window.__pendingFontSource = globalThis.manabiReaderFontStyleInstallation.stylesheet;
+                        if (!cancelTask) globalThis.manabiReaderFontAvailabilityRevision = '2';
+                        return window.__pendingFontSource.state;
+                        """, arguments: ["cancelTask": cancelTask], in: nil, contentWorld: .page)
+                } catch {
+                    await gate.release()
+                    await refresh.value
+                    throw error
+                }
+                if cancelTask { refresh.cancel() }
+                await gate.release()
+                await refresh.value
+                let restored = try await webView.evaluateJavaScript("""
+                    window.__pendingFontSource.state === 'failed'
+                        && globalThis.manabiReaderFontStyleInstallation.stylesheet === window.__pendingFontSource.previousStylesheet
+                        && globalThis.manabiReaderFontStyleInstallation.stylesheet.state === 'loaded'
+                    """)
+                XCTAssertEqual(restored as? Bool, true, cancelTask ? "Canceled task" : "Superseded revision")
+            }
         }
     }
 
@@ -2103,6 +2255,13 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             fixture.readerModeViewModel.readabilityContent = html
             let entered = expectation(description: "Mode finish suspended: \(change)")
             let gate = ReaderCallbackGate()
+            fixture.handler.scriptCaller.installBinding(
+                ownedBy: UUID(), asyncCaller: { _, arguments, _, _ in
+                    if arguments?["sourceID"] != nil { return .init(true) }
+                    return .init(nil)
+                },
+                unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+            )
             fixture.readerModeViewModel.sharedFontCSSBase64Provider = {
                 entered.fulfill()
                 await gate.wait()

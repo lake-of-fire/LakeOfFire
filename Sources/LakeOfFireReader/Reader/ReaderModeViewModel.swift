@@ -2081,10 +2081,20 @@ public class ReaderModeViewModel: ObservableObject {
         }
     }
 
+    private var managedFontDocumentBinding: WebViewScriptCaller.JavaScriptBindingToken?
+
+    /// The OS may finish installing a managed font after the reader first paints.
+    public func refreshManagedFontsInSyntheticReaderDocument(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
+        guard let binding = scriptCaller.currentJavaScriptBindingToken,
+              binding == managedFontDocumentBinding else { return }
+        await beginSharedFontInjection(scriptCaller: scriptCaller, pageURL: pageURL, requiring: binding)
+    }
+
     func injectSharedFontIfNeeded(
         scriptCaller: WebViewScriptCaller,
         pageURL: URL,
         requiring bindingToken: WebViewScriptCaller.JavaScriptBindingToken? = nil,
+        ownsSyntheticReaderDocument: Bool = false,
         sourcePrepared: (@MainActor () -> Void)? = nil
     ) async {
         let bindingToken = bindingToken ?? scriptCaller.currentJavaScriptBindingToken
@@ -2280,31 +2290,77 @@ public class ReaderModeViewModel: ObservableObject {
         guard !pageURL.isReaderURLLoaderURL else {
             return
         }
+        if ownsSyntheticReaderDocument, let bindingToken {
+            managedFontDocumentBinding = bindingToken
+        }
+        let managedAsset = bindingToken != nil && bindingToken == managedFontDocumentBinding
+            && ["http", "https"].contains(pageURL.scheme?.lowercased() ?? "")
+            ? sharedReaderFontAsset.flatMap { $0.enablesRuntimeResourceDelivery ? $0 : nil } : nil
+        let duplicateInMultiTargetFrames = managedAsset == nil
+        let fontRevision = String(readerFontAvailabilityRevisionProvider())
         let sourceID = UUID().uuidString
         guard accountIsCurrent(), !Task.isCancelled else { return }
-        let preparationResult = try? await evaluateReaderDocumentJavaScript(
-            "return (\(sharedReaderFontSourcePreparationJavaScript))(sourceID, fontRevision);",
-            arguments: ["sourceID": sourceID, "fontRevision": String(readerFontAvailabilityRevisionProvider())],
-            duplicateInMultiTargetFrames: true,
-            scriptCaller: scriptCaller, requiring: bindingToken)
-        guard preparationResult as? Bool == true else { return }
+        let prepareSource = "(\(sharedReaderFontSourcePreparationJavaScript))(sourceID, fontRevision)"
+        let preparationScript = managedAsset == nil ? "return \(prepareSource);" : """
+            if (!\(prepareSource)) return null;
+            return globalThis.manabiReaderManagedFontResources?.revision === fontRevision ? 'reuse' : 'prepare';
+            """
+        let failSource = """
+            if (sourceReceipt.previousStylesheet) {
+                globalThis.manabiReaderFontStyleInstallation.stylesheet = sourceReceipt.previousStylesheet;
+            }
+            sourceReceipt.complete('failed');
+            """
+        func failCurrentSource() async {
+            // The script caller rejects a canceled task even when its document is current.
+            await Task { @MainActor in
+                _ = try? await self.evaluateReaderDocumentJavaScript(
+                    """
+                    const sourceReceipt = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
+                    if (sourceReceipt?.sourceID === sourceID && sourceReceipt.root === document.documentElement) {
+                        \(failSource)
+                    }
+                    """,
+                    arguments: ["sourceID": sourceID], duplicateInMultiTargetFrames: duplicateInMultiTargetFrames,
+                    scriptCaller: scriptCaller, requiring: bindingToken)
+            }.value
+        }
+        let preparationResult: Any?
+        do {
+            preparationResult = try await evaluateReaderDocumentJavaScript(
+                preparationScript,
+                arguments: ["sourceID": sourceID, "fontRevision": fontRevision],
+                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames,
+                scriptCaller: scriptCaller, requiring: bindingToken)
+        } catch {
+            await failCurrentSource()
+            return
+        }
+        let managedResourcePreparation = preparationResult as? String
+        guard preparationResult as? Bool == true || managedResourcePreparation != nil else { return }
         sourcePrepared?()
         let base64CSS = await resolveSharedReaderFontCSSBase64()
         guard accountIsCurrent(), !Task.isCancelled,
               ownsReaderDocumentBinding(bindingToken, scriptCaller: scriptCaller),
               let blobPayload = readerModeSharedFontBlobPayloadCache.payload(base64CSS: base64CSS) else {
-            _ = try? await evaluateReaderDocumentJavaScript(
-                """
-                const receipt = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
-                if (receipt?.sourceID === sourceID) {
-                    if (receipt.previousStylesheet) {
-                        globalThis.manabiReaderFontStyleInstallation.stylesheet = receipt.previousStylesheet;
-                    }
-                    receipt.complete('failed');
-                }
-                """,
-                arguments: ["sourceID": sourceID], duplicateInMultiTargetFrames: true,
-                scriptCaller: scriptCaller, requiring: bindingToken)
+            await failCurrentSource()
+            return
+        }
+        var embeddedFonts: [[String: any Sendable]] = []
+        var didResolveEmbeddedFonts = false
+        if let managedAsset, managedResourcePreparation == "prepare",
+           managedAsset.supportsFamily(readerFontFamilyName),
+           let stylesheet = Data(base64Encoded: blobPayload.base64CSS).flatMap({ String(data: $0, encoding: .utf8) }),
+           let sourceURL = URL(string: "internal://local/?revision=\(sharedReaderFontRevisionPlaceholder)") {
+            let resources = await Task.detached(priority: .userInitiated) {
+                sharedReaderFontDocumentResources(asset: managedAsset, sourceURL: sourceURL, stylesheet: stylesheet)
+            }.value
+            embeddedFonts = resources.map { ["base64": $0.base64, "mimeType": $0.mimeType, "sourceURLs": $0.sourceURLs] }
+            didResolveEmbeddedFonts = true
+        }
+        guard accountIsCurrent(), !Task.isCancelled,
+              ownsReaderDocumentBinding(bindingToken, scriptCaller: scriptCaller) else {
+            await failCurrentSource()
             return
         }
         let fontHash = blobPayload.identity
@@ -2315,7 +2371,10 @@ public class ReaderModeViewModel: ObservableObject {
                 const sourceReceipt = globalThis.manabiReaderFontStyleInstallation?.stylesheet;
                 if (sourceReceipt?.sourceID !== fontSourceID || sourceReceipt.root !== root) return;
                 const revision = String(fontRevision);
-                if (BigInt(revision) < BigInt(String(globalThis.manabiReaderFontAvailabilityRevision || '0'))) return;
+                if (BigInt(revision) < BigInt(String(globalThis.manabiReaderFontAvailabilityRevision || '0'))) {
+                    \(failSource)
+                    return;
+                }
                 const previousInstallation = globalThis.manabiReaderFontStyleInstallation;
                 const installation = {};
                 const installStylesheet = \(sharedReaderFontStylesheetInstallerJavaScript);
@@ -2333,10 +2392,31 @@ public class ReaderModeViewModel: ObservableObject {
                         root.dataset.mnbFontReady = '1';
                     }
                 };
-                const cssTemplate = atob(fontCSSBase64);
+                let cssTemplate = atob(fontCSSBase64);
+                const previousResources = globalThis.manabiReaderManagedFontResources;
+                let resources = previousResources;
+                if (refreshEmbeddedFonts && resources?.revision !== revision) {
+                    resources = { revision, URLs: [], replacements: new Map() };
+                    for (const font of embeddedFonts) {
+                        const raw = atob(font.base64);
+                        const bytes = new Uint8Array(raw.length);
+                        for (let index = 0; index < raw.length; index++) bytes[index] = raw.charCodeAt(index);
+                        const url = URL.createObjectURL(new Blob([bytes], { type: font.mimeType }));
+                        resources.URLs.push(url);
+                        for (const source of font.sourceURLs) {
+                            const fragment = source.indexOf('#');
+                            resources.replacements.set(source, fragment === -1 ? url : url + source.slice(fragment));
+                        }
+                    }
+                    globalThis.manabiReaderManagedFontResources = resources;
+                }
+                for (const [source, url] of resources?.replacements ?? []) {
+                    cssTemplate = cssTemplate.replaceAll(source, url);
+                }
+                const stylesheetHash = resources ? fontHash + '-embedded-' + resources.revision : fontHash;
                 const css = cssTemplate.replaceAll("\(sharedReaderFontRevisionPlaceholder)", revision);
                 globalThis.manabiReaderFontCSSText = cssTemplate;
-                globalThis.manabiReaderFontCSSHash = fontHash;
+                globalThis.manabiReaderFontCSSHash = stylesheetHash;
                 globalThis.manabiReaderFontInjectionMode = 'blob';
                 const ensureReaderFontStyle = desiredFamily => {
                     if (!ownsInstallation()) return null;
@@ -2349,7 +2429,7 @@ public class ReaderModeViewModel: ObservableObject {
                     if (style.tagName === 'LINK') {
                         let href = style.href;
                         let previousBlobURL = null;
-                        if (!href || style.dataset.mnbFontHash !== fontHash
+                        if (!href || style.dataset.mnbFontHash !== stylesheetHash
                             || style.dataset.mnbFontRevision !== revision) {
                             href = URL.createObjectURL(new Blob([css], { type: 'text/css' }));
                             previousBlobURL = globalThis.manabiReaderFontCSSBlobURL;
@@ -2363,9 +2443,14 @@ public class ReaderModeViewModel: ObservableObject {
                         style.textContent = css;
                         previousInstallation?.stylesheet?.cancel();
                     }
-                    style.dataset.mnbFontHash = fontHash;
+                    style.dataset.mnbFontHash = stylesheetHash;
                     style.dataset.mnbFontRevision = revision;
-                    if (desiredFamily) style.dataset.mnbInjectedFontFamily = desiredFamily;
+                    if (desiredFamily) {
+                        style.dataset.mnbInjectedFontFamily = desiredFamily;
+                        root.dataset.mnbInjectedFontFamily = desiredFamily;
+                    }
+                    style.dataset.mnbHorizontalFontCSSValue = horizontalFontCSSValue;
+                    style.dataset.mnbVerticalFontCSSValue = verticalFontCSSValue;
                     if (!style.isConnected) (document.head || root).appendChild(style);
                     root.dataset.mnbFontInjected = '1';
                     return style;
@@ -2402,25 +2487,26 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                 };
                 return (async () => {
-                    // Settings can change while native CSS acquisition awaits.
-                    // The shared asset serves every family; retain that latest
-                    // published choice instead of restoring the captured one.
-                    const currentHorizontalFamily = root.dataset.mnbHorizontalFontFamily
-                        || globalThis.manabiHorizontalFontFamilyName || horizontalFontFamily;
-                    const currentVerticalFamily = root.dataset.mnbVerticalFontFamily
-                        || globalThis.manabiVerticalFontFamilyName || verticalFontFamily;
-                    if (currentHorizontalFamily) {
-                        globalThis.manabiHorizontalFontFamilyName = currentHorizontalFamily;
-                        root.dataset.mnbHorizontalFontFamily = currentHorizontalFamily;
+                    // Restored HTML can carry inline values from its previous render.
+                    // Apply the live selection to both scopes before opening the gate.
+                    globalThis.manabiHorizontalFontFamilyName = horizontalFontFamily;
+                    globalThis.manabiVerticalFontFamilyName = verticalFontFamily;
+                    root.dataset.mnbHorizontalFontFamily = horizontalFontFamily;
+                    root.dataset.mnbVerticalFontFamily = verticalFontFamily;
+                    const body = document.body;
+                    for (const element of [root, body]) {
+                        element?.style.setProperty('--mnb-content-font', horizontalFontCSSValue);
+                        element?.style.setProperty('--mnb-content-vertical-font', verticalFontCSSValue);
                     }
-                    if (currentVerticalFamily) {
-                        globalThis.manabiVerticalFontFamilyName = currentVerticalFamily;
-                        root.dataset.mnbVerticalFontFamily = currentVerticalFamily;
-                    }
-                    const direction = document.body?.dataset?.mnbWritingDirection || root.dataset.mnbWritingDirection;
-                    const family = direction === 'vertical' ? currentVerticalFamily : currentHorizontalFamily;
+                    const direction = body?.dataset.mnbWritingDirection || root.dataset.mnbWritingDirection;
+                    const isVertical = direction === 'vertical'
+                        || (direction !== 'horizontal' && body?.classList.contains('reader-vertical-writing'));
+                    const family = isVertical ? verticalFontFamily : horizontalFontFamily;
                     setFontPendingState(true);
                     ensureReaderFontStyle(family);
+                    if (previousResources !== resources) {
+                        for (const url of previousResources?.URLs ?? []) URL.revokeObjectURL(url);
+                    }
                     window.manabiApplyDirectionalInjectedFont?.();
                     try { globalThis.manabiForwardReaderFontToEbookDocuments?.('readerMode-blob-inject'); } catch (_) {}
                     try { window.parent?.manabiForwardReaderFontToEbookDocuments?.('readerMode-blob-inject-child'); } catch (_) {}
@@ -2435,22 +2521,37 @@ public class ReaderModeViewModel: ObservableObject {
                 });
             })();
             """
-        guard accountIsCurrent() else { return }
-        _ = try? await evaluateReaderDocumentJavaScript(
-            js,
-            arguments: [
-                "fontCSSBase64": blobPayload.base64CSS,
-                "fontHash": fontHash,
-                "fontSourceID": sourceID,
-                "fontRevision": String(readerFontAvailabilityRevisionProvider()),
-                "horizontalFontFamily": fontValues.horizontalFamily,
-                "verticalFontFamily": fontValues.verticalFamily,
-                "fontFaceFamilies": fontFaceFamilies,
-            ],
-            duplicateInMultiTargetFrames: true,
-            scriptCaller: scriptCaller,
-            requiring: bindingToken
-        )
+        // The CSS provider can suspend while the user changes the font. Resolve
+        // the latest choice here instead of trusting restored document markers.
+        let horizontalFamily = readerFontFamilyName
+        let verticalFamily = sharedReaderFontAsset.flatMap {
+            $0.horizontalFamilyName == horizontalFamily ? $0.verticalFamilyName : nil
+        } ?? readerFontCSSValues(horizontalFamily: horizontalFamily).verticalFamily
+        let horizontalStack = sharedReaderFontAsset?.cssFontFamilyList(for: horizontalFamily) ?? "'\(horizontalFamily)'"
+        let verticalStack = sharedReaderFontAsset?.cssFontFamilyList(for: verticalFamily) ?? "'\(verticalFamily)'"
+        do {
+            _ = try await evaluateReaderDocumentJavaScript(
+                js,
+                arguments: [
+                    "fontCSSBase64": blobPayload.base64CSS,
+                    "fontHash": fontHash,
+                    "fontSourceID": sourceID,
+                    "fontRevision": fontRevision,
+                    "refreshEmbeddedFonts": didResolveEmbeddedFonts,
+                    "embeddedFonts": embeddedFonts,
+                    "horizontalFontFamily": horizontalFamily,
+                    "verticalFontFamily": verticalFamily,
+                    "horizontalFontCSSValue": "\(horizontalStack), system-ui",
+                    "verticalFontCSSValue": "\(verticalStack), system-ui",
+                    "fontFaceFamilies": fontFaceFamilies,
+                ],
+                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames,
+                scriptCaller: scriptCaller,
+                requiring: bindingToken
+            )
+        } catch {
+            await failCurrentSource()
+        }
     }
     
     public func isReaderModeVisibleInMenu(content: any ReaderContentProtocol) -> Bool {
@@ -4020,27 +4121,34 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
 
-        ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
-        await injectSharedFontIfNeeded(
-            scriptCaller: scriptCaller,
-            pageURL: committedURL,
-            requiring: navigationBindingToken
-        )
-        try requireCurrentDocument()
-        ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
-        if !scriptCaller.hasAsyncCaller {
-        } else {
-            do {
-                _ = try await evaluateReaderDocumentJavaScript(
-                    "window.paginationTrackingBookKey = bookKey;",
-                    arguments: ["bookKey": newState.pageURL.absoluteString],
-                    duplicateInMultiTargetFrames: true,
-                    scriptCaller: scriptCaller,
-                    requiring: navigationBindingToken
-                )
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
+        let ownsSyntheticReaderDocument = expectedSyntheticReaderNavigation != nil
+            && expectsSyntheticReaderLoaderCommit(for: newState.pageURL)
+        if Self.shouldInjectSharedFontForCommittedNavigation(
+            at: newState.pageURL,
+            ownsSyntheticReaderDocument: ownsSyntheticReaderDocument
+        ) {
+            ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
+            await injectSharedFontIfNeeded(
+                scriptCaller: scriptCaller,
+                pageURL: committedURL,
+                requiring: navigationBindingToken,
+                ownsSyntheticReaderDocument: ownsSyntheticReaderDocument
+            )
+            try requireCurrentDocument()
+            ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
+            if scriptCaller.hasAsyncCaller {
+                do {
+                    _ = try await evaluateReaderDocumentJavaScript(
+                        "window.paginationTrackingBookKey = bookKey;",
+                        arguments: ["bookKey": newState.pageURL.absoluteString],
+                        duplicateInMultiTargetFrames: true,
+                        scriptCaller: scriptCaller,
+                        requiring: navigationBindingToken
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                }
             }
         }
         try requireCurrentDocument()
@@ -4093,18 +4201,17 @@ public class ReaderModeViewModel: ObservableObject {
             }
             try requireCurrentDocument()
             if let html {
-                let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
-                try requireCurrentDocument()
-                if committedURL.isSnippetURL,
-                   let snippetHTML = buildSnippetCanonicalReadabilityHTML(
-                    html: html,
-                    contentURL: committedURL,
-                    fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
-                    publishedTime: publicationDateFallback,
-                    preferredTitle: content.title,
-                    hideReaderTitleOverride: content.isTitlePrefixOfContent
-                   ) {
-                    readabilityContent = snippetHTML
+                if committedURL.isSnippetURL {
+                    let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                    try requireCurrentDocument()
+                    readabilityContent = buildSnippetCanonicalReadabilityHTML(
+                        html: html,
+                        contentURL: committedURL,
+                        fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
+                        publishedTime: publicationDateFallback,
+                        preferredTitle: content.title,
+                        hideReaderTitleOverride: content.isTitlePrefixOfContent
+                    ) ?? (hasCanonicalReadabilityMarkup(in: html) ? html : nil)
                 } else if hasCanonicalReadabilityMarkup(in: html) {
                     readabilityContent = html
                 } else {
@@ -4120,6 +4227,13 @@ public class ReaderModeViewModel: ObservableObject {
                 navigator.load(URLRequest(url: committedURL))
             }
         }
+    }
+
+    nonisolated static func shouldInjectSharedFontForCommittedNavigation(
+        at pageURL: URL,
+        ownsSyntheticReaderDocument: Bool = false
+    ) -> Bool {
+        !pageURL.isReaderURLLoaderURL || ownsSyntheticReaderDocument
     }
     
     @MainActor
