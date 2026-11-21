@@ -623,10 +623,16 @@ private struct ReaderContentPublicationDateSnapshot: Sendable {
     let contentType: String
 }
 
-private struct ReaderContentRenderSnapshot: Sendable {
+private struct ReaderContentRenderSnapshot: Equatable, Sendable {
     let url: URL
     let title: String
     let isTitlePrefixOfContent: Bool
+
+    @MainActor init(content: any ReaderContentProtocol) {
+        url = content.url
+        title = content.title
+        isTitlePrefixOfContent = content.isTitlePrefixOfContent
+    }
 }
 
 private func formattedReaderContentPublicationDate(_ snapshot: ReaderContentPublicationDateSnapshot) -> String {
@@ -3019,11 +3025,7 @@ public class ReaderModeViewModel: ObservableObject {
         guard let content = try await readerContent.getContent() else {
             return nil
         }
-        return ReaderContentRenderSnapshot(
-            url: content.url,
-            title: content.title,
-            isTitlePrefixOfContent: content.isTitlePrefixOfContent
-        )
+        return ReaderContentRenderSnapshot(content: content)
     }
     
     @MainActor
@@ -3047,7 +3049,8 @@ public class ReaderModeViewModel: ObservableObject {
     private func showReaderView(
         readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller,
-        navigator: WebViewNavigator
+        navigator: WebViewNavigator,
+        preparedSnippetSnapshot: ReaderContentRenderSnapshot? = nil
     ) {
         let contentURL = readerContent.pageURL
         let cachedReadabilityContent = readabilityContent
@@ -3124,26 +3127,31 @@ public class ReaderModeViewModel: ObservableObject {
                           await originatingContentIsCurrent() else {
                         return
                     }
-                    let publicationDateFallback: String?
-                    if cachedReadabilityContent.contains("id=\"reader-publication-date\"") {
-                        publicationDateFallback = nil
-                    } else if let publicationDateLoader {
-                        publicationDateFallback = await publicationDateLoader(contentURL)
+                    let resolvedReadabilityContent: String?
+                    if let preparedSnippetSnapshot, contentSnapshot == preparedSnippetSnapshot {
+                        resolvedReadabilityContent = cachedReadabilityContent
                     } else {
-                        publicationDateFallback = await readerContentPublicationDateFallback(for: contentURL)
+                        let publicationDateFallback: String?
+                        if cachedReadabilityContent.contains("id=\"reader-publication-date\"") {
+                            publicationDateFallback = nil
+                        } else if let publicationDateLoader {
+                            publicationDateFallback = await publicationDateLoader(contentURL)
+                        } else {
+                            publicationDateFallback = await readerContentPublicationDateFallback(for: contentURL)
+                        }
+                        guard await self.isCurrentRender(for: contentURL, generation: generation),
+                              await originatingContentIsCurrent() else {
+                            return
+                        }
+                        resolvedReadabilityContent = rebuildCanonicalSnippetReadabilityHTML(
+                            html: cachedReadabilityContent,
+                            contentURL: contentSnapshot?.url ?? contentURL,
+                            fallbackTitle: titleFromReadabilityHTML(cachedReadabilityContent) ?? contentSnapshot?.title,
+                            publishedTime: publicationDateFallback,
+                            preferredTitle: contentSnapshot?.title,
+                            hideReaderTitleOverride: contentSnapshot?.isTitlePrefixOfContent
+                        )
                     }
-                    guard await self.isCurrentRender(for: contentURL, generation: generation),
-                          await originatingContentIsCurrent() else {
-                        return
-                    }
-                    let resolvedReadabilityContent = rebuildCanonicalSnippetReadabilityHTML(
-                        html: cachedReadabilityContent,
-                        contentURL: contentSnapshot?.url ?? contentURL,
-                        fallbackTitle: titleFromReadabilityHTML(cachedReadabilityContent) ?? contentSnapshot?.title,
-                        publishedTime: publicationDateFallback,
-                        preferredTitle: contentSnapshot?.title,
-                        hideReaderTitleOverride: contentSnapshot?.isTitlePrefixOfContent
-                    )
                     guard let resolvedReadabilityContent else {
                         await self.cancelReaderModeLoad(
                             for: contentURL,
@@ -4201,17 +4209,29 @@ public class ReaderModeViewModel: ObservableObject {
             }
             try requireCurrentDocument()
             if let html {
+                var preparedSnippetSnapshot: ReaderContentRenderSnapshot?
                 if committedURL.isSnippetURL {
-                    let publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                    let publicationDateFallback: String?
+                    if let readerPublicationDateLoader {
+                        publicationDateFallback = await readerPublicationDateLoader(committedURL)
+                    } else {
+                        publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                    }
                     try requireCurrentDocument()
-                    readabilityContent = buildSnippetCanonicalReadabilityHTML(
+                    let snapshot = ReaderContentRenderSnapshot(content: content)
+                    if let preparedHTML = buildSnippetCanonicalReadabilityHTML(
                         html: html,
                         contentURL: committedURL,
-                        fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
+                        fallbackTitle: titleFromReadabilityHTML(html) ?? snapshot.title,
                         publishedTime: publicationDateFallback,
-                        preferredTitle: content.title,
-                        hideReaderTitleOverride: content.isTitlePrefixOfContent
-                    ) ?? (hasCanonicalReadabilityMarkup(in: html) ? html : nil)
+                        preferredTitle: snapshot.title,
+                        hideReaderTitleOverride: snapshot.isTitlePrefixOfContent
+                    ) {
+                        readabilityContent = preparedHTML
+                        preparedSnippetSnapshot = snapshot
+                    } else {
+                        readabilityContent = hasCanonicalReadabilityMarkup(in: html) ? html : nil
+                    }
                 } else if hasCanonicalReadabilityMarkup(in: html) {
                     readabilityContent = html
                 } else {
@@ -4221,7 +4241,8 @@ public class ReaderModeViewModel: ObservableObject {
                 showReaderView(
                     readerContent: readerContent,
                     scriptCaller: scriptCaller,
-                    navigator: navigator
+                    navigator: navigator,
+                    preparedSnippetSnapshot: preparedSnippetSnapshot
                 )
             } else {
                 navigator.load(URLRequest(url: committedURL))

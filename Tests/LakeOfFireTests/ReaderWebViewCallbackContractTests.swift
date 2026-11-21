@@ -807,6 +807,58 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
     }
 
 
+    func testStoredSnippetLoaderUsesPublicationDateOnceBeforeDispatch() async throws {
+        for publicationDate in [nil, "20 November 2026"] as [String?] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let mode = fixture.readerModeViewModel
+            let reader = fixture.readerContent
+            let navigator = fixture.handler.navigator
+            let url = URL(string: "internal://local/snippet?key=restore-single-preparation")!
+            let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+            let (realm, row) = try cachedHistoryRecord(url: url, in: makeReaderHTMLRenderingRealm())
+            try realm.write {
+                row.title = "Saved snippet title"
+                row.html = "<html><body><p>The harbor bell rang twice.</p></body></html>"
+                row.isReaderModeByDefault = true
+                row.isReaderModeAvailable = false
+                row.rssContainsFullContent = true
+            }
+            reader.pageURL = loaderURL
+            reader.content = row
+            var dateLookups: [URL] = []
+            mode.readerPublicationDateLoader = { url in
+                dateLookups.append(url)
+                return publicationDate
+            }
+            var generatedHTML: Data?
+            mode.processHTMLBytes = { bytes, _ in
+                await MainActor.run { generatedHTML = Data(bytes) }
+                return bytes
+            }
+            defer {
+                mode.readerPublicationDateLoader = nil
+                mode.processHTMLBytes = nil
+                withExtendedLifetime(realm) {}
+            }
+
+            var state = WebViewState.empty
+            state.pageURL = loaderURL
+            try await mode.onNavigationCommitted(
+                readerContent: reader, newState: state,
+                scriptCaller: fixture.handler.scriptCaller, navigator: navigator
+            )
+            await mode.waitForReaderModeRender(for: url)
+
+            XCTAssertEqual(dateLookups, [url])
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+            let html = try XCTUnwrap(generatedHTML)
+            let doc = try SwiftSoup.parse(String(decoding: html, as: UTF8.self))
+            XCTAssertEqual(try doc.getElementById("reader-content")?.text(), "The harbor bell rang twice.")
+            XCTAssertEqual(try doc.getElementById("reader-title")?.text(), "Saved snippet title")
+            XCTAssertEqual(try doc.getElementById("reader-publication-date")?.text(), publicationDate)
+        }
+    }
+
     func testGeneratedReadableDocumentFontSettlementPublishesNativeReadiness() async throws {
         let fixture = makeReaderWebViewHandlerFixture()
         let mode = fixture.readerModeViewModel
