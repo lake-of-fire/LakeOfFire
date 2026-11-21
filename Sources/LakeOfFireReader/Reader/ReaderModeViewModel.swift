@@ -792,6 +792,17 @@ internal func hasPersistedReaderSegmentMarkup(in html: String) -> Bool {
     ) != nil
 }
 
+internal func provisionalSnippetPreviewText(from html: String) -> String? {
+    guard let document = try? SwiftSoup.parse(html) else { return nil }
+    try? document.select("script, style, noscript, template, iframe, object, form, button").remove()
+    let snippet = (try? document.getElementsByClass("mnb-snippet").first())
+        ?? (try? document.getElementById("reader-content"))
+        ?? (try? document.body())
+    guard let text = try? snippet?.text() else { return nil }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
 /// Removes only markup that the native reader processor owns from a persisted
 /// snippet so it can be submitted to the current readability processor again.
 /// Source ruby is left intact unless the native ruby marker identifies it as
@@ -1713,6 +1724,8 @@ public class ReaderModeViewModel: ObservableObject {
     @Published public private(set) var pendingReaderModeURL: URL? {
         didSet { updateLoadingStateSnapshot() }
     }
+    @Published public private(set) var provisionalSnippetPreviewURL: URL?
+    private var provisionalSnippetPreviewGeneration: UUID?
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
@@ -1806,6 +1819,7 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func beginReaderModeLoad(for url: URL, suppressSpinner: Bool = false) {
         clearPreparationFailure()
+        clearProvisionalSnippetPreview()
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         if !pendingMatches {
@@ -1831,6 +1845,7 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         clearPreparationFailure()
+        clearProvisionalSnippetPreview(for: url)
         expectedSyntheticReaderNavigation = nil
         let completedURL = pendingReaderModeURL ?? url ?? lastRenderedURL
         if let url {
@@ -1953,6 +1968,8 @@ public class ReaderModeViewModel: ObservableObject {
             reason: "readerMode.syntheticLoad.renderReady",
             pageURL: canonicalURL
         )
+
+        clearProvisionalSnippetPreview(for: canonicalURL, generation: renderGeneration)
 
         if expectedMatches {
             publishSyntheticReaderLoaderExpectation(for: nil)
@@ -3050,7 +3067,8 @@ public class ReaderModeViewModel: ObservableObject {
         readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator,
-        preparedSnippetSnapshot: ReaderContentRenderSnapshot? = nil
+        preparedSnippetSnapshot: ReaderContentRenderSnapshot? = nil,
+        provisionalSnippetHTML: String? = nil
     ) {
         let contentURL = readerContent.pageURL
         let cachedReadabilityContent = readabilityContent
@@ -3076,6 +3094,7 @@ public class ReaderModeViewModel: ObservableObject {
                     || scriptCaller.currentJavaScriptBindingToken == renderBinding)
         }
         let publicationDateLoader = readerPublicationDateLoader
+        let previewHTML = provisionalSnippetHTML
         beginReaderModeLoad(for: contentURL)
         startRenderTaskIfNeeded(
             for: contentURL,
@@ -3091,6 +3110,20 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             guard await originatingContentIsCurrent() else { return }
+            if let previewHTML, contentURL.canonicalReaderContentURLForHotfix().isSnippetURL {
+                await self.showProvisionalSnippetPreview(
+                    html: previewHTML,
+                    contentURL: contentURL,
+                    renderGeneration: generation,
+                    renderBinding: renderBinding,
+                    readerContent: readerContent,
+                    scriptCaller: scriptCaller,
+                    selectionIsCurrent: selectionIsCurrent,
+                    originatingContentIsCurrent: originatingContentIsCurrent
+                )
+            }
+            guard await self.isCurrentRender(for: contentURL, generation: generation),
+                  await originatingContentIsCurrent() else { return }
             let routeDecision = await self.resolveReaderModeRouteDecision(readerContent: readerContent)
             ReaderSnippetFinalDocumentDiagnostics.record("route.\(routeDecision.route.rawValue)", contentURL: contentURL, generation: generation)
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
@@ -3197,6 +3230,84 @@ public class ReaderModeViewModel: ObservableObject {
                 )
             }
         }
+    }
+
+    @MainActor
+    private func showProvisionalSnippetPreview(
+        html: String,
+        contentURL: URL,
+        renderGeneration: UUID,
+        renderBinding: WebViewScriptCaller.JavaScriptBindingToken?,
+        readerContent: ReaderContent,
+        scriptCaller: WebViewScriptCaller,
+        selectionIsCurrent: @escaping @Sendable () -> Bool,
+        originatingContentIsCurrent: @escaping @MainActor () -> Bool
+    ) async {
+        guard contentURL.canonicalReaderContentURLForHotfix().isSnippetURL,
+              let text = provisionalSnippetPreviewText(from: html),
+              isCurrentRender(for: contentURL, generation: renderGeneration),
+              selectionIsCurrent(), originatingContentIsCurrent(),
+              let content = readerContent.validCachedContent,
+              readerModeContentIsCurrent(content, readerContent: readerContent),
+              ownsReaderDocumentBinding(renderBinding, scriptCaller: scriptCaller) else { return }
+
+        let expectedPageURL = readerContent.pageURL.absoluteString
+        let fontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double ?? 21
+        let script = """
+        (() => {
+            if (window.location.href !== expectedPageURL) return false;
+            const body = document.body;
+            const root = document.documentElement;
+            if (!body || !root) return false;
+            root.dataset.mnbSnippetPreview = '1';
+            delete root.dataset.mnbReaderRenderReady;
+            delete root.dataset.mnbReaderRenderGeneration;
+            delete root.dataset.mnbFontPending;
+            body.replaceChildren();
+            const content = document.createElement('main');
+            content.id = 'mnb-snippet-preview';
+            content.textContent = text;
+            content.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;max-width:720px;margin:0 auto;padding:24px 20px;font-family:system-ui,sans-serif;font-size:' + fontSize + 'px;line-height:1.65;';
+            body.append(content);
+            body.style.margin = '0';
+            body.style.background = 'transparent';
+            return true;
+        })();
+        """
+        do {
+            let displayed = try await evaluateReaderDocumentJavaScript(
+                script,
+                arguments: [
+                    "expectedPageURL": expectedPageURL,
+                    "text": text,
+                    "fontSize": fontSize,
+                ],
+                scriptCaller: scriptCaller,
+                requiring: renderBinding
+            ) as? Bool ?? false
+            guard displayed,
+                  isCurrentRender(for: contentURL, generation: renderGeneration),
+                  selectionIsCurrent(), originatingContentIsCurrent(),
+                  let currentContent = readerContent.validCachedContent,
+                  readerModeContentIsCurrent(currentContent, readerContent: readerContent),
+                  ownsReaderDocumentBinding(renderBinding, scriptCaller: scriptCaller) else { return }
+            provisionalSnippetPreviewURL = contentURL.canonicalReaderContentURLForHotfix()
+            provisionalSnippetPreviewGeneration = renderGeneration
+        } catch {
+            // The regular processed render remains authoritative if preview paint fails.
+        }
+    }
+
+    private func clearProvisionalSnippetPreview(for url: URL? = nil, generation: UUID? = nil) {
+        guard let previewURL = provisionalSnippetPreviewURL else { return }
+        if let url,
+           !urlsMatchWithoutHashForHotfix(
+                previewURL,
+                url.canonicalReaderContentURLForHotfix()
+           ) { return }
+        if let generation, provisionalSnippetPreviewGeneration != generation { return }
+        provisionalSnippetPreviewURL = nil
+        provisionalSnippetPreviewGeneration = nil
     }
 
     @MainActor
@@ -4242,7 +4353,8 @@ public class ReaderModeViewModel: ObservableObject {
                     readerContent: readerContent,
                     scriptCaller: scriptCaller,
                     navigator: navigator,
-                    preparedSnippetSnapshot: preparedSnippetSnapshot
+                    preparedSnippetSnapshot: preparedSnippetSnapshot,
+                    provisionalSnippetHTML: committedURL.isSnippetURL ? html : nil
                 )
             } else {
                 navigator.load(URLRequest(url: committedURL))

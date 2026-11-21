@@ -17,6 +17,17 @@ private actor ReaderSnippetRecoveryTestRecorder {
 }
 
 final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
+    func testProvisionalSnippetPreviewUsesOnlyReadableText() {
+        let preview = provisionalSnippetPreviewText(from: """
+        <html><body><div class="mnb-snippet"><p>保存した本文 <ruby>漢字<rt>かんじ</rt></ruby></p>
+        <script>window.lookupShouldNotRun = true</script><button>Lookup</button></div></body></html>
+        """)
+
+        XCTAssertEqual(preview, "保存した本文 漢字かんじ")
+        XCTAssertFalse(preview?.contains("window.lookupShouldNotRun") == true)
+        XCTAssertNil(provisionalSnippetPreviewText(from: "<body><script>secret()</script></body>"))
+    }
+
     func testUnchangedSnippetTitlePreservesPreparedRubyAndLookupIdentity() throws {
         let document = try SwiftSoup.parse("""
         <html><body><h1 id="reader-title"><m-c><m-s><m-m id="native-title-word"><ruby class="mnb-gen"><m-t>学校</m-t><rt>がっこう</rt><rp>(</rp></ruby></m-m>へ行く</m-s></m-c></h1>

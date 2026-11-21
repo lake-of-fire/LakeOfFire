@@ -997,7 +997,9 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
                     && renderedCanonicalURL != nil
                     && webViewShowingNonLoaderPage
                 let hasVisibleContent =
-                    hasRenderedCurrentPage
+                    readerModeViewModel.provisionalSnippetPreviewURL
+                        .map { $0.canonicalReaderContentURLForHotfix() == currentCanonicalURL } == true
+                    || hasRenderedCurrentPage
                     || (
                         webViewShowingNonLoaderPage
                         && expectsReaderModeCompletion
