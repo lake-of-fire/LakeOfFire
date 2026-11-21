@@ -289,10 +289,13 @@ struct ReaderUnhandledTapUserScript {
             accumulatedScroll.value = 0;
             return;
         }
-        if (bottomRevealAwaitingDeparture && dy < 0) {
-            bottomRevealAwaitingDeparture = false;
-            postHideNavigationForScroll(false, 'documentScrollUp');
-            accumulatedScroll.value = 0;
+        if (bottomRevealAwaitingDeparture && dy < -0.5) {
+            accumulatedScroll.value += dy;
+            if ((previousY >= bottomThreshold && currentY < bottomThreshold)
+                || accumulatedScroll.value < -SCROLL_THRESHOLD) {
+                postHideNavigationForScroll(false, 'documentScrollUp');
+                accumulatedScroll.value = 0;
+            }
             return;
         }
         const delta = Math.abs(dy) >= Math.abs(dx) ? dy : dx;
