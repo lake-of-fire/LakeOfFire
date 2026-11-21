@@ -605,14 +605,24 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                             || urlsMatchWithoutHash(messageURL, readerContent.content?.url) else {
                         return
                     }
-                    navigationVisibilityWillChangeHandler?(
-                        ReaderNavigationVisibilityChange(
-                            shouldHide: shouldHide,
+                    let change = ReaderNavigationVisibilityChange(
+                        shouldHide: shouldHide,
+                        reason: reason,
+                        source: source,
+                        direction: direction
+                    )
+                    if let navigationVisibilityWillChangeHandler {
+                        navigationVisibilityWillChangeHandler(change)
+                    } else if reason == "documentScrollBottom" {
+                        // Standalone Reader hosts without the typed callback
+                        // still receive the ordinary bottom reveal binding.
+                        setHideNavigationDueToScroll(
+                            shouldHide,
                             reason: reason,
                             source: source,
                             direction: direction
                         )
-                    )
+                    }
                     lastNavigationVisibilityEvent = .init(
                         timestamp: Date(),
                         shouldHide: shouldHide,

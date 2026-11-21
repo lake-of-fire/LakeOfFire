@@ -304,6 +304,10 @@ struct ReaderUnhandledTapUserScript {
         }
         accumulatedScroll.value += delta;
         if (accumulatedScroll.value > SCROLL_THRESHOLD) {
+            // A real downward reading gesture leaves the bottom-reveal
+            // interval. The next upward gesture is an ordinary visibility
+            // change, even when a layout resize rebased the scroll range.
+            bottomRevealAwaitingDeparture = false;
             postHideNavigationForScroll(true, 'documentScrollDown');
             accumulatedScroll.value = 0;
         } else if (accumulatedScroll.value < -SCROLL_THRESHOLD) {
