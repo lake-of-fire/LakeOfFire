@@ -971,6 +971,8 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
     @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject var readerViewModel: ReaderViewModel
+    @EnvironmentObject var scriptCaller: WebViewScriptCaller
+    @AppStorage("readerFontSize") private var readerFontSize: Double?
     
     func body(content: Content) -> some View {
         WithPerceptionTracking {
@@ -992,13 +994,22 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
                     || readerContent.isRenderingReaderHTML
                 let webViewHasReaderRenderReady = readerViewModel.state
                     .hasReaderRenderReady
+                let selectionID = readerContent.currentSelectionID
+                let bindingToken = scriptCaller.currentJavaScriptBindingToken
+                let previewText = readerModeViewModel.provisionalSnippetPreviewText(
+                    for: currentCanonicalURL,
+                    selectionID: selectionID,
+                    bindingToken: bindingToken
+                )
+                let previewFontSize = readerFontSize ?? 21
+                let accountSnapshot = readerModeViewModel.readerAccountSessionAccess?.snapshot
+                let accountBoundaryID = readerModeViewModel.readerAccountSessionAccess?.boundaryID
                 let hasRenderedCurrentPage =
                     renderedCanonicalURL == currentCanonicalURL
                     && renderedCanonicalURL != nil
                     && webViewShowingNonLoaderPage
                 let hasVisibleContent =
-                    readerModeViewModel.provisionalSnippetPreviewURL
-                        .map { $0.canonicalReaderContentURLForHotfix() == currentCanonicalURL } == true
+                    previewText != nil
                     || hasRenderedCurrentPage
                     || (
                         webViewShowingNonLoaderPage
@@ -1024,6 +1035,53 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
                         }
                     )
                 )
+                .overlay {
+                    if let previewText {
+                        ScrollView {
+                            Text(previewText)
+                                .font(.system(size: previewFontSize))
+                                .foregroundStyle(.primary)
+                                .frame(maxWidth: 720, alignment: .leading)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 24)
+                        }
+                        .background(Color.clear)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("ReaderProvisionalSnippetPreview")
+                    }
+                }
+                .onChange(of: scriptCaller.currentJavaScriptBindingToken) { newBinding in
+                    readerModeViewModel.clearProvisionalSnippetPreview(
+                        ifBindingDoesNotMatch: newBinding
+                    )
+                }
+                .onChange(of: readerContent.currentSelectionID) { newSelection in
+                    readerModeViewModel.clearProvisionalSnippetPreview(
+                        ifSelectionDoesNotMatch: newSelection
+                    )
+                }
+                .onChange(of: accountSnapshot) { newSnapshot in
+                    readerModeViewModel.clearProvisionalSnippetPreview(
+                        ifAccountDoesNotMatch: newSnapshot,
+                        boundaryID: accountBoundaryID
+                    )
+                }
+                .onAppear {
+                    readerModeViewModel.clearProvisionalSnippetPreview(
+                        ifBindingDoesNotMatch: bindingToken
+                    )
+                    readerModeViewModel.clearProvisionalSnippetPreview(
+                        ifSelectionDoesNotMatch: selectionID
+                    )
+                    readerModeViewModel.clearProvisionalSnippetPreview(
+                        ifAccountDoesNotMatch: accountSnapshot,
+                        boundaryID: accountBoundaryID
+                    )
+                }
+                .onDisappear {
+                    readerModeViewModel.clearProvisionalSnippetPreview()
+                }
             } else {
                 content
             }

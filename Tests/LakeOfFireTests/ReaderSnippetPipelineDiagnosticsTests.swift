@@ -1,6 +1,8 @@
 import XCTest
 import SwiftSoup
+import LakeKit
 import LakeOfFireContent
+@testable import SwiftUIWebView
 @testable import LakeOfFireReader
 
 private actor ReaderSnippetRecoveryTestRecorder {
@@ -26,6 +28,98 @@ final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
         XCTAssertEqual(preview, "保存した本文 漢字かんじ")
         XCTAssertFalse(preview?.contains("window.lookupShouldNotRun") == true)
         XCTAssertNil(provisionalSnippetPreviewText(from: "<body><script>secret()</script></body>"))
+    }
+
+    @MainActor
+    func testProvisionalSnippetPreviewIsRetiredAtAccountBoundaryForSameURL() throws {
+        let mode = ReaderModeViewModel()
+        let snippetURL = try XCTUnwrap(URL(string: "internal://local/snippet?key=account-boundary-preview"))
+        let originalSession = Session.ephemeralForTesting()
+        originalSession.authenticated(authToken: "preview-account-a", userID: 101)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: originalSession)
+        let generation = UUID()
+        mode.publishProvisionalSnippetPreview(
+            text: "Private text from account A",
+            url: snippetURL,
+            generation: generation,
+            selectionID: nil,
+            bindingToken: nil
+        )
+        XCTAssertEqual(mode.provisionalSnippetPreviewText(
+            for: snippetURL,
+            selectionID: nil,
+            bindingToken: nil
+        ), "Private text from account A")
+
+        originalSession.authenticated(authToken: "replacement-auth-for-a", userID: 101)
+        XCTAssertNil(mode.provisionalSnippetPreviewText(
+            for: snippetURL,
+            selectionID: nil,
+            bindingToken: nil
+        ), "A changed session snapshot must immediately hide a same-URL preview")
+
+        let replacementSession = Session.ephemeralForTesting()
+        replacementSession.authenticated(authToken: "preview-account-b", userID: 202)
+        mode.readerAccountSessionAccess = AccountSessionAccess(session: replacementSession)
+
+        XCTAssertNil(mode.provisionalSnippetPreviewText(
+            for: snippetURL,
+            selectionID: nil,
+            bindingToken: nil
+        ), "A same-URL successor account must not observe or re-present the old preview")
+    }
+
+    @MainActor
+    func testProvisionalSnippetPreviewIsRetiredOnBindingChangeAndTeardown() throws {
+        let mode = ReaderModeViewModel()
+        let snippetURL = try XCTUnwrap(URL(string: "internal://local/snippet?key=binding-preview"))
+        let caller = WebViewScriptCaller()
+        let owner = UUID()
+        caller.installBinding(
+            ownedBy: owner,
+            asyncCaller: { _, _, _, _ in .init(nil) },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        let binding = try XCTUnwrap(caller.currentJavaScriptBindingToken)
+        mode.publishProvisionalSnippetPreview(
+            text: "Private text from the previous document",
+            url: snippetURL,
+            generation: UUID(),
+            selectionID: nil,
+            bindingToken: binding
+        )
+
+        let successorOwner = UUID()
+        caller.installBinding(
+            ownedBy: successorOwner,
+            asyncCaller: { _, _, _, _ in .init(nil) },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        let successorBinding = try XCTUnwrap(caller.currentJavaScriptBindingToken)
+        mode.clearProvisionalSnippetPreview(ifBindingDoesNotMatch: successorBinding)
+        XCTAssertNil(mode.provisionalSnippetPreviewText(
+            for: snippetURL,
+            selectionID: nil,
+            bindingToken: successorBinding
+        ))
+
+        mode.publishProvisionalSnippetPreview(
+            text: "Preview removed when Reader disappears",
+            url: snippetURL,
+            generation: UUID(),
+            selectionID: nil,
+            bindingToken: successorBinding
+        )
+        mode.clearProvisionalSnippetPreview()
+        XCTAssertNil(mode.provisionalSnippetPreviewText(
+            for: snippetURL,
+            selectionID: nil,
+            bindingToken: successorBinding
+        ))
     }
 
     func testUnchangedSnippetTitlePreservesPreparedRubyAndLookupIdentity() throws {

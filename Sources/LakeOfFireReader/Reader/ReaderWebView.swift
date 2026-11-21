@@ -346,6 +346,7 @@ final class ReaderWebViewHandler {
         state: WebViewState,
         reason: WebViewDocumentContextInvalidationReason
     ) {
+        readerModeViewModel.clearProvisionalSnippetPreview()
         // A committed replacement, process loss, or host detach invalidates all
         // asynchronous work that still belongs to the previous document.
         readerContent.withdrawSelectionIntent()

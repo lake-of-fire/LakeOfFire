@@ -1604,8 +1604,10 @@ public class ReaderModeViewModel: ObservableObject {
     /// Hosts without account state may leave this unset.
     public var readerAccountSessionAccess: AccountSessionAccess? {
         willSet {
-            if newValue?.boundaryID != readerAccountSessionAccess?.boundaryID {
+            if newValue?.boundaryID != readerAccountSessionAccess?.boundaryID
+                || newValue?.snapshot != readerAccountSessionAccess?.snapshot {
                 clearPreparationFailure()
+                clearProvisionalSnippetPreview()
                 // Replacing the host Session retires work even when both
                 // snapshots happen to have the same user and generation.
                 for render in activeRendersByURL.values { render.task.cancel() }
@@ -1724,8 +1726,16 @@ public class ReaderModeViewModel: ObservableObject {
     @Published public private(set) var pendingReaderModeURL: URL? {
         didSet { updateLoadingStateSnapshot() }
     }
-    @Published public private(set) var provisionalSnippetPreviewURL: URL?
-    private var provisionalSnippetPreviewGeneration: UUID?
+    private struct ProvisionalSnippetPreview {
+        let text: String
+        let url: URL
+        let generation: UUID
+        let accountSession: AccountSessionSnapshot?
+        let accountBoundaryID: AccountSessionBoundaryID?
+        let selectionID: UUID?
+        let bindingToken: WebViewScriptCaller.JavaScriptBindingToken?
+    }
+    @Published private var provisionalSnippetPreview: ProvisionalSnippetPreview?
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
@@ -3116,6 +3126,8 @@ public class ReaderModeViewModel: ObservableObject {
                     contentURL: contentURL,
                     renderGeneration: generation,
                     renderBinding: renderBinding,
+                    accountSession: accountSession,
+                    accountBoundaryID: accountBoundaryID,
                     readerContent: readerContent,
                     scriptCaller: scriptCaller,
                     selectionIsCurrent: selectionIsCurrent,
@@ -3238,11 +3250,13 @@ public class ReaderModeViewModel: ObservableObject {
         contentURL: URL,
         renderGeneration: UUID,
         renderBinding: WebViewScriptCaller.JavaScriptBindingToken?,
+        accountSession: AccountSessionSnapshot?,
+        accountBoundaryID: AccountSessionBoundaryID?,
         readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller,
         selectionIsCurrent: @escaping @Sendable () -> Bool,
         originatingContentIsCurrent: @escaping @MainActor () -> Bool
-    ) async {
+    ) {
         guard contentURL.canonicalReaderContentURLForHotfix().isSnippetURL,
               let text = provisionalSnippetPreviewText(from: html),
               isCurrentRender(for: contentURL, generation: renderGeneration),
@@ -3251,63 +3265,79 @@ public class ReaderModeViewModel: ObservableObject {
               readerModeContentIsCurrent(content, readerContent: readerContent),
               ownsReaderDocumentBinding(renderBinding, scriptCaller: scriptCaller) else { return }
 
-        let expectedPageURL = readerContent.pageURL.absoluteString
-        let fontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double ?? 21
-        let script = """
-        (() => {
-            if (window.location.href !== expectedPageURL) return false;
-            const body = document.body;
-            const root = document.documentElement;
-            if (!body || !root) return false;
-            root.dataset.mnbSnippetPreview = '1';
-            delete root.dataset.mnbReaderRenderReady;
-            delete root.dataset.mnbReaderRenderGeneration;
-            delete root.dataset.mnbFontPending;
-            body.replaceChildren();
-            const content = document.createElement('main');
-            content.id = 'mnb-snippet-preview';
-            content.textContent = text;
-            content.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;max-width:720px;margin:0 auto;padding:24px 20px;font-family:system-ui,sans-serif;font-size:' + fontSize + 'px;line-height:1.65;';
-            body.append(content);
-            body.style.margin = '0';
-            body.style.background = 'transparent';
-            return true;
-        })();
-        """
-        do {
-            let displayed = try await evaluateReaderDocumentJavaScript(
-                script,
-                arguments: [
-                    "expectedPageURL": expectedPageURL,
-                    "text": text,
-                    "fontSize": fontSize,
-                ],
-                scriptCaller: scriptCaller,
-                requiring: renderBinding
-            ) as? Bool ?? false
-            guard displayed,
-                  isCurrentRender(for: contentURL, generation: renderGeneration),
-                  selectionIsCurrent(), originatingContentIsCurrent(),
-                  let currentContent = readerContent.validCachedContent,
-                  readerModeContentIsCurrent(currentContent, readerContent: readerContent),
-                  ownsReaderDocumentBinding(renderBinding, scriptCaller: scriptCaller) else { return }
-            provisionalSnippetPreviewURL = contentURL.canonicalReaderContentURLForHotfix()
-            provisionalSnippetPreviewGeneration = renderGeneration
-        } catch {
-            // The regular processed render remains authoritative if preview paint fails.
-        }
+        guard readerAccountSessionAccess?.snapshot == accountSession,
+              readerAccountSessionAccess?.boundaryID == accountBoundaryID else { return }
+        publishProvisionalSnippetPreview(
+            text: text,
+            url: contentURL.canonicalReaderContentURLForHotfix(),
+            generation: renderGeneration,
+            selectionID: readerContent.currentSelectionID,
+            bindingToken: renderBinding
+        )
     }
 
-    private func clearProvisionalSnippetPreview(for url: URL? = nil, generation: UUID? = nil) {
-        guard let previewURL = provisionalSnippetPreviewURL else { return }
+    func publishProvisionalSnippetPreview(
+        text: String,
+        url: URL,
+        generation: UUID,
+        selectionID: UUID?,
+        bindingToken: WebViewScriptCaller.JavaScriptBindingToken?
+    ) {
+        provisionalSnippetPreview = ProvisionalSnippetPreview(
+            text: text,
+            url: url.canonicalReaderContentURLForHotfix(),
+            generation: generation,
+            accountSession: readerAccountSessionAccess?.snapshot,
+            accountBoundaryID: readerAccountSessionAccess?.boundaryID,
+            selectionID: selectionID,
+            bindingToken: bindingToken
+        )
+    }
+
+    func provisionalSnippetPreviewText(
+        for url: URL,
+        selectionID: UUID?,
+        bindingToken: WebViewScriptCaller.JavaScriptBindingToken?
+    ) -> String? {
+        guard let preview = provisionalSnippetPreview,
+              urlsMatchWithoutHashForHotfix(preview.url, url.canonicalReaderContentURLForHotfix()),
+              preview.selectionID == selectionID,
+              preview.bindingToken == bindingToken,
+              preview.accountSession == readerAccountSessionAccess?.snapshot,
+              preview.accountBoundaryID == readerAccountSessionAccess?.boundaryID else { return nil }
+        return preview.text
+    }
+
+    func clearProvisionalSnippetPreview(for url: URL? = nil, generation: UUID? = nil) {
+        guard let preview = provisionalSnippetPreview else { return }
         if let url,
            !urlsMatchWithoutHashForHotfix(
-                previewURL,
+                preview.url,
                 url.canonicalReaderContentURLForHotfix()
            ) { return }
-        if let generation, provisionalSnippetPreviewGeneration != generation { return }
-        provisionalSnippetPreviewURL = nil
-        provisionalSnippetPreviewGeneration = nil
+        if let generation, preview.generation != generation { return }
+        provisionalSnippetPreview = nil
+    }
+
+    func clearProvisionalSnippetPreview(ifBindingDoesNotMatch bindingToken: WebViewScriptCaller.JavaScriptBindingToken?) {
+        guard let preview = provisionalSnippetPreview,
+              preview.bindingToken != bindingToken else { return }
+        provisionalSnippetPreview = nil
+    }
+
+    func clearProvisionalSnippetPreview(ifSelectionDoesNotMatch selectionID: UUID?) {
+        guard let preview = provisionalSnippetPreview,
+              preview.selectionID != selectionID else { return }
+        provisionalSnippetPreview = nil
+    }
+
+    func clearProvisionalSnippetPreview(
+        ifAccountDoesNotMatch snapshot: AccountSessionSnapshot?,
+        boundaryID: AccountSessionBoundaryID?
+    ) {
+        guard let preview = provisionalSnippetPreview,
+              preview.accountSession != snapshot || preview.accountBoundaryID != boundaryID else { return }
+        provisionalSnippetPreview = nil
     }
 
     @MainActor
