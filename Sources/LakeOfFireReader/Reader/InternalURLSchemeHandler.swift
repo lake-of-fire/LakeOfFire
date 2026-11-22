@@ -9,6 +9,12 @@ import WebKit
 public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
     public var sharedReaderFontAsset: SharedReaderFontAsset?
     private let schemeTaskCompletionOwnership = URLSchemeTaskCompletionOwnership()
+
+    private static let readerLoaderHTML = Data("""
+        <!doctype html>
+        <meta name="color-scheme" content="light dark">
+        """.utf8)
+
     enum CustomSchemeHandlerError: Error {
         case notFound
     }
@@ -58,20 +64,21 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             finishActiveTask(urlSchemeTask, response: sidecar.response, data: sidecar.data)
             return
         }
-        // Only known document bootstraps may return an empty HTML shell.
         // Unknown internal paths must not look like successful navigations.
-        let isValidReaderDocument = url.isSnippetURL
-            || (url.isReaderURLLoaderURL && url.readerContentURL != nil)
-        guard isValidReaderDocument else {
+        let isReaderLoader = url.isReaderURLLoaderURL && url.readerContentURL != nil
+        guard isReaderLoader || url.isSnippetURL else {
             failActiveTask(urlSchemeTask)
             return
         }
+        // Cached content is installed after this document commits. Declare its
+        // supported color schemes before WebKit can paint the initial canvas.
+        let data = isReaderLoader ? Self.readerLoaderHTML : Data()
         let response = URLResponse(
             url: url,
             mimeType: "text/html",
-            expectedContentLength: 0,
-            textEncodingName: nil)
-        finishActiveTask(urlSchemeTask, response: response, data: Data())
+            expectedContentLength: data.count,
+            textEncodingName: isReaderLoader ? "utf-8" : nil)
+        finishActiveTask(urlSchemeTask, response: response, data: data)
     }
     
     public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
