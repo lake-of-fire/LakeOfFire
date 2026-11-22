@@ -351,6 +351,48 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
     private func documentIsStillCurrent(_ expectedURL: URL) -> Bool {
         urlsMatchWithoutHash(expectedURL, readerViewModel.state.pageURL)
     }
+
+    func handleRSSURLs(
+        _ reportedPairs: [[String]],
+        windowURL: URL?,
+        frameMainDocumentURL: URL?,
+        isMainFrame: Bool,
+        binding: WebViewScriptCaller.JavaScriptBindingToken?,
+        storage: ReaderContentLoader.MutationStorage
+    ) async throws -> ReaderContentMutationOutcome? {
+        guard let windowURL,
+              ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
+                claimedURL: windowURL,
+                frameMainDocumentURL: frameMainDocumentURL,
+                currentPageURL: readerViewModel.state.pageURL,
+                requiresMainFrame: true,
+                isMainFrame: isMainFrame
+              ),
+              let receipt = captureReadabilityReceipt(binding: binding, expectedURL: windowURL),
+              let _ = try await contentForWindowURL(windowURL, source: "rssURLs"),
+              receipt.isCurrent() else { return nil }
+
+        let pairs = reportedPairs.prefix(10)
+        let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
+        let titles = pairs.map { $0.last ?? $0.first ?? "" }
+        let isRSSAvailable = !urls.isEmpty
+        return await ReaderContentLoader.updateContentWithOutcome(
+            url: windowURL,
+            storage: storage,
+            permitsCommit: receipt.permitsMutation,
+            validateAuthority: {}
+        ) { object in
+            guard Array(object.rssURLs) != urls
+                || Array(object.rssTitles) != titles
+                || object.isRSSAvailable != isRSSAvailable else { return false }
+            object.rssURLs.removeAll()
+            object.rssTitles.removeAll()
+            object.rssURLs.append(objectsIn: urls)
+            object.rssTitles.append(objectsIn: titles)
+            object.isRSSAvailable = isRSSAvailable
+            return true
+        }
+    }
     
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
@@ -948,38 +990,18 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
             //                }
             //            },
             ("rssURLs", { @MainActor [weak self] message in
-                guard let self else { return }
+                guard let self, let result = RSSURLsMessage(fromMessage: message) else { return }
                 do {
-                    guard let result = RSSURLsMessage(fromMessage: message) else { return }
-                    guard let windowURL = result.windowURL,
-                          ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
-                            claimedURL: windowURL,
-                            frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
-                            currentPageURL: readerViewModel.state.pageURL,
-                            requiresMainFrame: true,
-                            isMainFrame: message.frameInfo.isMainFrame
-                          ),
-                          let _ = try await contentForWindowURL(windowURL, source: "rssURLs"),
-                          documentIsStillCurrent(windowURL) else { return }
-                    let pairs = result.rssURLs.prefix(10)
-                    let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
-                    let titles = pairs.map { $0.last ?? $0.first ?? "" }
-                    guard documentIsStillCurrent(windowURL) else { return }
-                    try await ReaderContentLoader.updateContent(url: windowURL) { object in
-                        let existingURLs = Array(object.rssURLs)
-                        let existingTitles = Array(object.rssTitles)
-                        let isRSSAvailable = !urls.isEmpty
-                        guard existingURLs != urls
-                            || existingTitles != titles
-                            || object.isRSSAvailable != isRSSAvailable else {
-                            return false
-                        }
-                        object.rssURLs.removeAll()
-                        object.rssTitles.removeAll()
-                        object.rssURLs.append(objectsIn: urls)
-                        object.rssTitles.append(objectsIn: titles)
-                        object.isRSSAvailable = isRSSAvailable
-                        return true
+                    let outcome = try await handleRSSURLs(
+                        result.rssURLs,
+                        windowURL: result.windowURL,
+                        frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                        isMainFrame: message.frameInfo.isMainFrame,
+                        binding: message.javaScriptBindingToken,
+                        storage: .capture()
+                    )
+                    if let errorMessage = outcome?.errorMessage {
+                        print(errorMessage)
                     }
                 } catch {
                     print(error)
