@@ -15,7 +15,7 @@
         return;
     }
  
-    function updateImageMargins() {
+    function updateImageMargins(event) {
         var BLOCK_IMAGES_SELECTOR = "#reader-header > img, " +
         "#reader-content p > img:only-child, " +
         "#reader-content p > a:only-child > img:only-child, " +
@@ -24,6 +24,7 @@
         "#reader-content > img, " +
         "#reader-content .wp-caption img, " +
         "#reader-content figure img";
+        const loadedImage = event?.type === 'load' ? event.target : null
         
         if (!document.body?.classList.contains('readability-mode')) {
             return;
@@ -31,6 +32,9 @@
         const contentElement = document.getElementById("reader-content");
         if (contentElement === null) {
             return;
+        }
+        if (loadedImage && !loadedImage.matches(BLOCK_IMAGES_SELECTOR)) {
+            return
         }
         
         var contentWidth = contentElement.offsetWidth;
@@ -93,12 +97,8 @@
          */
         for (var i = candidateImages.length - 1; i >= 0; i--) {
             var img = candidateImages[i];
-            if (img.width > 0) {
+            if (img.width > 0 || (img === loadedImage && img.naturalWidth > 0)) {
                 setImageMargins(img);
-            } else {
-                img.onload = function() {
-                    setImageMargins(this);
-                };
             }
         }
     };
@@ -117,7 +117,7 @@
         var observer = new MutationObserver(function (mutations) {
             mutations.forEach(function (mutation) {
                 mutation.addedNodes.forEach(addedNode => {
-                    if (addedNode.tagName?.toUpperCase() === 'IMG') {
+                    if (addedNode.tagName?.toUpperCase() === 'IMG' || addedNode.querySelector?.('img')) {
                         debouncedUpdateImageMargins()
                     }
                 });
@@ -132,6 +132,11 @@
         
         updateImageMargins()
     }
+
+    // Size even newly inserted images before their load handlers resume saved-position recall.
+    document.addEventListener('load', event => {
+        if (event.target?.tagName?.toUpperCase() === 'IMG') updateImageMargins(event)
+    }, true)
     
     if (document.readyState === 'complete') {
         initialize()
