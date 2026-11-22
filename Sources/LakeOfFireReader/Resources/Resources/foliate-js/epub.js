@@ -129,6 +129,16 @@ const resolveArchiveResourcePath = (href, base) => {
     }
 }
 
+const xmlStylesheetHref = data => {
+    // Consume quoted pseudo-attributes in order so text inside another value
+    // cannot be mistaken for the stylesheet href.
+    const attributes = /(?:^|[\t\n\r ]+)([^=\t\n\r "'<>]+)[\t\n\r ]*=[\t\n\r ]*(["'])(.*?)\2/gsy
+    for (const match of data.matchAll(attributes)) {
+        const [attribute, name, , value] = match
+        if (name === 'href') return { value, start: match.index + attribute.length - value.length - 1 }
+    }
+}
+
 const manabiEpubReaderLoadLog = (stage, payload = {}) => {
     try {
         void stage
@@ -1026,20 +1036,18 @@ export class Loader {
         if ([MIME.XHTML, MIME.HTML, MIME.SVG].includes(mediaType)) {
             const { doc, mediaType: effectiveMediaType } =
                 parseContentDocument(new DOMParser(), replacedStr, mediaType)
-            // replace hrefs in XML processing instructions
-            // this is mainly for SVGs that use xml-stylesheet
+            // Only top-level stylesheet instructions before the root apply.
             if ([MIME.XHTML, MIME.SVG].includes(effectiveMediaType)) {
-                let child = doc.firstChild
-                while (child instanceof ProcessingInstruction) {
-                    if (child.data) {
-                        const replacedData = await replaceSeries(child.data,
-                            /(?:^|\s*)(href\s*=\s*['"])([^'"]*)(['"])/i,
-                            (_, p1, p2, p3) => this.loadHref(p2, href, parents)
-                            .then(p2 => `${p1}${p2}${p3}`))
-                        child.replaceWith(doc.createProcessingInstruction(
-                            child.target, replacedData))
-                    }
-                    child = child.nextSibling
+                for (let child = doc.firstChild; child && child !== doc.documentElement; child = child.nextSibling) {
+                    if (!(child instanceof ProcessingInstruction) || child.target !== 'xml-stylesheet') continue
+                    const data = child.data
+                    const stylesheet = xmlStylesheetHref(data)
+                    if (!stylesheet) continue
+                    const { value, start } = stylesheet
+                    const url = await this.loadHref(value, href, parents)
+                    if (this.#destroyed) return null
+                    if (url && url !== value)
+                        child.data = data.slice(0, start) + url + data.slice(start + value.length)
                 }
             }
             // replace hrefs (excluding anchors)
