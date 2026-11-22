@@ -81,13 +81,17 @@ export class SectionProgress {
     }
     // get progress given index of and fractions within a section
     getProgress(index, fractionInSection, pageFraction = 0) {
+        if (!Number.isFinite(fractionInSection) || !Number.isFinite(pageFraction)) return null
         const { sizes, sizePerLoc, sizePerTimeUnit, sizeTotal } = this
         const sizeInSection = sizes[index] ?? 0
         const sizeBefore = this.sectionStarts[index] ?? 0
-        const size = sizeBefore + fractionInSection * sizeInSection
-        const nextSize = size + pageFraction * sizeInSection
+        const sectionFraction = Math.max(0, Math.min(1, fractionInSection))
+        const pageExtent = Math.max(0, Math.min(1, pageFraction))
+        const size = sizeBefore + sectionFraction * sizeInSection
+        // Padding and overscroll cannot contribute progress to the next section.
+        const nextSize = Math.min(sizeBefore + sizeInSection, size + pageExtent * sizeInSection)
         const remainingTotal = sizeTotal - size
-        const remainingSection = (1 - fractionInSection) * sizeInSection
+        const remainingSection = (1 - sectionFraction) * sizeInSection
         return {
             fraction: sizeTotal > 0 ? nextSize / sizeTotal : 0,
             section: {

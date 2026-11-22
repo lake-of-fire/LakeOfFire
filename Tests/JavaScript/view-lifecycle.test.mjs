@@ -197,6 +197,55 @@ const makeBook = () => ({
     },
 })
 
+test('view relocation preserves its range and receipt when progress geometry is unavailable', async () => {
+    const renderer = new FakeRenderer()
+    globalThis.__viewRendererFactory = () => renderer
+    const view = new View()
+    const book = makeBook()
+    book.sections = [
+        { id: 'chapter-1.xhtml', size: 1500, cfi: 'epubcfi(/6/2)' },
+        { id: 'chapter-2.xhtml', size: 1500, cfi: 'epubcfi(/6/4)' },
+    ]
+    book.splitTOCHref = href => [href]
+    book.getTOCFragment = () => null
+    const documentElement = { childNodes: [] }
+    const ownerDocument = { documentElement }
+    const body = { nodeType: 1, localName: 'body', childNodes: [], parentNode: documentElement, ownerDocument }
+    const text = { nodeType: 3, nodeValue: 'Chapter', parentNode: body, ownerDocument }
+    documentElement.childNodes.push(body)
+    body.childNodes.push(text)
+    const range = { startContainer: text, startOffset: 1, collapsed: true }
+    const relocations = []
+    view.addEventListener('relocate', event => relocations.push(event.detail))
+
+    try {
+        assert.equal(await view.open(book), true)
+        const cfi = view.getCFI(1, range)
+        const relocate = (fraction, size, relocationID) => renderer.dispatchEvent(new CustomEvent('relocate', {
+            detail: { index: 1, reason: 'navigation', range, fraction, size, relocationID },
+        }))
+        relocate(0.75, 0.5, 'measured')
+        relocate(Number.NaN, 0.5, 'unmeasured')
+
+        assert.equal(relocations.length, 2)
+        const [measured, unmeasured] = relocations
+        assert.equal(measured.fraction, 1)
+        assert.equal(measured.location.next, 2)
+        assert.equal(unmeasured.fraction, undefined)
+        assert.equal(unmeasured.location, undefined)
+        assert.equal(unmeasured.time, undefined)
+        for (const relocation of relocations) {
+            assert.equal(relocation.sectionIndex, 1)
+            assert.equal(relocation.range, range)
+            assert.equal(relocation.cfi, cfi)
+        }
+        assert.equal(unmeasured.relocationID, 'unmeasured')
+        assert.equal(view.lastLocation, unmeasured)
+    } finally {
+        view.close()
+    }
+})
+
 const makeLinkedBook = (name, index) => {
     const book = makeBook()
     book.sections = [{
