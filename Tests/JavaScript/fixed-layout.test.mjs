@@ -54,6 +54,8 @@ class FakeIFrame extends FakeElement {
     }
     set src(value) {
         this._src = value
+        const root = globalThis.__fixedLayoutDocumentRootBySource?.get?.(value)
+        if (root) this.contentDocument.documentElement = root
         globalThis.__fixedLayoutOnFrameSource?.(value)
         if (globalThis.__fixedLayoutTriggerResizeDuringFrameLoad === true) {
             globalThis.__fixedLayoutResizeObserverCallback?.()
@@ -1336,3 +1338,83 @@ test('terminal endcap preserves spine identity and rejects lookup-owned navigati
     assert.equal(relocations,0)
     layout.destroy()
 })
+
+
+for (const nodeName of ['svg', 's:svg']) {
+    for (const viewBox of [
+        '0 0 1200 800',
+        '0,0,1200,800',
+        '0, 0 1200,800',
+        ' \t0 ,\n0,\t1200 , 800\r ',
+        '-10.5,+.25,1.2e3,8E2',
+    ]) {
+        test(`fixed layout sizes ${nodeName} with viewBox ${JSON.stringify(viewBox)}`, async () => {
+            const layout = new FixedLayout()
+            globalThis.__fixedLayoutBounds = { width: 600, height: 900 }
+            globalThis.__fixedLayoutDocumentRootBySource = new Map([['svg-page', {
+                nodeName,
+                localName: 'svg',
+                namespaceURI: 'http://www.w3.org/2000/svg',
+                getAttribute: name => name === 'viewBox' ? viewBox : null,
+            }]])
+            try {
+                layout.open({
+                    dir: 'ltr',
+                    rendition: { spread: 'none', viewport: { width: 1000, height: 1000 } },
+                    sections: [{ linear: 'yes', load: async () => 'svg-page' }],
+                })
+                assert.equal(await layout.goTo({ index: 0 }), true)
+                const content = layout.getContents()[0]
+                assert.equal(content.iframe.style.width, '1200px')
+                assert.equal(content.iframe.style.height, '800px')
+                assert.equal(content.iframe.style.transform, 'scale(0.5)')
+                assert.equal(content.element.style.width, '600px')
+                assert.equal(content.element.style.height, '400px')
+            } finally {
+                layout.destroy()
+                globalThis.__fixedLayoutBounds = null
+                globalThis.__fixedLayoutDocumentRootBySource = null
+            }
+        })
+    }
+}
+
+for (const viewBox of [
+    null, '', '0,0,1200', '0,0,1200,800,1', '0,,1200,800',
+    '0,0,1200px,800', '0,0,0,800', '0,0,-1200,800',
+    '0,0,1200,0', '0,0,1200,-800', '0,0,1e999,800',
+    'NaN,0,1200,800', '0,0,NaN,800', '0 0 1200px 800',
+    '0 0 1200 800 1', 'NaN 0 1200 800',
+    '\u00a00 0 1200 800', '0 0 1200 800\u00a0',
+    '\f0 0 1200 800', '0 0 1200 800\f',
+    '\ufeff0 0 1200 800', '0 0 1200 800\ufeff',
+]) {
+    test(`fixed layout retains rendition fallback for invalid SVG viewBox ${JSON.stringify(viewBox)}`, async () => {
+        const layout = new FixedLayout()
+        globalThis.__fixedLayoutBounds = { width: 600, height: 900 }
+        globalThis.__fixedLayoutDocumentRootBySource = new Map([['invalid-svg-page', {
+            nodeName: 'svg',
+            localName: 'svg',
+            namespaceURI: 'http://www.w3.org/2000/svg',
+            getAttribute: name => name === 'viewBox' ? viewBox : null,
+        }]])
+        try {
+            layout.open({
+                dir: 'ltr',
+                rendition: { spread: 'none', viewport: { width: 1000, height: 1000 } },
+                sections: [{ linear: 'yes', load: async () => 'invalid-svg-page' }],
+            })
+            assert.equal(await layout.goTo({ index: 0 }), true)
+            const content = layout.getContents()[0]
+            assert.equal(content.iframe.style.width, '1000px')
+            assert.equal(content.iframe.style.height, '1000px')
+            assert.equal(content.iframe.style.transform, 'scale(0.6)')
+            assert.equal(content.element.style.width, '600px')
+            assert.equal(content.element.style.height, '600px')
+        } finally {
+            layout.destroy()
+            globalThis.__fixedLayoutBounds = null
+            globalThis.__fixedLayoutDocumentRootBySource = null
+        }
+    })
+}

@@ -1120,7 +1120,8 @@ export class Loader {
                     }
                 }
                 if (token === '{') {
-                    const valueBlock = scope.value && scope.head?.startsWith('--')
+                    // Nested blocks in a custom-property value remain values.
+                    const valueBlock = scope.valueBlock || scope.value && scope.head?.startsWith('--')
                     scopes.push({ declarations: !valueBlock && (cssGroupingRule.test(scope.head ?? '')
                         ? scope.declarations : true),
                         head: null, parens: 0, brackets: 0, valueBlock })

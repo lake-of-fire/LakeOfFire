@@ -286,6 +286,69 @@ test('YouTube ranks matching manual, matching ASR, then unmatched language fallb
   assert.match(fallback.captionURL, /\/ja\?/);
 });
 
+test('YouTube selects a secondary browser language before alphabetical unmatched fallback', async () => {
+  const f = fixture({ pageURL: 'https://www.youtube.com/watch?v=current' })
+  f.media.textTracks = []
+  f.context.navigator.languages = ['fr-CA', 'JA_jp']
+  const options = [
+    { languageCode: 'ko', baseUrl: 'https://www.youtube.com/ko' },
+    { languageCode: 'de', baseUrl: 'https://www.youtube.com/de' },
+    { languageCode: 'ja-JP', baseUrl: 'https://www.youtube.com/ja' }
+  ]
+  f.context.ytInitialPlayerResponse = { videoDetails: { videoId: 'current' },
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: options } } }
+
+  const preferred = await f.capture()
+  assert.equal(preferred.languageCode, 'ja-JP')
+  assert.equal(preferred.captionURL, 'https://www.youtube.com/ja?fmt=vtt')
+
+  f.context.navigator.languages = ['fr-CA']
+  const unmatched = await f.capture()
+  assert.equal(unmatched.languageCode, 'de')
+  assert.equal(unmatched.captionURL, 'https://www.youtube.com/de?fmt=vtt')
+})
+
+test('YouTube prefers an earlier primary-language match over a later exact manual match', async () => {
+  const f = fixture({ pageURL: 'https://www.youtube.com/watch?v=current' })
+  f.media.textTracks = []
+  f.context.navigator.languages = ['fr-CA', 'pt-BR', 'en-US']
+  const options = [
+    { languageCode: 'en-US', baseUrl: 'https://www.youtube.com/en' },
+    { languageCode: 'pt-PT', baseUrl: 'https://www.youtube.com/pt' }
+  ]
+  f.context.ytInitialPlayerResponse = { videoDetails: { videoId: 'current' },
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: options } } }
+
+  const manual = await f.capture()
+  assert.equal(manual.languageCode, 'pt-PT')
+  assert.equal(manual.captionURL, 'https://www.youtube.com/pt?fmt=vtt')
+  options[1].kind = 'asr'
+  const automatic = await f.capture()
+  assert.equal(automatic.languageCode, 'pt-PT')
+  assert.equal(automatic.captionURL, 'https://www.youtube.com/pt?fmt=vtt')
+})
+
+test('YouTube ranks manual and automatic tracks within a secondary browser language', async () => {
+  const f = fixture({ pageURL: 'https://www.youtube.com/watch?v=current' })
+  f.media.textTracks = []
+  f.context.navigator.languages = ['fr-CA', 'en-US']
+  const options = [
+    { languageCode: 'en-GB', kind: 'asr', baseUrl: 'https://www.youtube.com/asr-primary' },
+    { languageCode: 'en-US', kind: 'asr', baseUrl: 'https://www.youtube.com/asr-exact' },
+    { languageCode: 'en-GB', baseUrl: 'https://www.youtube.com/manual-primary' },
+    { languageCode: 'en-US', baseUrl: 'https://www.youtube.com/manual-exact' }
+  ]
+  f.context.ytInitialPlayerResponse = { videoDetails: { videoId: 'current' },
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: options } } }
+
+  for (const expected of [...options].reverse()) {
+    const selected = await f.capture()
+    assert.equal(selected.languageCode, expected.languageCode)
+    assert.equal(selected.captionURL, `${expected.baseUrl}?fmt=vtt`)
+    options.pop()
+  }
+})
+
 test('unassociated HTML fallback cannot pair Japanese URL with selected English language', async () => {
   const f = fixture({ captionURL: 'https://example.com/en.vtt' });
   assert.equal((await f.capture()).languageCode, 'en');
@@ -1052,3 +1115,101 @@ for (const [locale, language] of [['ja-JP', 'JA'], ['JA-jp', 'ja'], ['jA-JP', 'J
     assert.equal(showing.webVTT, captionText('English'))
   })
 }
+
+for (const remote of [false, true]) {
+  test(`${remote ? 'Remote' : 'Loaded'} HTML captions prefer an exact script over an earlier primary match`, async () => {
+    const f = fixture()
+    f.context.navigator.languages = ['ZH-Hans', 'en']
+    const traditional = { ...f.track, mode: 'hidden', language: 'zh-Hant', cues: remote ? [] : [captionCue('繁體中文')] }
+    const simplified = { ...f.track, mode: 'hidden', language: 'zh-Hans', cues: remote ? [] : [captionCue('简体中文')] }
+    const traditionalURL = 'https://example.com/zh-hant.vtt'
+    const simplifiedURL = 'https://example.com/zh-hans.vtt'
+    f.media.textTracks = [traditional, simplified]
+    f.media.querySelectorAll = () => [
+      { track: traditional, src: traditionalURL },
+      { track: simplified, src: simplifiedURL }
+    ]
+
+    const urls = []
+    f.context.fetch = async url => {
+      urls.push(url)
+      return new Response(captionText(url === simplifiedURL ? '简体中文' : '繁體中文'))
+    }
+    const preferred = await f.capture()
+    assert.equal(preferred.languageCode, 'zh-Hans')
+    assert.equal(preferred.captionURL, simplifiedURL)
+    assert.equal(preferred.webVTT, remote ? null : captionText('简体中文'))
+    assert.deepEqual(urls, [])
+    assert.equal(await f.captions(preferred), captionText('简体中文'))
+    assert.deepEqual(urls, remote ? [simplifiedURL] : [])
+  })
+}
+
+test('An earlier browser preference can match by primary language before a later exact match', async () => {
+  const f = fixture()
+  f.context.navigator.languages = ['pt-BR', 'en-US']
+  const english = { ...f.track, mode: 'hidden', language: 'en-US', cues: [captionCue('English')] }
+  const portuguese = { ...f.track, mode: 'hidden', language: 'pt-PT', cues: [captionCue('Português')] }
+  f.media.textTracks = [english, portuguese]
+
+  const preferred = await f.capture()
+  assert.equal(preferred.languageCode, 'pt-PT')
+  assert.equal(await f.captions(preferred), captionText('Português'))
+})
+
+test('Absent language tags do not outrank other unmatched HTML captions', async () => {
+  const f = fixture()
+  f.context.navigator.languages = ['', 'fr-CA']
+  const japanese = { ...f.track, mode: 'hidden', language: 'ja', cues: [captionCue('日本語')] }
+  const unspecified = { ...f.track, mode: 'hidden', language: '', cues: [captionCue('No language')] }
+  f.media.textTracks = [japanese, unspecified]
+
+  const fallback = await f.capture()
+  assert.equal(fallback.languageCode, 'ja')
+  assert.equal(await f.captions(fallback), captionText('日本語'))
+})
+
+test('A browser language change retires an in-flight request for the previously preferred captions', async () => {
+  const f = fixture()
+  f.context.navigator.languages = ['pt-BR']
+  const european = { ...f.track, mode: 'hidden', language: 'pt-PT' }
+  const brazilian = { ...f.track, mode: 'hidden', language: 'pt-BR' }
+  const europeanURL = 'https://example.com/pt-pt.vtt'
+  const brazilianURL = 'https://example.com/pt-br.vtt'
+  f.media.textTracks = [european, brazilian]
+  f.media.querySelectorAll = () => [
+    { track: european, src: europeanURL },
+    { track: brazilian, src: brazilianURL }
+  ]
+
+  let release
+  const started = new Promise(resolve => {
+    f.context.fetch = url => new Promise(response => {
+      release = response
+      resolve(url)
+    })
+  })
+  const previous = await f.capture()
+  assert.equal(previous.captionURL, brazilianURL)
+  const pending = f.captions(previous)
+
+  let current
+  let previousResult
+  try {
+    assert.equal(await Promise.race([started, pending]), brazilianURL)
+    f.context.navigator.languages = ['pt-PT']
+    current = await f.capture()
+    assert.equal(current.mediaIdentity, previous.mediaIdentity)
+    assert.notEqual(current.captionSelectionIdentity, previous.captionSelectionIdentity)
+    assert.equal(current.captionURL, europeanURL)
+  } finally {
+    release?.(new Response(captionText('Português do Brasil')))
+    previousResult = await pending
+  }
+  assert.equal(previousResult, null)
+  f.context.fetch = async url => {
+    assert.equal(url, europeanURL)
+    return new Response(captionText('Português de Portugal'))
+  }
+  assert.equal(await f.captions(current), captionText('Português de Portugal'))
+})
