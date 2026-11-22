@@ -60,12 +60,12 @@ export const hydratePackageMedia = async ({
         return promise.then(objectURL => objectURL === null ? null : `${objectURL}${fragment}`);
     };
 
+    const mediaOwner = element => element.matches?.('audio, video')
+        ? element : element.closest?.('audio, video')
     const workItems = Array.from(doc.querySelectorAll(mediaSourceSelector), element => {
         const sourceURL = element.src;
         if (!isPackageMediaURL(sourceURL)) return { element, sourceURL };
-        const owningMedia = element.matches?.('audio, video')
-            ? element
-            : element.closest?.('audio, video');
+        const owningMedia = mediaOwner(element)
         return { element, sourceURL, owningMedia };
     });
     const ownerGroups = new Map();
@@ -73,7 +73,7 @@ export const hydratePackageMedia = async ({
         if (!item.owningMedia) continue;
         let group = ownerGroups.get(item.owningMedia);
         if (!group) {
-            group = { remaining: 0, changed: false };
+            group = { remaining: 0, published: new Map(), expectedSource: item.owningMedia.src }
             ownerGroups.set(item.owningMedia, group);
         }
         group.remaining++;
@@ -87,15 +87,28 @@ export const hydratePackageMedia = async ({
             // A closed/replaced document or explicitly changed media source does
             // not inherit a late response from its former package capability.
             if (closed || objectURL === null || item.element.isConnected === false
-                || item.element.src !== item.sourceURL) return false;
+                || item.element.src !== item.sourceURL
+                || mediaOwner(item.element) !== item.owningMedia
+                || (item.ownerGroup && (item.owningMedia.isConnected === false
+                    || item.owningMedia.src !== item.ownerGroup.expectedSource))) return false
             item.element.src = objectURL;
-            if (item.ownerGroup) item.ownerGroup.changed = true;
+            if (item.ownerGroup) {
+                item.ownerGroup.published.set(item.element, objectURL)
+                if (item.element === item.owningMedia) item.ownerGroup.expectedSource = objectURL
+            }
             return true;
         } finally {
             if (item.ownerGroup) {
-                item.ownerGroup.remaining--;
-                if (item.ownerGroup.remaining === 0 && item.ownerGroup.changed && !closed) {
-                    item.owningMedia.load?.();
+                const group = item.ownerGroup
+                group.remaining--
+                // Confirm that a hydrated source still belongs to the same live owner.
+                if (group.remaining === 0 && !closed
+                    && item.owningMedia.isConnected !== false
+                    && item.owningMedia.src === group.expectedSource
+                    && Array.from(group.published).some(([element, url]) =>
+                        element.isConnected !== false && element.src === url
+                        && mediaOwner(element) === item.owningMedia)) {
+                    item.owningMedia.load?.()
                 }
             }
         }
