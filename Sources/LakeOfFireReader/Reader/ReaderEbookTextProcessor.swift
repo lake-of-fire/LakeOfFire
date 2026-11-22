@@ -47,11 +47,13 @@ private func normalizedEbookNetworkPath(_ authored: String) -> String? {
     guard value.hasPrefix("//") else { return nil }
     let authorityAndPath = value.prefix { $0 != "?" && $0 != "#" }
     let authority = authorityAndPath.dropFirst(2).prefix { $0 != "/" }
-    guard !authority.isEmpty, !authorityAndPath.contains("\\"),
-          !authorityAndPath.utf8.contains(where: { $0 <= 0x20 || $0 == 0x7f }) else { return nil }
+    guard !authority.isEmpty, !authority.utf8.contains(0x20), !authorityAndPath.contains("\\"),
+          !authorityAndPath.utf8.contains(where: { $0 < 0x20 || $0 == 0x7f }) else { return nil }
     let absolute = "https:" + value
-    guard let host = URL(string: absolute)?.host, !host.isEmpty else { return nil }
-    // Validate the host but preserve the authored path, query and fragment bytes.
+    // Older Foundation versions need spaces escaped for validation. WebKit
+    // still receives the authored path, query and fragment without reserialization.
+    let validationURL = "https:" + value.replacingOccurrences(of: " ", with: "%20")
+    guard let host = URL(string: validationURL)?.host, !host.isEmpty else { return nil }
     return absolute
 }
 

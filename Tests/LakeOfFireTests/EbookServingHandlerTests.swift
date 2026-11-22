@@ -140,6 +140,8 @@ final class EbookServingHandlerTests: XCTestCase {
         </head><body>
         <m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
         <img id="signed" src="//ebook/art%2Fone%5Ctwo.png?sig=a%2Bb&amp;v=1#part" />
+        <img id="path-space" src="//cdn.example/cover art.png?sig=a%2Bb&amp;label=cover art#part one" />
+        <img id="authority-space" src="//cdn .example/cover.png" />
         <img id="local" src="../images/cover%20art.png?edition=2#part" />
         <img id="absolute" src="https://cdn.example/cover.png?sig=x%2Fy" />
         <img id="inline" src="data:image/png;base64,AA==" />
@@ -202,6 +204,8 @@ final class EbookServingHandlerTests: XCTestCase {
             XCTAssertEqual(URL(string: packageBase)?.host, "ebook")
             let expected = [
                 ("signed", "src", signedURL),
+                ("path-space", "src", "https://cdn.example/cover art.png?sig=a%2Bb&label=cover art#part one"),
+                ("authority-space", "src", "//cdn .example/cover.png"),
                 ("video", "src", "https://cdn.example/clip.mp4#t=3"),
                 ("video", "poster", "https://cdn.example/poster.jpg"),
                 ("audio", "src", "https://cdn.example/sound.mp3"),
