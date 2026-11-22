@@ -90,6 +90,17 @@ final class BookAcquisitionTests: XCTestCase {
         XCTAssertNil(book.downloadMediaType)
     }
 
+    func testDownloadTaskIdentityPreservesSignedURLSpelling() throws {
+        let upper = try XCTUnwrap(URL(string: "https://catalog.example/download?signature=a%2Fb+%2523"))
+        let lower = try XCTUnwrap(URL(string: "https://catalog.example/download?signature=a%2fb+%2523"))
+        let first = BookDownloadIdentity(url: upper, name: "Book", mediaType: "application/epub+zip")
+        let second = BookDownloadIdentity(url: lower, name: "Book", mediaType: "application/epub+zip")
+
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(Set([first, second]).count, 2)
+        XCTAssertEqual(Set([first, first]).count, 1)
+    }
+
     @MainActor
     func testDownloadTaskIdentityIncludesURLNameAndMediaType() {
         let url = URL(string: "https://catalog.example/download.php?id=42")!

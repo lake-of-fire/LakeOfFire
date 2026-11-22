@@ -141,7 +141,7 @@ struct BookGridCell: View {
     let downloadMediaType: String?
     var onSelected: ((Bool) -> Void)? = nil
     
-    @State private var downloadable: Downloadable?
+    @State private var prepared: (identity: BookDownloadIdentity, value: Downloadable)?
     //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     
     init(
@@ -160,21 +160,22 @@ struct BookGridCell: View {
     var body: some View {
         let download = BookDownloadIdentity(url: downloadURL, name: title, mediaType: downloadMediaType)
         VStack(alignment: .leading, spacing: 0) {
-            if let downloadable = downloadable {
-                DownloadableBookGridCell(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate, onSelected: onSelected, downloadable: downloadable)
+            if let prepared, prepared.identity == download {
+                DownloadableBookGridCell(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate, onSelected: onSelected, downloadable: prepared.value)
+                    .id(download)
             } else {
                 BookGridCellContent(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate, onSelected: onSelected)
             }
         }
         .task(id: download) { @MainActor in
             guard !Task.isCancelled else { return }
-            downloadable = nil
+            prepared = nil
             guard let url = download.url else { return }
             let result = try? await ReaderFileManager.shared.downloadable(
                 url: url, name: download.name, mediaType: download.mediaType
             )
-            guard !Task.isCancelled else { return }
-            downloadable = result
+            guard !Task.isCancelled, let result else { return }
+            prepared = (download, result)
         }
     }
 }
