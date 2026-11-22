@@ -1047,6 +1047,26 @@ internal func titleFromReadabilityHTML(_ html: String) -> String? {
     return normalisedTitle(candidate)
 }
 
+private func readerHeadingTextWithoutRuby(_ heading: SwiftSoup.Element?) -> String? {
+    guard let copy = heading?.copy() as? SwiftSoup.Element else { return nil }
+    // Annotations belong to the rendered heading, not its saved plain title.
+    try? copy.select("rt, rp, rtc").remove()
+    return try? copy.text()
+}
+
+/// Preserve prepared lookup identities and ruby when the saved snippet title
+/// is unchanged after native preparation and sidecar publication.
+@discardableResult
+internal func updateSnippetReaderTitleIfNeeded(
+    in document: SwiftSoup.Document,
+    title: String
+) throws -> Bool {
+    guard let heading = try document.getElementById("reader-title"),
+          readerHeadingTextWithoutRuby(heading) != title else { return false }
+    try heading.text(title)
+    return true
+}
+
 internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String? {
     func normalisedTitle(_ raw: String?) -> String? {
         let trimmed = (raw ?? "")
@@ -1054,12 +1074,12 @@ internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String?
         return trimmed.isEmpty ? nil : trimmed.truncate(36)
     }
 
-    if let readerTitleText = try? doc.getElementById("reader-title")?.text(),
+    if let readerTitleText = readerHeadingTextWithoutRuby(try? doc.getElementById("reader-title")),
        let title = normalisedTitle(readerTitleText) {
         return title
     }
 
-    if let headingText = try? doc.getElementsByTag("h1").first()?.text(),
+    if let headingText = readerHeadingTextWithoutRuby(try? doc.getElementsByTag("h1").first()),
        let title = normalisedTitle(headingText) {
         return title
     }
@@ -3433,9 +3453,7 @@ public class ReaderModeViewModel: ObservableObject {
                     snippetRawTitle,
                     needsClipboardIndicator: snippetNeedsClipboardIndicator
                 )
-                if let titleElement = try? doc.getElementById("reader-title") {
-                    try? titleElement.text(cleanedSnippetTitle)
-                }
+                try? updateSnippetReaderTitleIfNeeded(in: doc, title: cleanedSnippetTitle)
                 if let body = doc.body() {
                     let existingClassNames = ((try? body.className()) ?? "")
                         .split(separator: " ")

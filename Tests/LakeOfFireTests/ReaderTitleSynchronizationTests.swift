@@ -1,13 +1,22 @@
 #if DEBUG
 import Foundation
 import XCTest
+@preconcurrency import WebKit
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 @testable import SwiftUIWebView
 
 @MainActor
 final class ReaderTitleSynchronizationTests: XCTestCase {
-    private enum Failure: Error { case transient }
+    private enum Failure: Error { case transient, navigationTimedOut }
+
+    private final class PreparedTitleNavigation: NSObject, WKNavigationDelegate {
+        let finished = XCTestExpectation(description: "Prepared title document loaded")
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            finished.fulfill()
+        }
+    }
 
     @MainActor
     private final class Fixture {
@@ -113,6 +122,90 @@ final class ReaderTitleSynchronizationTests: XCTestCase {
             XCTAssertEqual(values[1].1, false)
         }
         synchronization.retire()
+    }
+
+    private func makePreparedTitleWebView() async throws -> WKWebView {
+        let webView = WKWebView()
+        let delegate = PreparedTitleNavigation()
+        webView.navigationDelegate = delegate
+        defer {
+            webView.navigationDelegate = nil
+            withExtendedLifetime(delegate) {}
+        }
+        let navigation = webView.loadHTMLString("""
+            <!doctype html><html><body><h1 id="reader-title"><m-c><m-s><m-m id="native-title-word"><ruby>学校<rp>(</rp><rt>がっこう</rt><rp>)</rp><rtc><rt>school</rt></rtc></ruby></m-m>へ行く</m-s></m-c></h1><script type="application/json" id="mnb-segment-metadata">{"version":1}</script></body></html>
+            """, baseURL: nil)
+        _ = try XCTUnwrap(navigation)
+        let result = await XCTWaiter.fulfillment(of: [delegate.finished], timeout: 5)
+        guard result == .completed else {
+            webView.stopLoading()
+            throw Failure.navigationTimedOut
+        }
+        return webView
+    }
+
+    private func deliverTitle(from fixture: Fixture, to webView: WKWebView) async throws {
+        let synchronization = ReaderTitleSynchronization()
+        let snapshot = try fixture.snapshot(), binding = try fixture.binding()
+        let accepted = await synchronization.deliver(snapshot: snapshot, binding: binding,
+            renderReady: true, isCurrent: { fixture.caller.currentJavaScriptBindingToken == binding }) {
+            script, arguments, current in
+            XCTAssertTrue(current())
+            _ = try await webView.callAsyncJavaScript(script,
+                arguments: arguments.mapValues { $0 as Any }, in: nil, contentWorld: .page)
+        }
+        XCTAssertTrue(accepted)
+    }
+
+    func testUnchangedSnippetTitleSyncPreservesPreparedHeadingAndSidecar() async throws {
+        let fixture = Fixture(title: "学校へ行く")
+        fixture.row.url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: UUID().uuidString))
+        fixture.row.updateCompoundKey()
+        try await fixture.load()
+        let webView = try await makePreparedTitleWebView()
+        let before = try await webView.evaluateJavaScript("""
+            window.preparedTitleWord = document.getElementById('native-title-word')
+            document.getElementById('reader-title').innerHTML
+            """)
+        XCTAssertNotNil(before as? String)
+
+        try await deliverTitle(from: fixture, to: webView)
+
+        let after = try await webView.evaluateJavaScript("document.getElementById('reader-title').innerHTML")
+        XCTAssertEqual(after as? String, before as? String)
+        let lookupPreserved = try await webView.evaluateJavaScript("""
+            window.preparedTitleWord === document.getElementById('native-title-word')
+                && document.querySelector('#native-title-word ruby rt').textContent === 'がっこう'
+            """)
+        XCTAssertEqual(lookupPreserved as? Bool, true)
+        let sidecar = try await webView.evaluateJavaScript("document.getElementById('mnb-segment-metadata').textContent")
+        XCTAssertEqual(sidecar as? String, #"{"version":1}"#)
+    }
+
+    func testRenamedSnippetTitleSyncReplacesPreparedHeading() async throws {
+        let fixture = Fixture(title: "図書館へ行く")
+        fixture.row.url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: UUID().uuidString))
+        fixture.row.updateCompoundKey()
+        try await fixture.load()
+        let webView = try await makePreparedTitleWebView()
+
+        try await deliverTitle(from: fixture, to: webView)
+
+        let heading = try await webView.evaluateJavaScript("document.getElementById('reader-title').textContent")
+        XCTAssertEqual(heading as? String, "図書館へ行く")
+        let hasOldWord = try await webView.evaluateJavaScript("document.getElementById('native-title-word') !== null")
+        XCTAssertEqual(hasOldWord as? Bool, false)
+    }
+
+    func testArticleTitleSyncRetainsExistingTextReplacementBehavior() async throws {
+        let fixture = Fixture(title: "学校へ行く")
+        try await fixture.load()
+        let webView = try await makePreparedTitleWebView()
+
+        try await deliverTitle(from: fixture, to: webView)
+
+        let heading = try await webView.evaluateJavaScript("document.getElementById('reader-title').innerHTML")
+        XCTAssertEqual(heading as? String, "学校へ行く")
     }
 
     func testSuccessfulAckDeduplicatesButFailureAndRenderReadyRecoveryRedispatch() async throws {
