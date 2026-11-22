@@ -192,7 +192,10 @@ public struct ReaderPackageEntrySource: Sendable {
             } catch {
                 throw ReaderPackageEntrySourceError.packageCorrupt
             }
+            // Keep the first lookup match, but require its exact spelling.
+            // ZIPFoundation's String lookup can match a canonically equivalent name.
             guard let entry = archive[subpath],
+                  entry.path.utf8.elementsEqual(subpath.utf8),
                   entry.type == .file else {
                 throw ReaderPackageEntrySourceError.entryNotFound
             }
