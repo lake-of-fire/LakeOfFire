@@ -427,8 +427,7 @@ public struct ReaderWebView: View {
     let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
-    let onTouchScrollWillBeginDragging: (@MainActor @Sendable () -> UInt64?)?
-    let onTouchScrollDidSettle: (@MainActor @Sendable (UInt64, Bool) -> Void)?
+    let shouldDeferTouchDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
@@ -504,8 +503,7 @@ public struct ReaderWebView: View {
         onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
-        onTouchScrollWillBeginDragging: (@MainActor @Sendable () -> UInt64?)? = nil,
-        onTouchScrollDidSettle: (@MainActor @Sendable (UInt64, Bool) -> Void)? = nil,
+        shouldDeferTouchDownwardNavigationHide: (@MainActor @Sendable () -> Bool)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil,
@@ -527,8 +525,7 @@ public struct ReaderWebView: View {
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.onScrollBottomStateChanged = onScrollBottomStateChanged
-        self.onTouchScrollWillBeginDragging = onTouchScrollWillBeginDragging
-        self.onTouchScrollDidSettle = onTouchScrollDidSettle
+        self.shouldDeferTouchDownwardNavigationHide = shouldDeferTouchDownwardNavigationHide
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
@@ -560,8 +557,7 @@ public struct ReaderWebView: View {
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
             onScrollBottomStateChanged: onScrollBottomStateChanged,
-            onTouchScrollWillBeginDragging: onTouchScrollWillBeginDragging,
-            onTouchScrollDidSettle: onTouchScrollDidSettle,
+            shouldDeferTouchDownwardNavigationHide: shouldDeferTouchDownwardNavigationHide,
             buildMenu: buildMenu,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme,
@@ -623,8 +619,7 @@ fileprivate struct ReaderWebViewInternal: View {
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
-    let onTouchScrollWillBeginDragging: (@MainActor @Sendable () -> UInt64?)?
-    let onTouchScrollDidSettle: (@MainActor @Sendable (UInt64, Bool) -> Void)?
+    let shouldDeferTouchDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
     var buildMenu: BuildMenuType?
     let lightModeTheme: LightModeTheme
     let darkModeTheme: DarkModeTheme
@@ -745,8 +740,7 @@ fileprivate struct ReaderWebViewInternal: View {
                 callbackRelay.handler?.onURLChanged(state: state)
             },
             onScrollBottomStateChanged: onScrollBottomStateChanged,
-            onTouchScrollWillBeginDragging: onTouchScrollWillBeginDragging,
-            onTouchScrollDidSettle: onTouchScrollDidSettle,
+            shouldDeferTouchDownwardNavigationHide: shouldDeferTouchDownwardNavigationHide,
             buildMenu: { builder in
                 buildMenu?(builder)
             },

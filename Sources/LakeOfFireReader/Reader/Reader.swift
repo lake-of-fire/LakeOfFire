@@ -1183,8 +1183,7 @@ public struct Reader: View {
     let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
-    let onTouchScrollWillBeginDragging: (@MainActor @Sendable () -> UInt64?)?
-    let onTouchScrollDidSettle: (@MainActor @Sendable (UInt64, Bool) -> Void)?
+    let shouldDeferTouchDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
@@ -1220,8 +1219,7 @@ public struct Reader: View {
         onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
-        onTouchScrollWillBeginDragging: (@MainActor @Sendable () -> UInt64?)? = nil,
-        onTouchScrollDidSettle: (@MainActor @Sendable (UInt64, Bool) -> Void)? = nil,
+        shouldDeferTouchDownwardNavigationHide: (@MainActor @Sendable () -> Bool)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil
@@ -1244,8 +1242,7 @@ public struct Reader: View {
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.onScrollBottomStateChanged = onScrollBottomStateChanged
-        self.onTouchScrollWillBeginDragging = onTouchScrollWillBeginDragging
-        self.onTouchScrollDidSettle = onTouchScrollDidSettle
+        self.shouldDeferTouchDownwardNavigationHide = shouldDeferTouchDownwardNavigationHide
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
@@ -1345,8 +1342,7 @@ public struct Reader: View {
             onDocumentContextInvalidated: onDocumentContextInvalidated,
             onURLChanged: onURLChanged,
             onScrollBottomStateChanged: onScrollBottomStateChanged,
-            onTouchScrollWillBeginDragging: onTouchScrollWillBeginDragging,
-            onTouchScrollDidSettle: onTouchScrollDidSettle,
+            shouldDeferTouchDownwardNavigationHide: shouldDeferTouchDownwardNavigationHide,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
             buildMenu: buildMenu,
