@@ -281,13 +281,16 @@
                 } else {
                     let title = DOMPurify.sanitize(article.title)
                     let byline = DOMPurify.sanitize(article.byline)
-                    let publishedTime = DOMPurify.sanitize(formatReadabilityPublishedTime(article.publishedTime || ''))
+                    const publishedTime = formatReadabilityPublishedTime(article.publishedTime || '')
                     var content = DOMPurify.sanitize(article.content)
                     let contentIsInternal = isInternalURL(uri.spec)
                     let viewOriginalHref = DOMPurify.sanitize(String(uri.spec)).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
                     let viewOriginal = contentIsInternal ? '' : `<a class="reader-view-original" href="${viewOriginalHref}">View Original</a>`
+                    const publicationDateElement = document.createElement('span')
+                    publicationDateElement.id = 'reader-publication-date'
+                    publicationDateElement.textContent = publishedTime
                     let metaItems = [
-                        publishedTime ? `<span id="reader-publication-date">${publishedTime}</span>` : '',
+                        publishedTime ? publicationDateElement.outerHTML : '',
                         viewOriginal,
                     ].filter(Boolean)
                     let metaLine = metaItems.length ? `<div id="reader-meta-line" class="byline-meta-line">${metaItems.join('<span class="reader-meta-divider">·</span>')}</div>` : ''
