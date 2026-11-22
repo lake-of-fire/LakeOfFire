@@ -3704,7 +3704,7 @@ public class ReaderModeViewModel: ObservableObject {
                             throw CancellationError()
                         }
                         let result = try await scriptCaller.evaluateJavaScript(
-                            replacementScript + "\n" + readerModeInitializationScript + "\nreturn root != null;",
+                            replacementScript + "\n" + readerModeInitializationScript + "\nreturn root != null",
                             arguments: replacementArguments, in: frameInfo,
                             requiring: frameReplacementBinding)
                         replacedContent = result as? Bool == true

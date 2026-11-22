@@ -1,7 +1,9 @@
 import BigSyncKit
 import Combine
+import Foundation
 import XCTest
 import RealmSwift
+@testable import LakeKit
 @testable import RealmSwiftGaps
 @testable import LakeOfFireContent
 
@@ -37,6 +39,21 @@ private actor ReaderContentLoadingDiscoveryGate {
         let pendingArrivals = arrivalWaiters
         arrivalWaiters.removeAll()
         pendingArrivals.forEach { $0.resume() }
+    }
+}
+
+private final class ReaderTitlePropagationAccount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = AccountSessionSnapshot(identity: .authenticated(userID: 11), generation: 1)
+
+    func snapshot() -> AccountSessionSnapshot {
+        lock.withLock { current }
+    }
+
+    func replaceAccount() {
+        lock.withLock {
+            current = AccountSessionSnapshot(identity: .authenticated(userID: 22), generation: 2)
+        }
     }
 }
 
@@ -1658,6 +1675,84 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
                 XCTAssertEqual(currentRow.title, expectedTitle)
                 XCTAssertEqual(try journalState(for: currentRow, in: realm), expectedJournal)
             }
+        }
+    }
+
+    @MainActor
+    func testSavedArticleTitlePropagationRejectsAccountReplacementDuringDiscovery() async throws {
+        try await withArticlePropagationRealm { realm in
+            let url = URL(string: "https://example.com/article/\(UUID().uuidString)")!
+            let originalTitle = "化学賞かがくしょうが決まった"
+            let replacement = "化学賞が決まった"
+            let primary = try managedReaderRecord(in: realm, url: url, title: originalTitle)
+            let related = Bookmark()
+            related.url = url
+            related.title = originalTitle
+            related.updateCompoundKey()
+            try realm.write {
+                realm.add(related)
+                for record in [primary as Bookmark, related] {
+                    record.isReaderModeByDefault = false
+                    record.isReaderModeAvailable = true
+                    record.rssContainsFullContent = false
+                    record.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+            let primaryJournal = try journalState(for: primary, in: realm)
+            let relatedJournal = try journalState(for: related, in: realm)
+            let primaryKey = primary.compoundKey
+            let primaryClass = primary.objectSchema.className
+            let storage = ReaderContentLoader.ReaderModePropagationStorage().capturingPrimary(primary)
+            let account = ReaderTitlePropagationAccount()
+            let access = AccountSessionAccess(testSnapshotProvider: { account.snapshot() })
+            let originalSnapshot = access.snapshot
+            let gate = ReaderContentLoadingDiscoveryGate()
+            await { @RealmBackgroundActor in
+                ReaderContentLoader.loadAllDiscoveryGateForTesting = { await gate.pause() }
+            }()
+            let propagation = Task {
+                try await ReaderContentLoader.propagateReaderModeDefaults(
+                    for: url, excludingPrimaryKey: primaryKey, primaryClassName: primaryClass,
+                    storage: storage, readabilityHTML: "<h1>\(replacement)</h1>",
+                    resolvedTitle: replacement, legacyFlattenedTitle: originalTitle,
+                    primaryTitleUpdate: (expected: originalTitle, replacement: replacement),
+                    account: (access, originalSnapshot), permitsCommit: { true }
+                )
+            }
+            let entered = expectation(description: "captured account enters delayed discovery")
+            let arrival = Task {
+                if await gate.waitForArrivals(1) { entered.fulfill() }
+            }
+            addTeardownBlock {
+                await gate.releaseAll()
+                await arrival.value
+                _ = await propagation.result
+                await { @RealmBackgroundActor in
+                    ReaderContentLoader.loadAllDiscoveryGateForTesting = nil
+                }()
+            }
+            await fulfillment(of: [entered], timeout: 5)
+            let arrivalCount = await gate.arrivalCount()
+            XCTAssertEqual(arrivalCount, 1)
+            account.replaceAccount()
+            XCTAssertNotEqual(access.snapshot, originalSnapshot)
+            await gate.releaseAll()
+            await arrival.value
+
+            do {
+                try await propagation.value
+                XCTFail("A replaced account must cancel its queued article propagation")
+            } catch is CancellationError { }
+            await realm.asyncRefresh()
+            for record in [primary as Bookmark, related] {
+                XCTAssertEqual(record.title, originalTitle)
+                XCTAssertFalse(record.isReaderModeByDefault)
+                XCTAssertTrue(record.isReaderModeAvailable)
+                XCTAssertFalse(record.rssContainsFullContent)
+            }
+            XCTAssertEqual(try journalState(for: primary, in: realm), primaryJournal)
+            XCTAssertEqual(try journalState(for: related, in: realm), relatedJournal)
+            XCTAssertFalse(realm.isInWriteTransaction)
         }
     }
 
