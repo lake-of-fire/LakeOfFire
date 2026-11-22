@@ -337,8 +337,42 @@ enum ReaderContentSelectionDispatch {
         }
 
         return Task { @MainActor in
-            guard currentGeneration() == capturedGeneration else { return }
+            guard !Task.isCancelled, currentGeneration() == capturedGeneration,
+                  selection.wrappedValue == selectedKey else { return }
             await deferred()
+        }
+    }
+
+    /// Decide from one publication of row identities and URLs. A queued clear
+    /// belongs to that selection, never to a later row with the same binding.
+    static func refresh<C: ReaderContentProtocol>(
+        contents: [C],
+        readerPageURL: URL,
+        isReaderProvisionallyNavigating: Bool,
+        selectedKey: String?,
+        capturedGeneration: UUID,
+        selection: Binding<String?>,
+        currentGeneration: @escaping @MainActor () -> UUID
+    ) -> Task<Void, Error>? {
+        guard !Task.isCancelled, !isReaderProvisionallyNavigating,
+              let selectedKey else { return nil }
+        let rows = contents.map { (key: $0.compoundKey, url: $0.url) }
+        let selectedURL = rows.first(where: { $0.key == selectedKey })?.url
+        let shouldClear: Bool
+        if !readerPageURL.isNativeReaderView, let selectedURL,
+           !selectedURL.matchesReaderURL(readerPageURL) {
+            shouldClear = true
+        } else {
+            shouldClear = (readerPageURL.isNativeReaderView || !rows.contains(where: { $0.url == readerPageURL }))
+                && !readerPageURL.absoluteString.hasPrefix("internal://local/load")
+        }
+        guard shouldClear else { return nil }
+
+        return Task { @MainActor in
+            try Task.checkCancellation()
+            guard currentGeneration() == capturedGeneration,
+                  selection.wrappedValue == selectedKey else { return }
+            selection.wrappedValue = nil
         }
     }
 }
@@ -350,6 +384,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
     let onSelection: ((C) -> Void)?
     let onSynchronousSelection: ((C) -> Void)?
     @State private var selectionLoadGeneration = UUID()
+    @State private var refreshSelectionTask: Task<Void, Error>?
 
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.contentSelectionNavigationHint) private var contentSelectionNavigationHint
@@ -363,15 +398,17 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
         return content
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard enabled else { return }
+                refreshSelectionTask?.cancel()
+                refreshSelectionTask = nil
+                let loadGeneration = UUID()
+                selectionLoadGeneration = loadGeneration
                 guard oldValue != itemSelection,
                       let itemSelection,
                       let selectedContent = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection })
                 else {
                     return
                 }
-                let loadGeneration = UUID()
                 let currentPageURL = readerContent.pageURL
-                selectionLoadGeneration = loadGeneration
 
                 ReaderContentSelectionDispatch.dispatch(
                     selectedContent: selectedContent,
@@ -426,19 +463,20 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                 if oldPageURL != readerPageURL {
                     refreshSelection(
                         readerPageURL: readerPageURL,
-                        isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating,
-                        oldPageURL: oldPageURL
+                        isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating
                     )
                 }
             }
             .onChange(of: viewModel.filteredContents) { _ in
                 guard shouldSyncToReader else { return }
-                Task { @MainActor in
-                    refreshSelection(
-                        readerPageURL: readerContent.pageURL,
-                        isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating
-                    )
-                }
+                refreshSelection(
+                    readerPageURL: readerContent.pageURL,
+                    isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating
+                )
+            }
+            .onDisappear {
+                refreshSelectionTask?.cancel()
+                refreshSelectionTask = nil
             }
             .task { @MainActor in
                 guard shouldSyncToReader else { return }
@@ -449,50 +487,21 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
             }
     }
 
+    @MainActor
     private func refreshSelection(
         readerPageURL: URL,
-        isReaderProvisionallyNavigating: Bool,
-        oldPageURL: URL? = nil
+        isReaderProvisionallyNavigating: Bool
     ) {
-        let refreshStartedAt = Date()
-        viewModel.refreshSelectionTask?.cancel()
-        guard !isReaderProvisionallyNavigating else {
-            return
-        }
-
-        let currentSelection = entrySelection
-        let filteredContentURLs = viewModel.filteredContents.map(\.url)
-
-        viewModel.refreshSelectionTask = Task.detached {
-            try Task.checkCancellation()
-            do {
-                if !readerPageURL.isNativeReaderView,
-                   let currentSelection,
-                   let idx = await viewModel.filteredContentIDs.firstIndex(of: currentSelection),
-                   idx < filteredContentURLs.count,
-                   !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
-                    async let clearTask = { @MainActor in
-                        try Task.checkCancellation()
-                            self.entrySelection = nil
-                        }()
-                        try await clearTask
-                }
-
-                guard !readerPageURL.isNativeReaderView,
-                      filteredContentURLs.contains(readerPageURL)
-                else {
-                    if !readerPageURL.absoluteString.hasPrefix("internal://local/load"),
-                       currentSelection != nil {
-                        async let clearTask = { @MainActor in
-                            try Task.checkCancellation()
-                            self.entrySelection = nil
-                        }()
-                        try await clearTask
-                    }
-                    return
-                }
-            } catch { }
-        }
+        refreshSelectionTask?.cancel()
+        refreshSelectionTask = ReaderContentSelectionDispatch.refresh(
+            contents: viewModel.filteredContents,
+            readerPageURL: readerPageURL,
+            isReaderProvisionallyNavigating: isReaderProvisionallyNavigating,
+            selectedKey: entrySelection,
+            capturedGeneration: selectionLoadGeneration,
+            selection: $entrySelection,
+            currentGeneration: { selectionLoadGeneration }
+        )
     }
 }
 
@@ -563,7 +572,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     public var filteredContents: [C] { filteredContentSnapshot.contents }
     public var filteredContentIDs: [String] { filteredContentSnapshot.ids }
     public var realmConfiguration: Realm.Configuration?
-    var refreshSelectionTask: Task<Void, Error>?
     @Published public var loadContentsTask: Task<Void, Error>?
     private var currentLoadID: UUID?
 
