@@ -1018,40 +1018,68 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
 
     @MainActor
     public func imageURLToDisplay() async throws -> URL? {
+        try Task.checkCancellation()
+        guard !isInvalidated, !isDeleted else { throw CancellationError() }
         if let imageUrl {
             return imageUrl
         }
-        guard let configuration = realm?.configuration else { return nil }
-        let compoundKey = compoundKey
-        return try await { @FeedEntryActor () -> URL? in
-            let realm = try await Realm.open(configuration: configuration)
-            guard let feedEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: compoundKey) else { return nil }
-            if feedEntry.extractImageFromContent {
-                let legacyHTMLContent = htmlContent
-                let ref = compoundKey
-                let existingImageURL = feedEntry.imageUrl
-                if let html = Self.contentToHTML(
-                    legacyHTMLContent: legacyHTMLContent,
-                    content: feedEntry.content
-                ), let url = Self.imageURLExtractedFromContent(
-                    htmlContent: html
-                ), existingImageURL != url {
-                    try await { @RealmBackgroundActor in
-                        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                        guard let entry = realm.object(ofType: FeedEntry.self, forPrimaryKey: ref) else { return }
-                        //await realm.asyncRefresh()
-                        try await realm.asyncWritePreservingOwnership {
-                            entry.imageUrl = url
-                            entry.refreshChangeMetadata(explicitlyModified: true)
-                        }
-                    }()
-                    return url
-                }
-                return nil
+        guard let reference = ReaderContentLoader.ContentReference(content: self) else { return nil }
+        let configuration = reference.realmConfiguration
+        let storage = reference.storageAdmission
+        let key = reference.contentKey
+        let rowID = id
+        let sourceURL = url
+        let validateStorage: @Sendable () throws -> Void = {
+            guard storage.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: configuration)
+            }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+        }
+        let requireRow: @Sendable (Realm) throws -> FeedEntry = { realm in
+            guard let entry = realm.object(ofType: FeedEntry.self, forPrimaryKey: key),
+                  !entry.isInvalidated, !entry.isDeleted, entry.id == rowID, entry.url == sourceURL else {
+                throw CancellationError()
             }
-            return nil
+            return entry
+        }
+        let result = try await { @FeedEntryActor () -> URL? in
+            try await RealmBackgroundActor.shared.prepareStorage(
+                for: configuration, storageAdmission: storage
+            )
+            try Task.checkCancellation()
+            try validateStorage()
+            let realm = try await Realm.open(configuration: configuration)
+            await realm.asyncRefresh()
+            try Task.checkCancellation()
+            try validateStorage()
+            let entry = try requireRow(realm)
+            if let image = entry.imageUrl { return image }
+            let sourceContent = entry.content
+            guard entry.extractImageFromContent, let html = entry.html,
+                  let image = Self.imageURLExtractedFromContent(htmlContent: html) else { return nil }
+
+            return try await { @RealmBackgroundActor in
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: configuration, storageAdmission: storage
+                )
+                return try await realm.asyncWritePreservingOwnership {
+                    try Task.checkCancellation()
+                    try validateStorage()
+                    let entry = try requireRow(realm)
+                    // A feed refresh or another image load may have filled the
+                    // cache while this task waited for the writer.
+                    if let image = entry.imageUrl { return image }
+                    guard entry.extractImageFromContent, entry.content == sourceContent else {
+                        throw CancellationError()
+                    }
+                    entry.imageUrl = image
+                    entry.refreshChangeMetadata(explicitlyModified: true)
+                    return image
+                }
+            }()
         }()
-        return nil
+        try Task.checkCancellation()
+        try validateStorage()
+        return result
     }
     
     @RealmBackgroundActor
