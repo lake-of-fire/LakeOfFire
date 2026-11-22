@@ -57,6 +57,7 @@ function mount(images) {
     let timer
     let readerMode = true
     const capturedLoads = new EventTarget()
+    let imageScans = 0
     const document = {
         body: { classList: { contains: name => readerMode && name === 'readability-mode' } },
         documentElement: {},
@@ -65,7 +66,10 @@ function mount(images) {
             if (capture) capturedLoads.addEventListener(type, listener)
         },
         getElementById: id => id === 'reader-content' ? content : null,
-        getElementsByTagName: () => candidates,
+        getElementsByTagName: () => {
+            imageScans += 1
+            return candidates
+        },
         querySelectorAll() {
             layoutPasses += 1
             return candidates
@@ -98,6 +102,7 @@ function mount(images) {
     return {
         content,
         get layoutPasses() { return layoutPasses },
+        get imageScans() { return imageScans },
         resize() {
             window.dispatchEvent(new Event('resize'))
             flushLayout()
@@ -140,8 +145,28 @@ test('a late image load uses the current layout once after repeated scans', () =
 
     loadImage(target, 150)
 
-    assert.equal(reader.layoutPasses, earlierPasses + 1)
+    assert.equal(reader.layoutPasses, earlierPasses)
     assert.match(target.style.cssText, /width: min\(600px, 850px, 300px\) !important/)
+})
+
+test('a per-image load updates only its event target without rescanning document images', () => {
+    const target = image()
+    const other = image(300)
+    other._originalWidth = 300
+    other._originalHeight = 300
+    const reader = mount([target, other])
+    const earlierImageScans = reader.imageScans
+    const earlierLayoutPasses = reader.layoutPasses
+    const otherStylesBeforeLoad = other.style.cssText
+
+    loadImage(target, 150)
+
+    assert.match(target.style.cssText, /width: min\(850px, 45%, 195px\) !important/)
+    assert.equal(reader.imageScans, earlierImageScans)
+    assert.equal(reader.layoutPasses, earlierLayoutPasses)
+    assert.equal(other._originalWidth, 300)
+    assert.equal(other._originalHeight, 300)
+    assert.equal(other.style.cssText, otherStylesBeforeLoad)
 })
 
 test('a load after leaving Reader Mode does not apply stale image styles', () => {

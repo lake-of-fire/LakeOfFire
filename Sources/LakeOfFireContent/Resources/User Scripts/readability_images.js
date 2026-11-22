@@ -24,7 +24,9 @@
         "#reader-content > img, " +
         "#reader-content .wp-caption img, " +
         "#reader-content figure img";
-        const loadedImage = event?.type === 'load' ? event.target : null
+        const loadedImage = event?.type === 'load' && event.target?.tagName?.toUpperCase() === 'IMG'
+            ? event.target
+            : null
         
         if (!document.body?.classList.contains('readability-mode')) {
             return;
@@ -39,11 +41,17 @@
         
         var contentWidth = contentElement.offsetWidth;
         
-        Array.from(document.getElementsByTagName('img')).forEach(img => {
-            // Reset cached dimensions so we recalc from natural size
-            delete img._originalWidth;
-            delete img._originalHeight;
-        });
+        if (loadedImage) {
+            // Recalculate only the image that just decoded; other images retain their layout caches.
+            delete loadedImage._originalWidth;
+            delete loadedImage._originalHeight;
+        } else {
+            Array.from(document.getElementsByTagName('img')).forEach(img => {
+                // Reset cached dimensions so we recalc from natural size
+                delete img._originalWidth;
+                delete img._originalHeight;
+            });
+        }
         
         var maxWidthStyle = "min(850px, 100%) !important";
         
@@ -80,8 +88,9 @@
             return;
         }
         
-        var likelyBlockImages = document.querySelectorAll(BLOCK_IMAGES_SELECTOR);
-        var candidateImages = Array.from(likelyBlockImages);
+        var candidateImages = loadedImage
+            ? [loadedImage]
+            : Array.from(document.querySelectorAll(BLOCK_IMAGES_SELECTOR));
         /*var allImages = document.querySelectorAll("#reader-content img");
          
          // For images not already in candidateImages, check their rendered width and add if it's >= half of 850px.
