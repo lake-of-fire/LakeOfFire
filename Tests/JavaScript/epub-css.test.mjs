@@ -157,3 +157,27 @@ test('grouping rules retain an enclosing declaration context', async () => {
         assert.equal(output, '.outer { @media (min-width: 0px) { writing-mode: vertical-rl; width: 80px; } }')
     })
 })
+
+const nestedCustomProperty = '--theme: { inner: { -epub-writing-mode: sentinel; page-break-before: sentinel; }; };'
+const nestedValueDeclarations = nestedCustomProperty + ' -epub-writing-mode: vertical-rl; page-break-before: always;'
+const adaptedValueDeclarations = nestedCustomProperty + ' writing-mode: vertical-rl; -webkit-column-break-before: always;'
+
+test('nested custom-property blocks preserve property-like value identifiers in stylesheets', async () => {
+    await withStylesheet(`p { ${nestedValueDeclarations} }`, [], output => {
+        assert.equal(output, `p { ${adaptedValueDeclarations} }`)
+    })
+})
+
+test('nested custom-property blocks preserve property-like value identifiers in inline styles', async () => {
+    const loader = new Loader({
+        resources: { manifest: [] },
+        loadText: async () => null,
+        loadBlob: async () => null,
+    })
+    try {
+        const output = await loader.replaceCSS(nestedValueDeclarations, 'OPS/chapter.xhtml', [], true)
+        assert.equal(output, adaptedValueDeclarations)
+    } finally {
+        loader.destroy()
+    }
+})
