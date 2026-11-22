@@ -553,6 +553,82 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
     }
 
     @RealmBackgroundActor
+    func testOPMLImportPreservesDistinctSameTitleCatalogTrees() async throws {
+        let configuration = makeOPMLConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let manager = LibraryDataManager(observesChanges: false)
+        let source = try XCTUnwrap(URL(string: "https://example.invalid/same-title-catalog.opml"))
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("same-title-catalog-\(UUID().uuidString).opml")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let download = Downloadable(url: source, name: "Catalog", localDestination: fileURL)
+        let trees = [1, 2].map { index in
+            (categoryID: UUID(), directoryID: UUID(), nestedID: UUID(), feedID: UUID(),
+             feedURL: "https://example.invalid/feed-\(index).xml")
+        }
+        let categoryIDs = trees.map { $0.categoryID }
+        let outlines = trees.map { tree in
+            """
+            <outline text="Same category" title="Same category" uuid="\(tree.categoryID)">
+              <outline text="Directory" uuid="\(tree.directoryID)">
+                <outline text="Nested directory" uuid="\(tree.nestedID)">
+                  <outline text="Feed" uuid="\(tree.feedID)" type="rss" xmlUrl="\(tree.feedURL)"/>
+                </outline>
+              </outline>
+            </outline>
+            """
+        }
+        let xml = """
+        <opml version="2.0"><head/><body>
+        \(outlines.joined(separator: "\n"))
+        </body></opml>
+        """
+        try xml.write(to: fileURL, atomically: true, encoding: .utf8)
+        try await manager.importOPML(fileURL: fileURL, fromDownload: download, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+
+        let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+        XCTAssertEqual(Array(library.categoryIDs), categoryIDs)
+        XCTAssertEqual(realm.objects(FeedCategory.self).count, 2)
+        XCTAssertEqual(realm.objects(FeedDirectory.self).count, 4)
+        XCTAssertEqual(realm.objects(Feed.self).count, 2)
+        let journal = opmlJournalGenerations(in: realm)
+        XCTAssertNotNil(journal["LibraryConfiguration.\(library.id)"])
+        for tree in trees {
+            let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: tree.categoryID))
+            let directory = try XCTUnwrap(realm.object(ofType: FeedDirectory.self, forPrimaryKey: tree.directoryID))
+            let nested = try XCTUnwrap(realm.object(ofType: FeedDirectory.self, forPrimaryKey: tree.nestedID))
+            let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: tree.feedID))
+            XCTAssertEqual(category.title, "Same category")
+            XCTAssertEqual(category.getCollectionChildren()?.map(\.id), [tree.directoryID])
+            XCTAssertEqual(directory.getCollectionChildren()?.map(\.id), [tree.nestedID])
+            XCTAssertEqual(nested.getCollectionChildren()?.map(\.id), [tree.feedID])
+            XCTAssertEqual(directory.categoryID, tree.categoryID)
+            XCTAssertNil(directory.parentDirectoryID)
+            XCTAssertEqual(nested.categoryID, tree.categoryID)
+            XCTAssertEqual(nested.parentDirectoryID, tree.directoryID)
+            XCTAssertEqual(feed.categoryID, tree.categoryID)
+            XCTAssertEqual(feed.directoryID, tree.nestedID)
+            XCTAssertEqual(feed.rssUrl.absoluteString, tree.feedURL)
+            XCTAssertEqual(category.opmlURL, source)
+            XCTAssertEqual(directory.opmlURL, source)
+            XCTAssertEqual(nested.opmlURL, source)
+            XCTAssertNotNil(journal["FeedCategory.\(tree.categoryID)"])
+            XCTAssertNotNil(journal["FeedDirectory.\(tree.directoryID)"])
+            XCTAssertNotNil(journal["FeedDirectory.\(tree.nestedID)"])
+            XCTAssertNotNil(journal["Feed.\(tree.feedID)"])
+        }
+
+        try await manager.importOPML(fileURL: fileURL, fromDownload: download, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(Array(library.categoryIDs), categoryIDs)
+        XCTAssertEqual(opmlJournalGenerations(in: realm), journal)
+    }
+
+    @RealmBackgroundActor
     func testUnchangedOPMLDirectoryMovesWithItsCatalogSource() async throws {
         let configuration = makeOPMLConfiguration()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
