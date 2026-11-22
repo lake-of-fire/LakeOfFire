@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { element as el, xmlDocument as xml } from './xml-fixture.mjs'
+import { prepareWritingDirectionStylesheets, processedSectionURLForHref } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-direct-section.js'
 
 globalThis.DOMParser = class {}
 const { TOCProgress } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/progress.js')
@@ -282,6 +283,95 @@ test('internal references preserve the fragment and validate the path before dot
         assert.deepEqual(f.processed, [])
         assert.deepEqual(f.blobs, [])
     } finally { loader?.destroy(); f.close() }
+})
+
+test('direct section writing probe installs only the exact archived stylesheet', async () => {
+    const directory = 'OPS/literal%20'
+    const chapter = { href: `${directory}/chapter.xhtml`, mediaType: 'application/xhtml+xml' }
+    const stylePath = `${directory}/style#?%2F.css`
+    const css = 'body { writing-mode: vertical-rl }'
+    const entries = new Map([
+        [stylePath, css],
+        ['OPS/wrong.css', 'body { writing-mode: horizontal-tb }'],
+        [`${directory}/wrong.css`, 'body { writing-mode: horizontal-tb }'],
+    ])
+    const hrefs = [
+        'style%23%3F%252F.css?edition=2#theme',
+        '  //invalid.invalid/OPS/wrong.css?sig=a%2Bb#part ',
+        'https://invalid.invalid/OPS/wrong.css?sig=a%2Bb#part',
+        'nested%2F/../wrong.css',
+        'nested%5C/../wrong.css',
+        '?edition=2#theme',
+        '#theme',
+        'blob:https://example.com/stylesheet',
+    ]
+    const links = hrefs.map(href => ({
+        href,
+        getAttribute(name) { return name === 'href' ? this.href : null },
+    }))
+    const reads = [], blobURLs = []
+    const source = 'ebook://ebook/load/local/book.epub'
+    const loader = new Loader({
+        resources: { manifest: [chapter] },
+        replaceURL: async (href, _mediaType, resolveArchivePath) => {
+            await prepareWritingDirectionStylesheets({
+                head: { querySelectorAll: () => links },
+                loadText: async path => { reads.push(path); return entries.get(path) ?? null },
+                resolveArchivePath,
+                blobURLs,
+            })
+            return processedSectionURLForHref(source, href)
+        },
+    })
+
+    try {
+        const directURL = new URL(await loader.loadItem(chapter))
+        assert.equal(directURL.searchParams.get('subpath'), chapter.href)
+        assert.equal(directURL.searchParams.get('direct'), '1')
+        assert.deepEqual(reads, [stylePath])
+        assert.deepEqual(blobURLs, [links[0].href])
+        assert.equal(await (await fetch(links[0].href)).text(), css)
+        assert.deepEqual(links.slice(1).map(link => link.href), hrefs.slice(1))
+    } finally {
+        loader.destroy()
+        for (const url of blobURLs) URL.revokeObjectURL(url)
+    }
+})
+
+test('an aborted writing probe discards late stylesheet bytes and stops reading links', async () => {
+    const hrefs = ['first.css', 'second.css']
+    const links = hrefs.map(href => ({
+        href,
+        getAttribute(name) { return name === 'href' ? this.href : null },
+    }))
+    const controller = new AbortController()
+    const started = Promise.withResolvers()
+    const stylesheet = Promise.withResolvers()
+    const reads = [], blobURLs = []
+    const preparing = prepareWritingDirectionStylesheets({
+        head: { querySelectorAll: () => links },
+        resolveArchivePath: href => `OPS/${href}`,
+        loadText: (path, { signal }) => {
+            reads.push({ path, signal })
+            started.resolve()
+            return stylesheet.promise
+        },
+        signal: controller.signal,
+        blobURLs,
+    })
+
+    try {
+        await started.promise
+        controller.abort()
+        stylesheet.resolve('body { writing-mode: vertical-rl }')
+        await preparing
+        assert.deepEqual(reads.map(({ path }) => path), ['OPS/first.css'])
+        assert.equal(reads[0].signal, controller.signal)
+        assert.deepEqual(links.map(link => link.href), hrefs)
+        assert.deepEqual(blobURLs, [])
+    } finally {
+        for (const url of blobURLs) URL.revokeObjectURL(url)
+    }
 })
 
 // Only DOM storage and the renderer are doubles. EPUB, View link handling,

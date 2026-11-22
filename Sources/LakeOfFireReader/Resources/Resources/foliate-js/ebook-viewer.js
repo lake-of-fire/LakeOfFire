@@ -8,7 +8,7 @@ import { installBookReadingRuntime } from './book-reading-runtime.js'
 import { bookScopeKey } from './book-reading-state.js'
 import { applyBookReadingProjection } from './book-reading-projection.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
-import { processedSectionURLForHref } from './ebook-direct-section.js'
+import { prepareWritingDirectionStylesheets, processedSectionURLForHref } from './ebook-direct-section.js'
 import { visibleMarkReadSidecarSelection, visibleMarkReadSegmentIsRead } from './ebook-visible-mark-read-selection.js'
 import { forwardCustomReaderFontStyleToDocuments } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
@@ -1020,22 +1020,10 @@ const makeReplaceText = ({
     return replaceText;
 };
 
-const resolveEpubRelativePath = (url, relativeTo) => {
-    try {
-        if (String(relativeTo || '').includes(':')) return new URL(url, relativeTo).href;
-        const root = 'https://invalid.invalid/';
-        const obj = new URL(url, root + relativeTo);
-        obj.search = '';
-        return decodeURI(obj.href.replace(root, ''));
-    } catch (_error) {
-        return url;
-    }
-};
-
 const computeRawSectionWritingDirectionFromText = async (
-    href,
     text,
     loadText,
+    resolveArchivePath,
     signal = null
 ) => {
     if (signal?.aborted || !text || typeof DOMParser !== 'function') return null;
@@ -1055,21 +1043,9 @@ const computeRawSectionWritingDirectionFromText = async (
     const blobURLs = [];
     let iframe = null;
     try {
-        const stylesheetLinks = Array.from(clonedHead.querySelectorAll?.('link[rel="stylesheet"][href]') ?? []);
-        for (const link of stylesheetLinks) {
-            if (signal?.aborted) return null;
-            const stylesheetHref = link.getAttribute('href');
-            if (!stylesheetHref || /^(?:https?:|data:|blob:)/i.test(stylesheetHref)) continue;
-            const resolvedHref = resolveEpubRelativePath(stylesheetHref, href);
-            try {
-                const css = await loadText?.(resolvedHref, { signal });
-                if (signal?.aborted) return null;
-                if (!css) continue;
-                const stylesheetBlobURL = URL.createObjectURL(new Blob([css], { type: 'text/css' }));
-                blobURLs.push(stylesheetBlobURL);
-                link.href = stylesheetBlobURL;
-            } catch (_error) {}
-        }
+        await prepareWritingDirectionStylesheets({
+            head: clonedHead, loadText, resolveArchivePath, signal, blobURLs,
+        })
 
         if (signal?.aborted) return null;
         const bodyClone = doc.body?.cloneNode?.(false) ?? cloneDoc.createElement('body');
@@ -1153,9 +1129,7 @@ const computeRawSectionWritingDirectionFromText = async (
 const computeRawSectionWritingDirection = async (
     sourceURL,
     href,
-    loadText = null,
-    cache = createOwnedAsyncCache(),
-    isCurrent = () => true
+    { loadText, resolveArchivePath, cache, isCurrent }
 ) => {
     const cacheKey = `${sourceURL || ''}|${href || ''}`;
     return cache.getOrCreate(cacheKey, signal => new Promise((resolve) => {
@@ -1194,9 +1168,9 @@ const computeRawSectionWritingDirection = async (
                     return true;
                 }
                 const rawDirection = await computeRawSectionWritingDirectionFromText(
-                    href,
                     rawText,
                     loadText,
+                    resolveArchivePath,
                     rawProbeController?.signal ?? signal
                 );
                 if (!isCurrent() || signal?.aborted) {
@@ -1261,7 +1235,7 @@ function makeReplaceURL(sourceURL, loadText = null, { isCurrent = () => true, pa
     const rawSectionWritingDirectionCache = createOwnedAsyncCache();
     let destroyed = false;
     const isActive = () => !destroyed && isCurrent();
-    const replaceURL = async (href, mediaType) => {
+    const replaceURL = async (href, mediaType, resolveArchivePath) => {
         if (!isActive()) return null;
         if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html') {
             return null;
@@ -1273,9 +1247,7 @@ function makeReplaceURL(sourceURL, loadText = null, { isCurrent = () => true, pa
             await computeRawSectionWritingDirection(
                 sourceURL,
                 href,
-                loadText,
-                rawSectionWritingDirectionCache,
-                isActive
+                { loadText, resolveArchivePath, cache: rawSectionWritingDirectionCache, isCurrent: isActive }
             )
             ?? null;
         if (!isActive()) return null;

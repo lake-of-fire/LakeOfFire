@@ -115,6 +115,20 @@ const resolveURL = (url, relativeTo) => {
     }
 }
 
+const resolveArchiveResourcePath = (href, base) => {
+    if (typeof href !== 'string') return null
+    const reference = normalizeURLReference(href)
+    if (!reference || /^[?#]/.test(reference)) return null
+    try {
+        const resolved = resolveURL(reference, base)
+        if (isExternal(resolved) || /^blob:/i.test(resolved)) return null
+        return uriToArchivePath(resolved)
+    } catch (error) {
+        if (error instanceof URIError) return null
+        throw error
+    }
+}
+
 const manabiEpubReaderLoadLog = (stage, payload = {}) => {
     try {
         void stage
@@ -952,7 +966,8 @@ export class Loader {
         })
         const parent = parents[parents.length - 1]
         if (this.replaceURL && [MIME.XHTML, MIME.HTML].includes(mediaType)) {
-            const directURL = await this.replaceURL(href, mediaType)
+            const directURL = await this.replaceURL(href, mediaType,
+                reference => resolveArchiveResourcePath(reference, href))
             if (this.#destroyed) return null
             if (!directURL) {
                 const error = new Error(`Direct processed section URL required for ${href}`)
