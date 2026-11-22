@@ -107,8 +107,10 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
     let pending: XCTestExpectation
     let ready: XCTestExpectation
     var nextLoaded: XCTestExpectation?
+    private(set) var documentGeneration: UInt64?
     let receive: @Sendable (WebViewMessage) async -> Void
     let nativeIsReady: @MainActor () -> Bool
+    private var acceptsMessages = true
     private var reportedPending = false
     private var reportedReady = false
     private var messageTasks: [Task<Void, Never>] = []
@@ -145,6 +147,10 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
 
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        documentGeneration = (documentGeneration ?? 0) &+ 1
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         let completedLoad = nextLoaded ?? loaded
         nextLoaded = nil
@@ -152,7 +158,7 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any] else { return }
+        guard acceptsMessages, let body = message.body as? [String: Any] else { return }
         let receipt = WebViewMessage(
             frameInfo: message.frameInfo, uuid: UUID(), name: message.name, body: body
         )
@@ -180,9 +186,10 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
         }
     }
 
-    func stop() {
-        messageTasks.forEach { $0.cancel() }
-        messageTasks.removeAll()
+    func stopAndDrainMessages(from controller: WKUserContentController) async {
+        acceptsMessages = false
+        controller.removeScriptMessageHandler(forName: "readerDocState")
+        await drainMessages()
     }
 }
 
@@ -288,8 +295,6 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         defer {
             webView.stopLoading()
             webView.navigationDelegate = nil
-            controller.removeScriptMessageHandler(forName: "readerDocState")
-            nativeFixture.stop()
 #if os(iOS)
             webView.removeFromSuperview()
             window.isHidden = true
@@ -317,66 +322,86 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             },
             unsafeCaller: nil,
             snapshotCapture: nil,
-            coordinateOriginInWindow: { nil }
+            coordinateOriginInWindow: { nil },
+            documentGenerationProvider: { @MainActor [weak nativeFixture] in
+                nativeFixture?.documentGeneration
+            }
         )
         defer { _ = fixture.handler.scriptCaller.clearBinding(ownedBy: bindingOwner) }
         let caller = fixture.handler.scriptCaller
-        let initialLoad = try await fontStateDuringInjection(in: webView) {
-            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
-        }
-        XCTAssertEqual(initialLoad["visibility"], "hidden")
-        XCTAssertEqual(initialLoad["ready"], "0")
-        XCTAssertEqual(initialLoad["pending"], "1")
-        await fulfillment(of: [ready], timeout: 5)
-        await nativeFixture.drainMessages()
-        XCTAssertTrue(fixture.handler.readerViewModel.state.hasReaderRenderReady)
-        XCTAssertFalse(mode.isReaderModeLoadPending(for: url))
-        XCTAssertFalse(mode.isReaderModeLoading)
-        XCTAssertFalse(reader.isRenderingReaderHTML)
-        let injectionMode = try await webView.evaluateJavaScript("globalThis.manabiReaderFontInjectionMode")
-        XCTAssertEqual(injectionMode as? String, "local-scheme")
+        do {
+            let initialBinding = try XCTUnwrap(caller.currentJavaScriptBindingToken)
+            let initialLoad = try await fontStateDuringInjection(in: webView) {
+                await mode.injectSharedFontIfNeeded(
+                    scriptCaller: caller, pageURL: url, requiring: initialBinding
+                )
+            }
+            XCTAssertEqual(initialLoad["visibility"], "hidden")
+            XCTAssertEqual(initialLoad["ready"], "0")
+            XCTAssertEqual(initialLoad["pending"], "1")
+            await fulfillment(of: [ready], timeout: 5)
+            await nativeFixture.drainMessages()
+            XCTAssertTrue(fixture.handler.readerViewModel.state.hasReaderRenderReady)
+            XCTAssertFalse(mode.isReaderModeLoadPending(for: url))
+            XCTAssertFalse(mode.isReaderModeLoading)
+            XCTAssertFalse(reader.isRenderingReaderHTML)
+            let injectionMode = try await webView.evaluateJavaScript("globalThis.manabiReaderFontInjectionMode")
+            XCTAssertEqual(injectionMode as? String, "local-scheme")
 
-        let repeatedLoad = try await fontStateDuringInjection(in: webView) {
-            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
-        }
-        XCTAssertEqual(repeatedLoad["visibility"], "visible")
-        XCTAssertEqual(repeatedLoad["ready"], "1")
-        XCTAssertEqual(repeatedLoad["pending"], "absent")
-        let pendingAttribute = try await webView.evaluateJavaScript("document.documentElement.hasAttribute('data-mnb-font-pending')")
-        XCTAssertEqual(pendingAttribute as? Bool, false)
+            let repeatedLoad = try await fontStateDuringInjection(in: webView) {
+                await mode.injectSharedFontIfNeeded(
+                    scriptCaller: caller, pageURL: url, requiring: initialBinding
+                )
+            }
+            XCTAssertEqual(repeatedLoad["visibility"], "visible")
+            XCTAssertEqual(repeatedLoad["ready"], "1")
+            XCTAssertEqual(repeatedLoad["pending"], "absent")
+            let pendingAttribute = try await webView.evaluateJavaScript("document.documentElement.hasAttribute('data-mnb-font-pending')")
+            XCTAssertEqual(pendingAttribute as? Bool, false)
 
-        // HTTPS source uses the blob injector without the local deferred gate CSS.
-        let httpsURL = try XCTUnwrap(URL(string: "https://example.invalid/saved-font-fixture"))
-        let httpsLoaded = expectation(description: "saved HTTPS reader document loads")
-        nativeFixture.nextLoaded = httpsLoaded
-        mode.sharedFontCSSBase64 = Data("html { font-family: serif; }".utf8).base64EncodedString()
-        let navigation = webView.load(
-            Data("<html><body class='readability-mode'>Readable fallback 日本語.</body></html>".utf8),
-            mimeType: "text/html", characterEncodingName: "UTF-8", baseURL: httpsURL
-        )
-        defer { withExtendedLifetime(navigation) {} }
-        await fulfillment(of: [httpsLoaded], timeout: 10)
-        let location = try await webView.evaluateJavaScript("window.location.href")
-        XCTAssertEqual(location as? String, httpsURL.absoluteString)
+            // HTTPS source uses the blob injector without the local deferred gate CSS.
+            let httpsURL = try XCTUnwrap(URL(string: "https://example.invalid/saved-font-fixture"))
+            let httpsLoaded = expectation(description: "saved HTTPS reader document loads")
+            nativeFixture.nextLoaded = httpsLoaded
+            mode.sharedFontCSSBase64 = Data("html { font-family: serif; }".utf8).base64EncodedString()
+            let navigation = webView.load(
+                Data("<html><body class='readability-mode'>Readable fallback 日本語.</body></html>".utf8),
+                mimeType: "text/html", characterEncodingName: "UTF-8", baseURL: httpsURL
+            )
+            defer { withExtendedLifetime(navigation) {} }
+            await fulfillment(of: [httpsLoaded], timeout: 10)
+            let httpsBinding = try XCTUnwrap(caller.currentJavaScriptBindingToken)
+            XCTAssertNotEqual(httpsBinding, initialBinding)
+            let location = try await webView.evaluateJavaScript("window.location.href")
+            XCTAssertEqual(location as? String, httpsURL.absoluteString)
 
-        let initialBlobLoad = try await fontStateDuringInjection(in: webView) {
-            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: httpsURL)
-        }
-        XCTAssertEqual(initialBlobLoad["ready"], "0")
-        XCTAssertEqual(initialBlobLoad["pending"], "1")
-        let blobMode = try await webView.evaluateJavaScript("globalThis.manabiReaderFontInjectionMode")
-        XCTAssertEqual(blobMode as? String, "blob")
+            let initialBlobLoad = try await fontStateDuringInjection(in: webView) {
+                await mode.injectSharedFontIfNeeded(
+                    scriptCaller: caller, pageURL: httpsURL, requiring: httpsBinding
+                )
+            }
+            XCTAssertEqual(initialBlobLoad["ready"], "0")
+            XCTAssertEqual(initialBlobLoad["pending"], "1")
+            let blobMode = try await webView.evaluateJavaScript("globalThis.manabiReaderFontInjectionMode")
+            XCTAssertEqual(blobMode as? String, "blob")
 
-        let repeatedBlobLoad = try await fontStateDuringInjection(in: webView) {
-            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: httpsURL)
+            let repeatedBlobLoad = try await fontStateDuringInjection(in: webView) {
+                await mode.injectSharedFontIfNeeded(
+                    scriptCaller: caller, pageURL: httpsURL, requiring: httpsBinding
+                )
+            }
+            XCTAssertEqual(repeatedBlobLoad["visibility"], "visible")
+            XCTAssertEqual(repeatedBlobLoad["ready"], "1")
+            XCTAssertEqual(repeatedBlobLoad["pending"], "absent")
+            let blobReady = try await webView.evaluateJavaScript(
+                "document.documentElement.dataset.mnbFontReady === '1' && !document.documentElement.hasAttribute('data-mnb-font-pending')"
+            )
+            XCTAssertEqual(blobReady as? Bool, true)
+        } catch {
+            await nativeFixture.stopAndDrainMessages(from: controller)
+            throw error
         }
-        XCTAssertEqual(repeatedBlobLoad["visibility"], "visible")
-        XCTAssertEqual(repeatedBlobLoad["ready"], "1")
-        XCTAssertEqual(repeatedBlobLoad["pending"], "absent")
-        let blobReady = try await webView.evaluateJavaScript(
-            "document.documentElement.dataset.mnbFontReady === '1' && !document.documentElement.hasAttribute('data-mnb-font-pending')"
-        )
-        XCTAssertEqual(blobReady as? Bool, true)
+        await nativeFixture.stopAndDrainMessages(from: controller)
         withExtendedLifetime((fixture, nativeFixture, webView)) {}
     }
 
