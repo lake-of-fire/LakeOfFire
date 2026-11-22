@@ -1,4 +1,5 @@
 import Foundation
+import SwiftSoup
 import XCTest
 @preconcurrency import WebKit
 @testable import LakeOfFireContent
@@ -45,11 +46,14 @@ final class EbookServingHandlerTests: XCTestCase {
         return try .init(sourceURL: sourceURL, snapshot: snapshot, packageDocumentPath: selected)
     }
 
-    private func request(route: String = "entry", session: String?, subpath: String? = "OPS/chapter.xhtml") -> URLRequest {
+    private func request(
+        route: String = "entry", session: String?, subpath: String? = "OPS/chapter.xhtml", direct: Bool = false
+    ) -> URLRequest {
         var components = URLComponents(string: "ebook://ebook/" + route)!
         components.queryItems = [URLQueryItem(name: "sourceURL", value: sourceURL.absoluteString)]
         if let session { components.queryItems?.append(.init(name: "packageSessionID", value: session)) }
         if let subpath { components.queryItems?.append(.init(name: "subpath", value: subpath)) }
+        if direct { components.queryItems?.append(.init(name: "direct", value: "1")) }
         var request = URLRequest(url: components.url!)
         request.mainDocumentURL = sourceURL
         request.setValue(sourceURL.absoluteString, forHTTPHeaderField: "X-Ebook-Source-URL")
@@ -125,6 +129,109 @@ final class EbookServingHandlerTests: XCTestCase {
         XCTAssertEqual(task.finishCount, 1)
         XCTAssertTrue(task.failures.isEmpty)
         withExtendedLifetime((handler, store, webView)) {}
+    }
+
+    @MainActor
+    func testDirectSectionServesPassiveNetworkResourcesWithoutChangingArchiveReferences() async throws {
+        let markup = #"""
+        <html xmlns="http://www.w3.org/1999/xhtml"><head>
+        <base id="publisher-base" href="//publisher.example/" />
+        <link id="publisher-style" rel="stylesheet" href="//cdn.example/book.css" />
+        </head><body>
+        <m-c pid="p"><m-s sid="s" o="true"><m-m id="m">本文</m-m></m-s></m-c>
+        <img id="signed" src="//ebook/art%2Fone%5Ctwo.png?sig=a%2Bb&amp;v=1#part" />
+        <img id="local" src="../images/cover%20art.png?edition=2#part" />
+        <img id="absolute" src="https://cdn.example/cover.png?sig=x%2Fy" />
+        <img id="inline" src="data:image/png;base64,AA==" />
+        <img id="blob" src="blob:https://cdn.example/owned-image" />
+        <img id="fragment" src="#local-image" />
+        <img id="invalid" src="///missing-authority.png" />
+        <img id="backslash" src="//cdn.example\ambiguous.png" />
+        <video id="video" src="//cdn.example/clip.mp4#t=3" poster="//cdn.example/poster.jpg">
+        <source id="media-source" src="//cdn.example/alt.mp4?sig=x%2By" />
+        <track id="captions" src="//cdn.example/captions.vtt?sig=x%2By" />
+        </video>
+        <audio id="audio" src="//cdn.example/sound.mp3"></audio>
+        <picture><source id="responsive" srcset="data:image/png;base64,a,b 1x, //cdn.example/a?sig=one,two&amp;v=2 2x, //cdn.example/b#part, local.png 3x" />
+        <img id="no-whitespace" srcset="//cdn.example/a,//cdn.example/b 1x, //cdn.example/c 2x" />
+        </picture>
+        <img id="descriptor" srcset="//cdn.example/a shape(1,//ignored), //cdn.example/b 2x" />
+        <img id="style" style="background:url(//cdn.example/style.png)" />
+        <a id="anchor" href="//cdn.example/page?token=a%2Bb">link</a>
+        <script id="script" src="//cdn.example/script.js"></script>
+        <iframe id="iframe" src="//cdn.example/frame"></iframe>
+        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+        <image id="svg-image" href="//cdn.example/vector.svg" xlink:href="#legacy" />
+        </svg>
+        </body></html>
+        """#
+        let signedURL = "https://ebook/art%2Fone%5Ctwo.png?sig=a%2Bb&v=1#part"
+        let sidecar = Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
+
+        for useCallback in [true, false] {
+            let content = useCallback ? markup : "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + markup
+            let package = try await package(content)
+            let store = ReaderEBookServingSessionStore(), lease = try store.install(package)
+            let handler = handler(store), webView = WKWebView()
+            handler.ebookTextProcessor = ebookTextProcessor
+            if useCallback {
+                handler.processReadabilityContent = { text, _, _, _, _, _, transform in
+                    let parsed = try SwiftSoup.parse(text)
+                    parsed.outputSettings().prettyPrint(pretty: false)
+                    let transformed = await transform(parsed)
+                    // The mounted provider may serialize here, before Lake's later sentinel work.
+                    XCTAssertEqual(try transformed.getElementById("signed")?.attr("src"), signedURL)
+                    return transformed
+                }
+            }
+            handler.processHTMLDocument = { document, _, proof in
+                proof.complete(documentHTML: Data(try document.outerHtmlUTF8()), segmentSidecar: sidecar)
+            }
+
+            let task = ServingSchemeTask(request(route: "processed-section", session: lease.id, direct: true))
+            handler.webView(webView, start: task)
+            await fulfillment(of: [task.completed], timeout: 10)
+            XCTAssertEqual(task.finishCount, 1)
+            XCTAssertTrue(task.failures.isEmpty)
+            let response = try XCTUnwrap(task.responses.first as? HTTPURLResponse)
+            XCTAssertEqual(response.mimeType, "text/html")
+            XCTAssertEqual(response.value(forHTTPHeaderField: "X-Manabi-Processing-Authoritative"), "true")
+            let document = try SwiftSoup.parse(String(decoding: task.bytes, as: UTF8.self))
+            let packageBase = try XCTUnwrap(document.select("base").first()?.attr("href"))
+            XCTAssertEqual(URL(string: packageBase)?.scheme, "ebook")
+            XCTAssertEqual(URL(string: packageBase)?.host, "ebook")
+            let expected = [
+                ("signed", "src", signedURL),
+                ("video", "src", "https://cdn.example/clip.mp4#t=3"),
+                ("video", "poster", "https://cdn.example/poster.jpg"),
+                ("audio", "src", "https://cdn.example/sound.mp3"),
+                ("media-source", "src", "https://cdn.example/alt.mp4?sig=x%2By"),
+                ("captions", "src", "https://cdn.example/captions.vtt?sig=x%2By"),
+                ("responsive", "srcset", "data:image/png;base64,a,b 1x, https://cdn.example/a?sig=one,two&v=2 2x, https://cdn.example/b#part, local.png 3x"),
+                ("no-whitespace", "srcset", "https://cdn.example/a,//cdn.example/b 1x, https://cdn.example/c 2x"),
+                ("descriptor", "srcset", "https://cdn.example/a shape(1,//ignored), https://cdn.example/b 2x"),
+                ("local", "src", "../images/cover%20art.png?edition=2#part"),
+                ("absolute", "src", "https://cdn.example/cover.png?sig=x%2Fy"),
+                ("inline", "src", "data:image/png;base64,AA=="),
+                ("blob", "src", "blob:https://cdn.example/owned-image"),
+                ("fragment", "src", "#local-image"),
+                ("invalid", "src", "///missing-authority.png"),
+                ("backslash", "src", #"//cdn.example\ambiguous.png"#),
+                ("publisher-base", "href", "//publisher.example/"),
+                ("publisher-style", "href", "//cdn.example/book.css"),
+                ("style", "style", "background:url(//cdn.example/style.png)"),
+                ("anchor", "href", "//cdn.example/page?token=a%2Bb"),
+                ("script", "src", "//cdn.example/script.js"),
+                ("iframe", "src", "//cdn.example/frame"),
+                ("svg-image", "href", "//cdn.example/vector.svg"),
+                ("svg-image", "xlink:href", "#legacy"),
+            ]
+            for (id, attribute, value) in expected {
+                let element = try XCTUnwrap(document.getElementById(id), id)
+                XCTAssertEqual(try element.attr(attribute), value, "\(id).\(attribute)")
+            }
+            withExtendedLifetime((handler, store, webView)) {}
+        }
     }
 
     @MainActor
