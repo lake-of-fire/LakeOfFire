@@ -1,5 +1,6 @@
 import BigSyncKit
 import Combine
+import Foundation
 import RealmSwift
 @testable import RealmSwiftGaps
 import XCTest
@@ -550,6 +551,98 @@ final class SyncMutationBoundaryTests: XCTestCase {
         XCTAssertEqual(pendingMutation(for: bookmark, in: realm)?.generation, deletionGeneration)
         XCTAssertEqual(history.isDemoted, true)
         XCTAssertNil(pendingMutation(for: history, in: historyRealm))
+    }
+
+    @MainActor
+    func testBookmarkCommitAndObservedStatusSurviveHistoryOpenFailure() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self, HistoryRecord.self])
+        let historyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bookmark-history-\(UUID().uuidString).realm")
+        let historyConfiguration = Realm.Configuration(
+            fileURL: historyURL,
+            readOnly: true,
+            objectTypes: [Bookmark.self, HistoryRecord.self, BigSyncPendingMutation.self]
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: historyURL.path))
+        let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        let previousBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        defer {
+            ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarkConfiguration
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = historyConfiguration
+        addTeardownBlock {
+            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let realm = try await Realm.open(configuration: configuration)
+        let source = makeHistory(url: "https://example.com/history-open-failure")
+
+        // Confirm the cache observes a live change before submitting the toggle.
+        let markerSource = makeHistory(url: "https://example.com/bookmark-observation-marker")
+        let marker = Bookmark()
+        marker.url = markerSource.url
+        marker.updateCompoundKey()
+        try await realm.asyncWrite { realm.add(marker) }
+        let cache = BookmarkStatusCache()
+        cache.startIfNeeded()
+        await waitForBookmarkStatus(true, source: markerSource, cache: cache)
+        try await realm.asyncWrite { realm.delete(marker) }
+        await waitForBookmarkStatus(false, source: markerSource, cache: cache)
+        XCTAssertFalse(cache.isBookmarked(source))
+
+        var presentation = BookmarkActionPresentation()
+        let request = presentation.begin(contentKey: source.compoundKey)
+        do {
+            _ = try await source.toggleBookmark(realmConfiguration: configuration)
+            XCTFail("The history store must reject a missing read-only file")
+        } catch let error as RealmBackgroundActorError {
+            guard case .realmFileChangedDuringOpen = error else { throw error }
+            XCTAssertTrue(presentation.recordFailure(error, for: request, currentContentKey: source.compoundKey))
+        }
+        XCTAssertEqual(presentation.failure, request)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: historyURL.path))
+        await waitForBookmarkStatus(true, source: source, cache: cache)
+        presentation.acknowledge(request)
+        XCTAssertNil(presentation.failure)
+
+        try await realm.asyncRefresh()
+        let bookmark = try XCTUnwrap(realm.object(ofType: Bookmark.self, forPrimaryKey: source.compoundKey))
+        let mutation = try XCTUnwrap(pendingMutation(for: bookmark, in: realm))
+        XCTAssertTrue(cache.isBookmarked(source))
+        XCTAssertFalse(bookmark.isDeleted)
+        XCTAssertEqual(realm.objects(Bookmark.self).count, 1)
+        XCTAssertEqual(realm.objects(BigSyncPendingMutation.self).count, 1)
+        XCTAssertEqual(mutation.objectIdentifier, bookmark.compoundKey)
+        XCTAssertEqual(mutation.changedAt, bookmark.modifiedAt)
+        XCTAssertFalse(mutation.generation.isEmpty)
+    }
+
+    @MainActor
+    func testBookmarkFailureAcknowledgementRespectsCurrentButtonRequest() {
+        enum Failure: Error { case unavailable }
+
+        var presentation = BookmarkActionPresentation()
+        let original = presentation.begin(contentKey: "bookmark")
+        let current = presentation.begin(contentKey: "bookmark")
+        XCTAssertFalse(presentation.recordFailure(Failure.unavailable, for: original, currentContentKey: "bookmark"))
+        XCTAssertFalse(presentation.recordFailure(CancellationError(), for: current, currentContentKey: "bookmark"))
+        XCTAssertFalse(presentation.recordFailure(Failure.unavailable, for: current, currentContentKey: "replacement"))
+        XCTAssertFalse(presentation.recordFailure(Failure.unavailable, for: current, currentContentKey: nil))
+        XCTAssertNil(presentation.failure)
+
+        XCTAssertTrue(presentation.recordFailure(Failure.unavailable, for: current, currentContentKey: "bookmark"))
+        presentation.acknowledge(original)
+        XCTAssertEqual(presentation.failure, current)
+        presentation.acknowledge(current)
+        XCTAssertNil(presentation.failure)
+
+        let disappearing = presentation.begin(contentKey: "bookmark")
+        XCTAssertTrue(presentation.recordFailure(Failure.unavailable, for: disappearing, currentContentKey: "bookmark"))
+        presentation.retire()
+        XCTAssertNil(presentation.failure)
+        XCTAssertFalse(presentation.recordFailure(Failure.unavailable, for: disappearing, currentContentKey: "bookmark"))
+        XCTAssertNil(presentation.failure)
     }
 
     @MainActor
