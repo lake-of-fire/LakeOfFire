@@ -1052,3 +1052,95 @@ for (const [locale, language] of [['ja-JP', 'JA'], ['JA-jp', 'ja'], ['jA-JP', 'J
     assert.equal(showing.webVTT, captionText('English'))
   })
 }
+
+for (const remote of [false, true]) {
+  test(`${remote ? 'Remote' : 'Loaded'} HTML captions prefer an exact script over an earlier primary match`, async () => {
+    const f = fixture()
+    f.context.navigator.languages = ['ZH-Hans', 'en']
+    const traditional = { ...f.track, mode: 'hidden', language: 'zh-Hant', cues: remote ? [] : [captionCue('繁體中文')] }
+    const simplified = { ...f.track, mode: 'hidden', language: 'zh-Hans', cues: remote ? [] : [captionCue('简体中文')] }
+    const traditionalURL = 'https://example.com/zh-hant.vtt'
+    const simplifiedURL = 'https://example.com/zh-hans.vtt'
+    f.media.textTracks = [traditional, simplified]
+    f.media.querySelectorAll = () => [
+      { track: traditional, src: traditionalURL },
+      { track: simplified, src: simplifiedURL }
+    ]
+
+    const urls = []
+    f.context.fetch = async url => {
+      urls.push(url)
+      return new Response(captionText(url === simplifiedURL ? '简体中文' : '繁體中文'))
+    }
+    const preferred = await f.capture()
+    assert.equal(preferred.languageCode, 'zh-Hans')
+    assert.equal(preferred.captionURL, simplifiedURL)
+    assert.equal(preferred.webVTT, remote ? null : captionText('简体中文'))
+    assert.deepEqual(urls, [])
+    assert.equal(await f.captions(preferred), captionText('简体中文'))
+    assert.deepEqual(urls, remote ? [simplifiedURL] : [])
+  })
+}
+
+test('An earlier browser preference can match by primary language before a later exact match', async () => {
+  const f = fixture()
+  f.context.navigator.languages = ['pt-BR', 'en-US']
+  const english = { ...f.track, mode: 'hidden', language: 'en-US', cues: [captionCue('English')] }
+  const portuguese = { ...f.track, mode: 'hidden', language: 'pt-PT', cues: [captionCue('Português')] }
+  f.media.textTracks = [english, portuguese]
+
+  const preferred = await f.capture()
+  assert.equal(preferred.languageCode, 'pt-PT')
+  assert.equal(await f.captions(preferred), captionText('Português'))
+})
+
+test('Absent language tags do not outrank other unmatched HTML captions', async () => {
+  const f = fixture()
+  f.context.navigator.languages = ['', 'fr-CA']
+  const japanese = { ...f.track, mode: 'hidden', language: 'ja', cues: [captionCue('日本語')] }
+  const unspecified = { ...f.track, mode: 'hidden', language: '', cues: [captionCue('No language')] }
+  f.media.textTracks = [japanese, unspecified]
+
+  const fallback = await f.capture()
+  assert.equal(fallback.languageCode, 'ja')
+  assert.equal(await f.captions(fallback), captionText('日本語'))
+})
+
+test('A browser language change retires an in-flight request for the previously preferred captions', async () => {
+  const f = fixture()
+  f.context.navigator.languages = ['pt-BR']
+  const european = { ...f.track, mode: 'hidden', language: 'pt-PT' }
+  const brazilian = { ...f.track, mode: 'hidden', language: 'pt-BR' }
+  const europeanURL = 'https://example.com/pt-pt.vtt'
+  const brazilianURL = 'https://example.com/pt-br.vtt'
+  f.media.textTracks = [european, brazilian]
+  f.media.querySelectorAll = () => [
+    { track: european, src: europeanURL },
+    { track: brazilian, src: brazilianURL }
+  ]
+
+  let release
+  const started = new Promise(resolve => {
+    f.context.fetch = url => new Promise(response => {
+      release = response
+      resolve(url)
+    })
+  })
+  const previous = await f.capture()
+  assert.equal(previous.captionURL, brazilianURL)
+  const pending = f.captions(previous)
+  assert.equal(await started, brazilianURL)
+
+  f.context.navigator.languages = ['pt-PT']
+  const current = await f.capture()
+  assert.equal(current.mediaIdentity, previous.mediaIdentity)
+  assert.notEqual(current.captionSelectionIdentity, previous.captionSelectionIdentity)
+  assert.equal(current.captionURL, europeanURL)
+  release(new Response(captionText('Português do Brasil')))
+  assert.equal(await pending, null)
+  f.context.fetch = async url => {
+    assert.equal(url, europeanURL)
+    return new Response(captionText('Português de Portugal'))
+  }
+  assert.equal(await f.captions(current), captionText('Português de Portugal'))
+})
