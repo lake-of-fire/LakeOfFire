@@ -176,6 +176,7 @@ struct ReaderUnhandledTapUserScript {
     const scrollInputEvents = ['touchmove', 'wheel', 'keydown'];
     const SCROLL_THRESHOLD = 24;
     const USER_SCROLL_INTENT_LIFETIME_MS = 1500;
+    let lastTrustedScrollInputType = null;
     let bottomRevealAwaitingDeparture = false;
     let observedBottomDeparture = false;
     function documentScrollHeight() {
@@ -205,6 +206,8 @@ struct ReaderUnhandledTapUserScript {
     function enableScrollNavigation(event) {
         if (!isScrollInput(event)) return;
         lastTrustedScrollInputAt.value = Date.now();
+        lastTrustedScrollInputType = event.type === 'touchmove' ? 'touch'
+            : event.type === 'wheel' ? 'wheel' : 'keyboard';
         if (!scrollNavigationEnabled) {
             scrollNavigationEnabled = true;
             lastScrollPosition.x = window.scrollX || 0;
@@ -221,14 +224,19 @@ struct ReaderUnhandledTapUserScript {
         const observedDeparture = reason === 'documentScrollUpFromObservedBottom';
         const bottomDeparture = observedDeparture
             || (reason === 'documentScrollUp' && bottomRevealAwaitingDeparture);
+        const touchDrivenDownwardHide = hidden && reason === 'documentScrollDown'
+            && requiresUserScrollIntent && lastTrustedScrollInputType === 'touch'
+            && lastPostedScrollHidden.value !== hidden;
         const visibilityHandler = window.webkit.messageHandlers.ebookNavigationVisibility;
-        if (window === window.top && visibilityHandler && (bottomArrival || bottomDeparture)) {
+        if (window === window.top && visibilityHandler
+            && (bottomArrival || bottomDeparture || touchDrivenDownwardHide)) {
             try {
                 visibilityHandler.postMessage({
                     hideNavigationDueToScroll: hidden,
                     reason,
                     source: 'nonEBookDocumentScroll',
-                    direction: bottomDeparture ? 'backward' : 'forward'
+                    direction: bottomDeparture ? 'backward' : 'forward',
+                    inputType: touchDrivenDownwardHide ? 'touch' : null
                 });
                 bottomRevealAwaitingDeparture = bottomArrival;
                 lastPostedScrollHidden.value = hidden;
