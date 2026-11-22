@@ -170,12 +170,14 @@ struct ReaderUnhandledTapUserScript {
     let lastScrollPosition = { x: window.scrollX || 0, y: window.scrollY || 0 };
     let accumulatedScroll = { value: 0 };
     let lastPostedScrollHidden = { value: null };
-    let scrollNavigationEnabled = \(requiresUserScrollIntent ? "false" : "true");
+    const requiresUserScrollIntent = \(requiresUserScrollIntent ? "true" : "false");
+    let scrollNavigationEnabled = !requiresUserScrollIntent;
     let lastTrustedScrollInputAt = { value: 0 };
     const scrollInputEvents = ['touchmove', 'wheel', 'keydown'];
     const SCROLL_THRESHOLD = 24;
     const USER_SCROLL_INTENT_LIFETIME_MS = 1500;
     let bottomRevealAwaitingDeparture = false;
+    let observedBottomDeparture = false;
     function documentScrollHeight() {
         return (document.scrollingElement || document.documentElement)?.scrollHeight || 0;
     }
@@ -216,7 +218,9 @@ struct ReaderUnhandledTapUserScript {
 
     function postHideNavigationForScroll(hidden, reason) {
         const bottomArrival = reason === 'documentScrollBottom';
-        const bottomDeparture = reason === 'documentScrollUp' && bottomRevealAwaitingDeparture;
+        const observedDeparture = reason === 'documentScrollUpFromObservedBottom';
+        const bottomDeparture = observedDeparture
+            || (reason === 'documentScrollUp' && bottomRevealAwaitingDeparture);
         const visibilityHandler = window.webkit.messageHandlers.ebookNavigationVisibility;
         if (window === window.top && visibilityHandler && (bottomArrival || bottomDeparture)) {
             try {
@@ -243,7 +247,7 @@ struct ReaderUnhandledTapUserScript {
                 clientX: null,
                 clientY: null,
                 hideNavigationDueToScroll: hidden,
-                reason
+                reason: observedDeparture ? 'documentScrollUp' : reason
             });
         } catch (_error) {}
     }
@@ -266,6 +270,7 @@ struct ReaderUnhandledTapUserScript {
         lastViewportHeight = viewportHeight;
         lastDocumentScrollHeight = scrollHeight;
         if (rangeChanged) {
+            observedBottomDeparture = false;
             accumulatedScroll.value = 0;
             return;
         }
@@ -273,8 +278,9 @@ struct ReaderUnhandledTapUserScript {
             accumulatedScroll.value = 0;
             return;
         }
-        if (\(requiresUserScrollIntent ? "true" : "false")
+        if (requiresUserScrollIntent
             && Date.now() - lastTrustedScrollInputAt.value > USER_SCROLL_INTENT_LIFETIME_MS) {
+            observedBottomDeparture = false;
             accumulatedScroll.value = 0;
             return;
         }
@@ -283,20 +289,27 @@ struct ReaderUnhandledTapUserScript {
         }
 
         const bottomThreshold = Math.max(0, maximumY - 2);
+        const crossedOutOfBottom = maximumY > 0 && previousY >= bottomThreshold
+            && currentY < bottomThreshold && dy < -0.5;
         if (maximumY > 0 && previousY < bottomThreshold
             && currentY >= bottomThreshold && dy > 0) {
+            observedBottomDeparture = false;
             postHideNavigationForScroll(false, 'documentScrollBottom');
             accumulatedScroll.value = 0;
             return;
         }
         if (bottomRevealAwaitingDeparture && dy < -0.5) {
             accumulatedScroll.value += dy;
-            if ((previousY >= bottomThreshold && currentY < bottomThreshold)
-                || accumulatedScroll.value < -SCROLL_THRESHOLD) {
+            if (crossedOutOfBottom || accumulatedScroll.value < -SCROLL_THRESHOLD) {
                 postHideNavigationForScroll(false, 'documentScrollUp');
                 accumulatedScroll.value = 0;
             }
             return;
+        }
+        if (crossedOutOfBottom && requiresUserScrollIntent) {
+            // Native media reconciliation can promote a restored bottom
+            // position without a WebKit bottom-arrival message.
+            observedBottomDeparture = true;
         }
         const delta = Math.abs(dy) >= Math.abs(dx) ? dy : dx;
         if (Math.abs(delta) < 0.5) {
@@ -308,10 +321,14 @@ struct ReaderUnhandledTapUserScript {
             // interval. The next upward gesture is an ordinary visibility
             // change, even when a layout resize rebased the scroll range.
             bottomRevealAwaitingDeparture = false;
+            observedBottomDeparture = false;
             postHideNavigationForScroll(true, 'documentScrollDown');
             accumulatedScroll.value = 0;
         } else if (accumulatedScroll.value < -SCROLL_THRESHOLD) {
-            postHideNavigationForScroll(false, 'documentScrollUp');
+            const reason = observedBottomDeparture
+                ? 'documentScrollUpFromObservedBottom' : 'documentScrollUp';
+            observedBottomDeparture = false;
+            postHideNavigationForScroll(false, reason);
             accumulatedScroll.value = 0;
         }
     }
