@@ -277,7 +277,8 @@ struct ReaderUnhandledTapUserScript {
                 clientX: null,
                 clientY: null,
                 hideNavigationDueToScroll: hidden,
-                reason: observedDeparture ? 'documentScrollUp' : reason
+                reason: observedDeparture ? 'documentScrollUp' : reason,
+                inputType: lastTrustedScrollInputType
             });
         } catch (_error) {}
     }
