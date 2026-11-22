@@ -1211,6 +1211,14 @@ fileprivate final class AtomLinkBaseParser: NSObject, XMLParserDelegate {
     }
 
     private static func resolve(_ reference: String, relativeTo baseURL: URL?) -> URL? {
+        // An empty reference inherits the base path and query and supplies no fragment.
+        if reference.isEmpty {
+            guard let baseURL else { return nil }
+            guard baseURL.fragment != nil else { return baseURL.absoluteURL }
+            var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: true)
+            components?.fragment = nil
+            return components?.url
+        }
         let url = URL(string: reference, relativeTo: baseURL)
             ?? reference.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
                 .flatMap { URL(string: $0, relativeTo: baseURL) }
