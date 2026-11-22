@@ -427,7 +427,7 @@ public struct ReaderWebView: View {
     let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
-    let shouldDeferTouchDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
+    let shouldSuppressNativeDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
@@ -503,7 +503,7 @@ public struct ReaderWebView: View {
         onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
-        shouldDeferTouchDownwardNavigationHide: (@MainActor @Sendable () -> Bool)? = nil,
+        shouldSuppressNativeDownwardNavigationHide: (@MainActor @Sendable () -> Bool)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil,
@@ -525,7 +525,7 @@ public struct ReaderWebView: View {
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.onScrollBottomStateChanged = onScrollBottomStateChanged
-        self.shouldDeferTouchDownwardNavigationHide = shouldDeferTouchDownwardNavigationHide
+        self.shouldSuppressNativeDownwardNavigationHide = shouldSuppressNativeDownwardNavigationHide
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
@@ -557,7 +557,7 @@ public struct ReaderWebView: View {
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
             onScrollBottomStateChanged: onScrollBottomStateChanged,
-            shouldDeferTouchDownwardNavigationHide: shouldDeferTouchDownwardNavigationHide,
+            shouldSuppressNativeDownwardNavigationHide: shouldSuppressNativeDownwardNavigationHide,
             buildMenu: buildMenu,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme,
@@ -619,7 +619,7 @@ fileprivate struct ReaderWebViewInternal: View {
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
-    let shouldDeferTouchDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
+    let shouldSuppressNativeDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
     var buildMenu: BuildMenuType?
     let lightModeTheme: LightModeTheme
     let darkModeTheme: DarkModeTheme
@@ -740,7 +740,7 @@ fileprivate struct ReaderWebViewInternal: View {
                 callbackRelay.handler?.onURLChanged(state: state)
             },
             onScrollBottomStateChanged: onScrollBottomStateChanged,
-            shouldDeferTouchDownwardNavigationHide: shouldDeferTouchDownwardNavigationHide,
+            shouldSuppressNativeDownwardNavigationHide: shouldSuppressNativeDownwardNavigationHide,
             buildMenu: { builder in
                 buildMenu?(builder)
             },

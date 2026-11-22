@@ -602,7 +602,7 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                           let binding = message.javaScriptBindingToken,
                           scriptCaller.currentJavaScriptBindingToken == binding,
                           reason == "documentScrollBottom" || reason == "documentScrollDown" || reason == "documentScrollUp"
-                            || reason == "documentScrollUpFromObservedBottom",
+                            || reason == "documentScrollUpFromObservedBottom" || reason == "documentTouchScrollSettled",
                           let messageURL = request.url ?? request.mainDocumentURL,
                           urlsMatchWithoutHash(messageURL, readerContent.pageURL)
                             || urlsMatchWithoutHash(messageURL, readerContent.cachedContentURL)
@@ -618,7 +618,7 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     )
                     if let navigationVisibilityWillChangeHandler {
                         navigationVisibilityWillChangeHandler(change)
-                    } else if reason != "documentScrollUp" {
+                    } else if reason != "documentScrollUp", reason != "documentTouchScrollSettled" {
                         // Standalone Reader hosts still receive the ordinary
                         // reveal at arrival and at an unclaimed upward crossing.
                         setHideNavigationDueToScroll(

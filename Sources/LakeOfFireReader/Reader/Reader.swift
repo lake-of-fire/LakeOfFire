@@ -1183,7 +1183,7 @@ public struct Reader: View {
     let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
-    let shouldDeferTouchDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
+    let shouldSuppressNativeDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
@@ -1219,7 +1219,7 @@ public struct Reader: View {
         onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
-        shouldDeferTouchDownwardNavigationHide: (@MainActor @Sendable () -> Bool)? = nil,
+        shouldSuppressNativeDownwardNavigationHide: (@MainActor @Sendable () -> Bool)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil
@@ -1242,7 +1242,7 @@ public struct Reader: View {
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.onScrollBottomStateChanged = onScrollBottomStateChanged
-        self.shouldDeferTouchDownwardNavigationHide = shouldDeferTouchDownwardNavigationHide
+        self.shouldSuppressNativeDownwardNavigationHide = shouldSuppressNativeDownwardNavigationHide
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
@@ -1342,7 +1342,7 @@ public struct Reader: View {
             onDocumentContextInvalidated: onDocumentContextInvalidated,
             onURLChanged: onURLChanged,
             onScrollBottomStateChanged: onScrollBottomStateChanged,
-            shouldDeferTouchDownwardNavigationHide: shouldDeferTouchDownwardNavigationHide,
+            shouldSuppressNativeDownwardNavigationHide: shouldSuppressNativeDownwardNavigationHide,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
             buildMenu: buildMenu,
