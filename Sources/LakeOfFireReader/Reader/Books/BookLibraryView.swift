@@ -367,6 +367,10 @@ public class BookLibraryViewModel: ObservableObject {
         self.fileFilter = fileFilter
         self.loadedFiles = loadedFiles
         self.onNavigateToReader = onNavigateToReader
+        let requiresEPUB = fileTypes.contains(.epub) || fileTypes.contains(.epubZip)
+        publicationFetcher = { url in
+            await BookLibraryViewModel.fetchPublications(from: url, requiresEPUB: requiresEPUB)
+        }
     }
 
     @Published var editorsPicks: [Publication] = []
@@ -375,10 +379,7 @@ public class BookLibraryViewModel: ObservableObject {
     @Published public var onNavigateToReader: (() -> Void)?
     private var cancellables = Set<AnyCancellable>()
 
-    var publicationFetcher:
-        @MainActor (URL) async -> ([Publication], String?) = {
-            await BookLibraryViewModel.fetchPublications(from: $0)
-        }
+    var publicationFetcher: @MainActor (URL) async -> ([Publication], String?)
 
     private var editorsPicksFetchGeneration: UInt64 = 0
     private var editorsPicksFetchTask: Task<Void, Never>?
@@ -487,7 +488,9 @@ public class BookLibraryViewModel: ObservableObject {
         for publication in publications {
             guard
                 let downloadURL = publication.downloadURL,
-                let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title)
+                let downloadable = try? await readerFileManager.downloadable(
+                    url: downloadURL, name: publication.title, mediaType: publication.downloadMediaType
+                )
             else {
                 continue
             }
@@ -506,7 +509,7 @@ public class BookLibraryViewModel: ObservableObject {
     /// Convert the parser's publication graph to detached Reader values.
     /// Standalone OPDS entry documents have the same Reader presentation as
     /// feed entries; navigation/empty feeds remain the loader's responsibility.
-    static func mappedPublications(in document: ParseData, relativeTo url: URL) -> [Publication]? {
+    static func mappedPublications(in document: ParseData, relativeTo url: URL, requiresEPUB: Bool = true) -> [Publication]? {
         let publications: [LakeOfFireOPDS.Publication]
         // The catalog UI presents one list. Keep books from declared groups
         // after top-level books, preserving each collection's publication order.
@@ -526,22 +529,22 @@ public class BookLibraryViewModel: ObservableObject {
                 // OPDS 2.0 images already identify visual representations;
                 // the collection's links do not require legacy image relations.
                 ?? publication.images.lazy.compactMap { $0.url(relativeTo: url) }.first
-            // Keep the existing generic acquisition priority. Purchase, loan,
-            // sample and subscription URLs are not full-book downloads.
-            let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
-                ?? publication.links.first(withRel: .opdsAcquisitionOpenAccess)
+            let acquisition = publication.downloadAcquisition(relativeTo: url, requiresEPUB: requiresEPUB)
             return Publication(
                 title: publication.metadata.title,
                 author: publication.metadata.authors.map(\.name).joined(separator: ", "),
                 publicationDate: publication.metadata.published,
                 coverURL: coverURL,
-                downloadURL: acquisitionLink?.url(relativeTo: url),
-                summary: publication.metadata.description ?? publication.metadata.subtitle
+                downloadURL: acquisition?.url,
+                summary: publication.metadata.description ?? publication.metadata.subtitle,
+                downloadMediaType: acquisition?.mediaType
             )
         }
     }
 
-    static func fetchPublications(from url: URL, session: URLSession = .shared) async -> ([Publication], String?) {
+    static func fetchPublications(
+        from url: URL, session: URLSession = .shared, requiresEPUB: Bool = true
+    ) async -> ([Publication], String?) {
         var nextURL = url
         var visited = Set<URL>()
         while true {
@@ -557,7 +560,7 @@ public class BookLibraryViewModel: ObservableObject {
                 if documentURL != requestURL, !visited.insert(documentURL).inserted {
                     return ([], "The catalog links back to a document that was already opened.")
                 }
-                if let mapped = mappedPublications(in: document, relativeTo: documentURL) {
+                if let mapped = mappedPublications(in: document, relativeTo: documentURL, requiresEPUB: requiresEPUB) {
                     return (mapped, nil)
                 }
                 guard let allBooksLink = document.feed?.navigation.first(where: {
@@ -603,7 +606,8 @@ public class BookLibraryViewModel: ObservableObject {
                 }
                 downloadable = try? await readerFileManager.downloadable(
                     url: downloadURL,
-                    name: publication.title
+                    name: publication.title,
+                    mediaType: publication.downloadMediaType
                 )
                 return downloadable != nil
             },
@@ -718,7 +722,8 @@ public class BookLibraryViewModel: ObservableObject {
                 }
                 downloadable = try? await readerFileManager.downloadable(
                     url: downloadURL,
-                    name: publication.title
+                    name: publication.title,
+                    mediaType: publication.downloadMediaType
                 )
                 return downloadable != nil
             },
@@ -769,4 +774,5 @@ public struct Publication: Identifiable, Hashable {
     public var downloadURL: URL?
     public var summary: String?
     public var hasContentAudio = false
+    public var downloadMediaType: String?
 }

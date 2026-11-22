@@ -1,11 +1,13 @@
+import Foundation
 import XCTest
+@testable import LakeOfFireOPDS
 @testable import LakeOfFireReader
 
 /// Controlled transport responses drive the production detail model and the
 /// shared request owner. No test-owned publication or request policy is used.
 @MainActor
 private final class OPDSCatalogDetailFixture {
-    typealias Value = ([Publication], String?)
+    typealias Value = ([LakeOfFireReader.Publication], String?)
     let model = OPDSCatalogDetailViewModel()
     private(set) var requestedURLs: [URL] = []
     private(set) var completedLoads: Set<Int> = []
@@ -87,6 +89,43 @@ final class OPDSCatalogDetailTests: XCTestCase {
             throw error
         }
         await fixture.cleanup()
+    }
+
+    func testCatalogMappingUsesEPUBByDefaultAndRetainsSelectedAcquisitionMediaType() throws {
+        let url = try XCTUnwrap(URL(string: "https://catalog.example/opds/feed.json"))
+        let response = URLResponse(url: url, mimeType: "application/opds+json",
+                                   expectedContentLength: -1, textEncodingName: nil)
+        var document = ParseData(url: url, response: response, version: .OPDS2)
+        let feed = LakeOfFireOPDS.Feed(title: "Catalog")
+        feed.publications = [
+            LakeOfFireOPDS.Publication(
+                metadata: Metadata(title: "Multiple editions"),
+                links: [
+                    Link(href: "book.pdf", type: " APPLICATION/PDF ; version=1", rel: .opdsAcquisition),
+                    Link(href: "download?sig=a%2Fb+%2523", type: "application/epub+zip", rel: .opdsAcquisitionOpenAccess),
+                ]
+            ),
+            LakeOfFireOPDS.Publication(
+                metadata: Metadata(title: "PDF only"),
+                links: [Link(href: "other.pdf", type: "application/pdf", rel: .opdsAcquisition)]
+            ),
+        ]
+        document.feed = feed
+
+        let epub = try XCTUnwrap(BookLibraryViewModel.mappedPublications(in: document, relativeTo: url))
+        XCTAssertEqual(epub.map(\.title), ["Multiple editions", "PDF only"])
+        XCTAssertEqual(epub.map { $0.downloadURL?.absoluteString }, [
+            "https://catalog.example/opds/download?sig=a%2Fb+%2523", nil,
+        ])
+        XCTAssertEqual(epub.map(\.downloadMediaType), ["application/epub+zip", nil])
+
+        let unrestricted = try XCTUnwrap(BookLibraryViewModel.mappedPublications(
+            in: document, relativeTo: url, requiresEPUB: false
+        ))
+        XCTAssertEqual(unrestricted.map { $0.downloadURL?.absoluteString }, [
+            "https://catalog.example/opds/book.pdf", "https://catalog.example/opds/other.pdf",
+        ])
+        XCTAssertEqual(unrestricted.map(\.downloadMediaType), ["application/pdf", "application/pdf"])
     }
 
     func testInvalidAndRelativeURLsPublishAnActionableErrorWithoutFetching() async {

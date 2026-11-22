@@ -115,6 +115,56 @@ final class ReaderFileLibraryBoundaryTests: XCTestCase {
         try Data(text.utf8).write(to: destination)
     }
 
+    func testDeclaredEPUBDownloadRoutesToBooksAndKeepsSignedURLIdentity() async throws {
+        try await withFixture { f in
+            ReaderFileManager.fileDestinationProcessors = [{ @Sendable url in
+                url.pathExtension.lowercased() == "epub" ? RootRelativePath(path: "books") : nil
+            }]
+            let firstRaw = "https://example.com/download/42?signature=a%2Fb+%2523"
+            let secondRaw = "https://example.com/download/42?signature=a%2fb+%2523"
+            let firstURL = try XCTUnwrap(URL(string: firstRaw))
+            let secondURL = try XCTUnwrap(URL(string: secondRaw))
+            let firstDescriptor = try await f.manager.downloadable(
+                url: firstURL, name: "First", mediaType: "application/epub+zip")
+            let secondDescriptor = try await f.manager.downloadable(
+                url: secondURL, name: "Second", mediaType: "application/epub+zip")
+            let first = try XCTUnwrap(firstDescriptor)
+            let second = try XCTUnwrap(secondDescriptor)
+
+            XCTAssertEqual(first.url.absoluteString, firstRaw)
+            XCTAssertEqual(second.url.absoluteString, secondRaw)
+            let downloadRoot = f.library.appendingPathComponent("books", isDirectory: true)
+                .appendingPathComponent(ReaderFileStoragePaths.downloadsDirectory, isDirectory: true)
+            for item in [first, second] {
+                XCTAssertEqual(item.localDestination.lastPathComponent, "42.epub")
+                XCTAssertEqual(item.localDestination.deletingLastPathComponent().deletingLastPathComponent(), downloadRoot)
+            }
+            XCTAssertNotEqual(first.localDestination, second.localDestination)
+        }
+    }
+
+    func testStagedEPUBImportsIntoBooksWhenRemoteURLHasNoExtension() async throws {
+        try await withFixture { f in
+            ReaderFileManager.fileDestinationProcessors = [{ @Sendable url in
+                url.pathExtension.lowercased() == "epub" ? RootRelativePath(path: "books") : nil
+            }]
+            let remote = try XCTUnwrap(URL(string: "https://example.com/download/42?signature=a%2Fb+%2523"))
+            let staged = f.root.appendingPathComponent("staged/42.epub")
+            try self.writeEPUBArchive(to: staged)
+            let archiveBytes = try Data(contentsOf: staged)
+
+            let imported = try await f.manager.importFile(fileURL: staged, fromDownloadURL: remote)
+            let readerURL = try XCTUnwrap(imported)
+            let destination = f.library.appendingPathComponent("books/42.epub")
+            let expectedReaderURL = try await f.manager.readerFileURL(for: destination)
+            XCTAssertEqual(readerURL, try XCTUnwrap(expectedReaderURL))
+            XCTAssertEqual(try Data(contentsOf: destination), archiveBytes)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: f.library.appendingPathComponent("42.epub").path))
+            f.realm.refresh()
+            XCTAssertEqual(Array(f.realm.objects(ContentFile.self).where { !$0.isDeleted }.map(\.url)), [readerURL])
+        }
+    }
+
     func testCatalogBasenameCollisionCannotClaimAnotherDownloadsBytes() async throws {
         try await withFixture { f in
             let legacy = f.library.appendingPathComponent("book.txt")
@@ -465,20 +515,36 @@ extension ReaderFileLibraryBoundaryTests {
         }
     }
 
+    private var epubFixtureEntries: [(String, Data)] {
+        [
+            ("mimetype", Data("application/epub+zip".utf8)),
+            ("META-INF/container.xml", Data("""
+                <?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>
+                """.utf8)),
+            ("OPS/book.opf", Data("""
+                <?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">delete-fixture</dc:identifier><dc:title>Delete fixture</dc:title><dc:language>en</dc:language><meta property="dcterms:modified">2026-01-01T00:00:00Z</meta></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="navigation" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/></manifest><spine><itemref idref="chapter"/></spine></package>
+                """.utf8)),
+            ("OPS/chapter.xhtml", Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Fixture</title></head><body><p>Disposable book bytes.</p></body></html>".utf8)),
+            ("OPS/nav.xhtml", Data("""
+                <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="chapter.xhtml">Fixture</a></li></ol></nav></body></html>
+                """.utf8))
+        ]
+    }
+
+    private func writeEPUBArchive(to destination: URL) throws {
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let archive = try Archive(url: destination, accessMode: .create)
+        for (path, bytes) in epubFixtureEntries {
+            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(bytes.count)) { offset, count in
+                bytes.subdata(in: Int(offset)..<Int(offset) + count)
+            }
+        }
+    }
+
     private func checkEbookDeletion(isDirectory: Bool) async throws {
         try await withFixture { f in
             let payload = f.library.appendingPathComponent("Books/delete.epub", isDirectory: isDirectory)
-            let entries: [(String, Data)] = [
-                ("mimetype", Data("application/epub+zip".utf8)),
-                ("META-INF/container.xml", Data("""
-                    <?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>
-                    """.utf8)),
-                ("OPS/book.opf", Data("""
-                    <?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">delete-fixture</dc:identifier><dc:title>Delete fixture</dc:title><dc:language>en</dc:language></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>
-                    """.utf8)),
-                ("OPS/chapter.xhtml", Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Fixture</title></head><body><p>Disposable book bytes.</p></body></html>".utf8))
-            ]
-            try FileManager.default.createDirectory(at: payload.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let entries = self.epubFixtureEntries
             if isDirectory {
                 for (path, bytes) in entries {
                     let destination = payload.appendingPathComponent(path)
@@ -487,14 +553,7 @@ extension ReaderFileLibraryBoundaryTests {
                     XCTAssertEqual(try Data(contentsOf: destination), bytes)
                 }
             } else {
-                do {
-                    let archive = try Archive(url: payload, accessMode: .create)
-                    for (path, bytes) in entries {
-                        try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(bytes.count)) { offset, count in
-                            bytes.subdata(in: Int(offset)..<Int(offset) + count)
-                        }
-                    }
-                }
+                try self.writeEPUBArchive(to: payload)
                 XCTAssertFalse(try Data(contentsOf: payload).isEmpty)
                 let archive = try Archive(url: payload, accessMode: .read)
                 for (path, bytes) in entries {

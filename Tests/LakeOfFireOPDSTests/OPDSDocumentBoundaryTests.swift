@@ -219,6 +219,58 @@ final class OPDSDocumentBoundaryTests: XCTestCase {
         XCTAssertEqual(publication.images.first?.href, "https://cdn.example/cover.jpg")
         XCTAssertEqual(publication.metadata.authors.first?.links.first?.href, "https://mirror.example/opds/feed.json?author=a%2Fb")
     }
+
+    func testOPDS2SelectsUsableGenericAcquisitionAndPreservesSignedURL() throws {
+        let responseURL = URL(string: "https://mirror.example/opds/feed.json")!
+        let response = URLResponse(url: responseURL, mimeType: "application/opds+json",
+                                   expectedContentLength: -1, textEncodingName: nil)
+        let json = #"""
+        {
+          "metadata": {"title": "Catalog"},
+          "publications": [{
+            "metadata": {"title": "Book"},
+            "links": [
+              {"rel": "download", "href": "fallback.epub", "type": "application/epub+zip"},
+              {"rel": "acquisition", "href": "", "type": "application/epub+zip"},
+              {"rel": "acquisition", "href": "#preview", "type": "application/epub+zip"},
+              {"rel": "acquisition", "href": "https://[", "type": "application/epub+zip"},
+              {"rel": "acquisition", "href": "https:///no-host.epub", "type": "application/epub+zip"},
+              {"rel": "acquisition", "href": "ftp://mirror.example/book.epub", "type": "application/epub+zip"},
+              {"rel": ["acquisition", "http://opds-spec.org/acquisition/buy"], "href": "buy.epub", "type": "application/epub+zip"},
+              {"rel": "acquisition", "href": "misleading.epub", "type": "application/pdf"},
+              {"rel": "acquisition", "href": "download.php?sig=a%2Fb+%2523", "type": " APPLICATION/EPUB+ZIP ; version=3"}
+            ]
+          }]
+        }
+        """#
+        let feed = try XCTUnwrap(OPDS2Parser.parse(jsonData: Data(json.utf8), url: base, response: response).feed)
+        let publication = try XCTUnwrap(feed.publications.first)
+        let selected = try XCTUnwrap(publication.downloadAcquisition(relativeTo: responseURL, requiresEPUB: true))
+
+        XCTAssertEqual(selected.url.absoluteString, "https://mirror.example/opds/download.php?sig=a%2Fb+%2523")
+        XCTAssertEqual(selected.mediaType, "application/epub+zip")
+    }
+
+    func testAtomSkipsNonResourceAndNonBookAcquisitionsBeforeResolvingOpenAccess() throws {
+        let xml = """
+        <entry xmlns="\(atom)" xml:base="../books/"><title>Book</title>
+          <link rel="\(acquisition)" href="" type="application/epub+zip"/>
+          <link rel="\(acquisition)" href="#sample" type="application/epub+zip"/>
+          <link rel="\(acquisition)" href="download" type="application/octet-stream"/>
+          <link rel="\(acquisition)/sample" href="sample.epub" type="application/epub+zip"/>
+          <link rel="\(acquisition)/borrow" href="loan.epub" type="application/epub+zip"/>
+          <link rel="\(acquisition)/subscribe" href="subscription.epub" type="application/epub+zip"/>
+          <link rel="\(acquisition)/open-access" xml:base="copies/" href="novel.EPUB?sig=a%2Fb&amp;v=1" type="application/zip"/>
+        </entry>
+        """
+        let responseURL = URL(string: "https://mirror.example/new/catalog.atom")!
+        let publication = try XCTUnwrap(parse(xml, responseURL: responseURL).publication)
+        let selected = try XCTUnwrap(publication.downloadAcquisition(relativeTo: responseURL, requiresEPUB: true))
+
+        XCTAssertEqual(selected.url.absoluteString, "https://mirror.example/books/copies/novel.EPUB?sig=a%2Fb&v=1")
+        XCTAssertEqual(selected.mediaType, "application/zip")
+    }
+
     func testNamespacedFacetAttributeAcceptsAnArbitraryPrefix() throws {
         let result = try feed("<link xmlns:catalog=\"http://opds-spec.org/2010/catalog\" catalog:facetGroup=\"Language\" href=\"ja.atom\" title=\"Japanese\" rel=\"http://opds-spec.org/facet\"/>")
         XCTAssertEqual(result.facets.first?.metadata.title, "Language")

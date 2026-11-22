@@ -74,6 +74,34 @@ public struct Publication: Hashable {
         self.images = images
     }
 
+    /// Keep the declared type paired with the HTTP resource it describes.
+    public func downloadAcquisition(relativeTo baseURL: URL?, requiresEPUB: Bool) -> (url: URL, mediaType: String?)? {
+        for relation in [LinkRelation.opdsAcquisition, .opdsAcquisitionOpenAccess] {
+            for link in links where link.rels.contains(relation) {
+                guard !link.rels.contains(where: {
+                    $0.isSample || $0 == .opdsAcquisitionBuy
+                        || $0 == .opdsAcquisitionBorrow || $0 == .opdsAcquisitionSubscribe
+                }) else { continue }
+                let href = link.href.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !href.isEmpty, !href.hasPrefix("#"),
+                      let url = link.url(relativeTo: baseURL),
+                      let scheme = url.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https",
+                      url.host?.isEmpty == false else { continue }
+                let mediaType = link.type?.components(separatedBy: ";").first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if !requiresEPUB { return (url, mediaType) }
+                if mediaType == "application/epub+zip" { return (url, mediaType) }
+                let isGenericType = mediaType == nil || mediaType == ""
+                    || mediaType == "application/octet-stream" || mediaType == "application/zip"
+                if isGenericType && url.pathExtension.lowercased() == "epub" {
+                    return (url, mediaType)
+                }
+            }
+        }
+        return nil
+    }
+
     init(json: [String: Any], normalizeHREF: (String) -> String = { $0 }) throws {
         guard let metadataDict = json["metadata"] as? [String: Any] else {
             throw OPDS2ParserError.invalidPublication
@@ -280,11 +308,17 @@ public struct Link: Hashable {
             }
         }
         self.init(
-            href: normalizeHREF(href),
+            href: Link.isNonResourceAcquisitionReference(href, relations: relations) ? href : normalizeHREF(href),
             type: json["type"] as? String,
             title: json["title"] as? String,
             rels: relations
         )
+    }
+
+    static func isNonResourceAcquisitionReference(_ href: String, relations: [LinkRelation]) -> Bool {
+        let reference = href.trimmingCharacters(in: .whitespacesAndNewlines)
+        return relations.contains(where: \.isOPDSAcquisition)
+            && (reference.isEmpty || reference.hasPrefix("#"))
     }
 
     public func url(relativeTo baseURL: URL?) -> URL? {
