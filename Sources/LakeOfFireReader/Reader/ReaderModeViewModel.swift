@@ -1047,11 +1047,14 @@ internal func titleFromReadabilityHTML(_ html: String) -> String? {
     return normalisedTitle(candidate)
 }
 
-private func readerHeadingTextWithoutRuby(_ heading: SwiftSoup.Element?) -> String? {
+private func readerHeadingTextWithoutRuby(
+    _ heading: SwiftSoup.Element?,
+    trimAndNormaliseWhitespace: Bool = true
+) -> String? {
     guard let copy = heading?.copy() as? SwiftSoup.Element else { return nil }
     // Annotations belong to the rendered heading, not its saved plain title.
     try? copy.select("rt, rp, rtc").remove()
-    return try? copy.text()
+    return try? copy.text(trimAndNormaliseWhitespace: trimAndNormaliseWhitespace)
 }
 
 /// Preserve prepared lookup identities and ruby when the saved snippet title
@@ -1062,7 +1065,10 @@ internal func updateSnippetReaderTitleIfNeeded(
     title: String
 ) throws -> Bool {
     guard let heading = try document.getElementById("reader-title"),
-          readerHeadingTextWithoutRuby(heading) != title else { return false }
+          readerHeadingTextWithoutRuby(
+            heading,
+            trimAndNormaliseWhitespace: false
+          ) != title else { return false }
     try heading.text(title)
     return true
 }

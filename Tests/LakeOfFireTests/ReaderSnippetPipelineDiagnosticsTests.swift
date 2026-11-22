@@ -31,6 +31,19 @@ final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
         XCTAssertEqual(try document.getElementById("native-title-word")?.select("rt").text(), "がっこう")
     }
 
+    func testUnchangedSnippetTitleWithRepeatedSpacesPreservesPreparedHeading() throws {
+        let document = try SwiftSoup.parse("""
+        <html><body>
+          <h1 id="reader-title"><m-m id="native-title-word"><ruby>学校<rt>がっこう</rt></ruby></m-m>  へ行く</h1>
+        </body></html>
+        """)
+        let before = try document.outerHtml()
+
+        XCTAssertFalse(try updateSnippetReaderTitleIfNeeded(in: document, title: "学校  へ行く"))
+        XCTAssertEqual(try document.outerHtml(), before)
+        XCTAssertEqual(try document.getElementById("native-title-word")?.select("rt").text(), "がっこう")
+    }
+
     func testRenamingSnippetTitleKeepsHeadingAttributesAndUnrelatedMarkup() throws {
         let document = try SwiftSoup.parse("""
         <html><body>
@@ -63,7 +76,7 @@ final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
     }
 
     func testReadabilityTitleUsesBaseTextWithoutMutatingRubyMarkup() throws {
-        let ruby = "<ruby>学校<rp>(</rp><rt>がっこう</rt><rp>)</rp><rtc>annotation</rtc></ruby>へ行く"
+        let ruby = "<ruby>学校<rp>(</rp><rt>がっこう</rt><rp>)</rp><rtc>annotation</rtc></ruby>  へ行く"
         for headings in [
             "<h1>Other heading</h1><h1 id=\"reader-title\">\(ruby)</h1>",
             "<h1>\(ruby)</h1>"
@@ -72,7 +85,7 @@ final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
             let before = try document.outerHtml()
             XCTAssertEqual(try document.select("rt, rp, rtc").count, 4)
 
-            XCTAssertEqual(titleFromReadabilityDocument(document), "学校へ行く")
+            XCTAssertEqual(titleFromReadabilityDocument(document), "学校 へ行く")
             XCTAssertEqual(try document.outerHtml(), before)
         }
     }
