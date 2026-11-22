@@ -106,6 +106,7 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
     let loaded: XCTestExpectation
     let pending: XCTestExpectation
     let ready: XCTestExpectation
+    var nextLoaded: XCTestExpectation?
     let receive: @Sendable (WebViewMessage) async -> Void
     let nativeIsReady: @MainActor () -> Bool
     private var reportedPending = false
@@ -145,7 +146,9 @@ private final class ReaderGeneratedReadinessFixture: NSObject, WKURLSchemeHandle
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        loaded.fulfill()
+        let completedLoad = nextLoaded ?? loaded
+        nextLoaded = nil
+        completedLoad.fulfill()
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -303,8 +306,9 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         fixture.handler.scriptCaller.installBinding(
             ownedBy: bindingOwner,
             asyncCaller: { source, arguments, frame, world in
+                // Await the font script's promise so the fixture joins each injection.
                 let result = try await webView.callAsyncJavaScript(
-                    source,
+                    "return " + source,
                     arguments: arguments?.mapValues { $0 as Any } ?? [:],
                     in: frame,
                     contentWorld: world ?? .page
@@ -316,11 +320,13 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             coordinateOriginInWindow: { nil }
         )
         defer { _ = fixture.handler.scriptCaller.clearBinding(ownedBy: bindingOwner) }
-        // Run the real injector. Its asynchronous font completion clears the
-        // gate; the production mutation observer and receiver settle native state.
-        await mode.injectSharedFontIfNeeded(
-            scriptCaller: fixture.handler.scriptCaller, pageURL: url
-        )
+        let caller = fixture.handler.scriptCaller
+        let initialLoad = try await fontStateDuringInjection(in: webView) {
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
+        }
+        XCTAssertEqual(initialLoad["visibility"], "hidden")
+        XCTAssertEqual(initialLoad["ready"], "0")
+        XCTAssertEqual(initialLoad["pending"], "1")
         await fulfillment(of: [ready], timeout: 5)
         await nativeFixture.drainMessages()
         XCTAssertTrue(fixture.handler.readerViewModel.state.hasReaderRenderReady)
@@ -329,9 +335,107 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertFalse(reader.isRenderingReaderHTML)
         let injectionMode = try await webView.evaluateJavaScript("globalThis.manabiReaderFontInjectionMode")
         XCTAssertEqual(injectionMode as? String, "local-scheme")
+
+        let repeatedLoad = try await fontStateDuringInjection(in: webView) {
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: url)
+        }
+        XCTAssertEqual(repeatedLoad["visibility"], "visible")
+        XCTAssertEqual(repeatedLoad["ready"], "1")
+        XCTAssertEqual(repeatedLoad["pending"], "absent")
         let pendingAttribute = try await webView.evaluateJavaScript("document.documentElement.hasAttribute('data-mnb-font-pending')")
         XCTAssertEqual(pendingAttribute as? Bool, false)
+
+        // HTTPS source uses the blob injector without the local deferred gate CSS.
+        let httpsURL = try XCTUnwrap(URL(string: "https://example.invalid/saved-font-fixture"))
+        let httpsLoaded = expectation(description: "saved HTTPS reader document loads")
+        nativeFixture.nextLoaded = httpsLoaded
+        mode.sharedFontCSSBase64 = Data("html { font-family: serif; }".utf8).base64EncodedString()
+        let navigation = webView.load(
+            Data("<html><body class='readability-mode'>Readable fallback 日本語.</body></html>".utf8),
+            mimeType: "text/html", characterEncodingName: "UTF-8", baseURL: httpsURL
+        )
+        defer { withExtendedLifetime(navigation) {} }
+        await fulfillment(of: [httpsLoaded], timeout: 10)
+        let location = try await webView.evaluateJavaScript("window.location.href")
+        XCTAssertEqual(location as? String, httpsURL.absoluteString)
+
+        let initialBlobLoad = try await fontStateDuringInjection(in: webView) {
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: httpsURL)
+        }
+        XCTAssertEqual(initialBlobLoad["ready"], "0")
+        XCTAssertEqual(initialBlobLoad["pending"], "1")
+        let blobMode = try await webView.evaluateJavaScript("globalThis.manabiReaderFontInjectionMode")
+        XCTAssertEqual(blobMode as? String, "blob")
+
+        let repeatedBlobLoad = try await fontStateDuringInjection(in: webView) {
+            await mode.injectSharedFontIfNeeded(scriptCaller: caller, pageURL: httpsURL)
+        }
+        XCTAssertEqual(repeatedBlobLoad["visibility"], "visible")
+        XCTAssertEqual(repeatedBlobLoad["ready"], "1")
+        XCTAssertEqual(repeatedBlobLoad["pending"], "absent")
+        let blobReady = try await webView.evaluateJavaScript(
+            "document.documentElement.dataset.mnbFontReady === '1' && !document.documentElement.hasAttribute('data-mnb-font-pending')"
+        )
+        XCTAssertEqual(blobReady as? Bool, true)
         withExtendedLifetime((fixture, nativeFixture, webView)) {}
+    }
+
+    private func fontStateDuringInjection(
+        in webView: WKWebView,
+        inject: @escaping @MainActor () async -> Void
+    ) async throws -> [String: String] {
+        _ = try await webView.evaluateJavaScript("""
+            (() => {
+                const fonts = document.fonts
+                const load = fonts.load.bind(fonts)
+                let report
+                let release
+                const entered = new Promise(resolve => { report = resolve })
+                const held = new Promise(resolve => { release = resolve })
+                const deadline = setTimeout(release, 3000)
+                window.readerFontTestGate = {
+                    entered,
+                    release() {
+                        clearTimeout(deadline)
+                        delete fonts.load
+                        release()
+                    }
+                }
+                fonts.load = async (...args) => {
+                    const root = document.documentElement
+                    report({
+                        visibility: getComputedStyle(document.body).visibility,
+                        ready: root.dataset.mnbFontReady ?? '',
+                        pending: root.dataset.mnbFontPending ?? 'absent'
+                    })
+                    await held
+                    return load(...args)
+                }
+            })()
+            """)
+        let injection = Task { await inject() }
+        let releaseGate = "window.readerFontTestGate.release()"
+        do {
+            let state = try await webView.callAsyncJavaScript("""
+                let timeout
+                try {
+                    return await Promise.race([
+                        window.readerFontTestGate.entered,
+                        new Promise(resolve => { timeout = setTimeout(() => resolve(null), 2000) })
+                    ])
+                } finally {
+                    clearTimeout(timeout)
+                }
+                """, arguments: [:], in: nil, contentWorld: .page)
+            let observed = try XCTUnwrap(state as? [String: String], "The injector must request a font")
+            _ = try await webView.evaluateJavaScript(releaseGate)
+            await injection.value
+            return observed
+        } catch {
+            _ = try? await webView.evaluateJavaScript(releaseGate)
+            await injection.value
+            throw error
+        }
     }
 
     private func cachedHistoryRecord(url: URL) throws -> (Realm, HistoryRecord) {

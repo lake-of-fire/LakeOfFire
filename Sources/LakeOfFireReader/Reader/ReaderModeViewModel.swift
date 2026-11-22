@@ -2009,6 +2009,7 @@ public class ReaderModeViewModel: ObservableObject {
                     const root = document.documentElement;
                     if (!root) return;
                     if (pending) {
+                        if (root.dataset.mnbFontReady === '1') return
                         root.dataset.mnbFontPending = '1';
                         root.dataset.mnbFontReady = '0';
                     } else {
@@ -2170,6 +2171,7 @@ public class ReaderModeViewModel: ObservableObject {
                     const root = document.documentElement;
                     if (!root) return;
                 if (pending) {
+                    if (root.dataset.mnbFontReady === '1') return
                     root.dataset.mnbFontPending = '1';
                     root.dataset.mnbFontReady = '0';
                 } else {
