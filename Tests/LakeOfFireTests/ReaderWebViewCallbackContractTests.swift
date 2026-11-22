@@ -1021,6 +1021,229 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         await fulfillment(of: [pendingURLCalled], timeout: 0.05)
     }
 
+    private func savedSnippetHistory(url: URL) throws -> (Realm, HistoryRecord) {
+        let (realm, row) = try cachedHistoryRecord(url: url)
+        try realm.write {
+            row.title = "Saved snippet title"
+            row.html = "<html><body><p>The harbor bell rang twice.</p></body></html>"
+            row.isReaderModeByDefault = true
+            row.isReaderModeAvailable = false
+            row.isTitlePrefixOfContent = false
+            row.rssContainsFullContent = true
+        }
+        return (realm, row)
+    }
+
+    func testStoredSnippetLoaderUsesPublicationDateOnceBeforeDispatch() async throws {
+        for publicationDate in [nil, "20 November 2026"] as [String?] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let mode = fixture.readerModeViewModel
+            let reader = fixture.readerContent
+            let navigator = fixture.handler.navigator
+            let url = URL(string: "internal://local/snippet?key=restore-single-preparation")!
+            let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+            let (realm, row) = try savedSnippetHistory(url: url)
+            reader.pageURL = loaderURL
+            reader.content = row
+            var dateLookups: [URL] = []
+            mode.readerPublicationDateLoader = { url in
+                dateLookups.append(url)
+                return publicationDate
+            }
+            var generatedHTML: Data?
+            mode.processHTMLBytes = { bytes, _ in
+                await MainActor.run { generatedHTML = Data(bytes) }
+                return bytes
+            }
+            defer {
+                mode.readerPublicationDateLoader = nil
+                mode.processHTMLBytes = nil
+                withExtendedLifetime(realm) {}
+            }
+
+            var state = WebViewState.empty
+            state.pageURL = loaderURL
+            try await mode.onNavigationCommitted(
+                readerContent: reader, newState: state,
+                scriptCaller: fixture.handler.scriptCaller, navigator: navigator
+            )
+            await mode.waitForReaderModeRender(for: url)
+
+            XCTAssertEqual(dateLookups, [url])
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+            let html = try XCTUnwrap(generatedHTML)
+            let document = try SwiftSoup.parse(String(decoding: html, as: UTF8.self))
+            XCTAssertEqual(try document.getElementById("reader-content")?.text(), "The harbor bell rang twice.")
+            XCTAssertEqual(try document.getElementById("reader-title")?.text(), "Saved snippet title")
+            XCTAssertEqual(try document.getElementById("reader-publication-date")?.text(), publicationDate)
+        }
+    }
+
+    func testStoredSnippetLoaderRebuildsAfterSameRowTitleOrSuppressionChange() async throws {
+        for changesTitle in [true, false] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let mode = fixture.readerModeViewModel
+            let reader = fixture.readerContent
+            let navigator = fixture.handler.navigator
+            let url = URL(string: "internal://local/snippet?key=restore-stale-preparation")!
+            let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+            let (realm, row) = try savedSnippetHistory(url: url)
+            reader.pageURL = loaderURL
+            reader.content = row
+            let updatedTitle = changesTitle ? "Updated snippet title" : row.title
+            let hidesTitle = !changesTitle
+            var editResult: Result<Void, Error>?
+            let edit = reader.$isRenderingReaderHTML.filter { $0 }.prefix(1).sink { _ in
+                editResult = Result {
+                    try realm.write {
+                        row.title = updatedTitle
+                        row.isTitlePrefixOfContent = hidesTitle
+                    }
+                }
+            }
+            let fallbackDate = "21 November 2026"
+            var dateLookups: [URL] = []
+            mode.readerPublicationDateLoader = { url in
+                dateLookups.append(url)
+                return dateLookups.count == 1 ? nil : fallbackDate
+            }
+            var generatedHTML: Data?
+            mode.processHTMLBytes = { bytes, _ in
+                await MainActor.run { generatedHTML = Data(bytes) }
+                return bytes
+            }
+            defer {
+                edit.cancel()
+                mode.readerPublicationDateLoader = nil
+                mode.processHTMLBytes = nil
+                withExtendedLifetime(realm) {}
+            }
+
+            var state = WebViewState.empty
+            state.pageURL = loaderURL
+            try await mode.onNavigationCommitted(
+                readerContent: reader, newState: state,
+                scriptCaller: fixture.handler.scriptCaller, navigator: navigator
+            )
+            await mode.waitForReaderModeRender(for: url)
+
+            try XCTUnwrap(editResult).get()
+            XCTAssertEqual(dateLookups.count, 2, "Updating title metadata must rebuild the prepared document")
+            XCTAssertEqual(dateLookups.first, url)
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+            let html = try XCTUnwrap(generatedHTML)
+            let document = try SwiftSoup.parse(String(decoding: html, as: UTF8.self))
+            XCTAssertEqual(try document.getElementById("reader-content")?.text(), "The harbor bell rang twice.")
+            XCTAssertEqual(try document.getElementById("reader-title")?.text(), updatedTitle)
+            XCTAssertEqual(try document.getElementById("reader-publication-date")?.text(), fallbackDate)
+            let body = try XCTUnwrap(document.body())
+            XCTAssertEqual(body.hasClass(ReaderContentLoader.snippetReaderTitleSuppressionBodyClass), hidesTitle)
+        }
+    }
+
+    func testCancelledStoredSnippetDateLookupCannotDispatchStaleHTML() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let mode = fixture.readerModeViewModel
+        let reader = fixture.readerContent
+        let navigator = fixture.handler.navigator
+        let url = URL(string: "internal://local/snippet?key=restore-cancelled-preparation")!
+        let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+        let (realm, row) = try savedSnippetHistory(url: url)
+        reader.pageURL = loaderURL
+        reader.content = row
+        let entered = expectation(description: "Stored snippet publication date lookup suspended")
+        let dateGate = ReaderCallbackGate()
+        mode.readerPublicationDateLoader = { lookupURL in
+            XCTAssertEqual(lookupURL, url)
+            entered.fulfill()
+            await dateGate.wait()
+            return "20 November 2026"
+        }
+        var generatedHTML: Data?
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run { generatedHTML = Data(bytes) }
+            return bytes
+        }
+        defer {
+            mode.readerPublicationDateLoader = nil
+            mode.processHTMLBytes = nil
+            withExtendedLifetime(realm) {}
+        }
+
+        let commit = Task { @MainActor in
+            var state = WebViewState.empty
+            state.pageURL = loaderURL
+            try await mode.onNavigationCommitted(
+                readerContent: reader, newState: state,
+                scriptCaller: fixture.handler.scriptCaller, navigator: navigator
+            )
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        commit.cancel()
+        await dateGate.release()
+        do {
+            try await commit.value
+            XCTFail("A cancelled loader must stop after the publication date lookup")
+        } catch is CancellationError {
+        }
+        await mode.waitForReaderModeRender(for: url)
+
+        XCTAssertNil(generatedHTML)
+        XCTAssertNil(navigator.debugLoadSnapshot.lastDataLoadBaseURL)
+    }
+
+    func testReplacementDuringStoredSnippetPreparationCannotDispatchPreviousHTML() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let mode = fixture.readerModeViewModel
+        let reader = fixture.readerContent
+        let navigator = fixture.handler.navigator
+        let url = URL(string: "internal://local/snippet?key=restore-replaced-preparation")!
+        let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+        let (realm, row) = try savedSnippetHistory(url: url)
+        reader.pageURL = loaderURL
+        reader.content = row
+
+        let replacement = HistoryRecord()
+        replacement.url = url
+        replacement.compoundKey = row.compoundKey
+        replacement.title = row.title
+        replacement.html = "<html><body><p>Replacement content.</p></body></html>"
+        replacement.isReaderModeByDefault = true
+        replacement.rssContainsFullContent = true
+        let replace = reader.$isRenderingReaderHTML.filter { $0 }.prefix(1).sink { _ in
+            reader.content = replacement
+        }
+        mode.readerPublicationDateLoader = { _ in nil }
+        var generatedHTML: Data?
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run { generatedHTML = Data(bytes) }
+            return bytes
+        }
+        defer {
+            replace.cancel()
+            mode.readerPublicationDateLoader = nil
+            mode.processHTMLBytes = nil
+            withExtendedLifetime(realm) {}
+        }
+
+        var state = WebViewState.empty
+        state.pageURL = loaderURL
+        do {
+            try await mode.onNavigationCommitted(
+                readerContent: reader, newState: state,
+                scriptCaller: fixture.handler.scriptCaller, navigator: navigator
+            )
+            XCTFail("Replacing the selected row during preparation must cancel the previous commit")
+        } catch is CancellationError {
+        }
+        await mode.waitForReaderModeRender(for: url)
+
+        XCTAssertTrue(reader.validCachedContent === replacement)
+        XCTAssertEqual(reader.pageURL, loaderURL)
+        XCTAssertNil(generatedHTML)
+        XCTAssertNil(navigator.debugLoadSnapshot.lastDataLoadBaseURL)
+    }
+
     func testPreparedDocumentURLAnnouncementPreservesRenderSelectionUntilPhysicalCommit() async throws {
         try await verifyPreparedDocumentURLAnnouncement(supersededByUserNavigation: false)
     }
