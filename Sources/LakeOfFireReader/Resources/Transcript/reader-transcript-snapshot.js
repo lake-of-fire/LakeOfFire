@@ -85,11 +85,14 @@ if (!doc.__manabiTranscriptCapture) {
     const normalizeLanguage = value => (value || '').trim().toLowerCase().replace(/_/g, '-')
     const primaryLanguage = language => language.split('-')[0]
     const preferences = languages.map(normalizeLanguage).filter(Boolean)
+    const languagePreferenceIndex = language => {
+      const primary = primaryLanguage(language)
+      return primary ? preferences.findIndex(value => primaryLanguage(value) === primary) : -1
+    }
     const rank = track => {
       if (track.mode === 'showing') return -1
       const language = normalizeLanguage(track.language)
-      const primary = primaryLanguage(language)
-      const index = primary ? preferences.findIndex(value => primaryLanguage(value) === primary) : -1
+      const index = languagePreferenceIndex(language)
       if (index < 0) return preferences.length * 2
       return index * 2 + (language === preferences[index] ? 0 : 1)
     }
@@ -119,16 +122,17 @@ if (!doc.__manabiTranscriptCapture) {
       if (response?.videoDetails?.videoId === videoID) {
         stableProviderIdentity = `youtube:${videoID}`;
         const options = response.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-        const normalize = value => (value || '').trim().toLowerCase().replace(/_/g, '-');
-        const locale = normalize(languages[0]);
-        const rank = value => {
-          const language = normalize(value.languageCode);
-          const match = locale && language === locale ? 0
-            : locale && language.split('-')[0] === locale.split('-')[0] ? 1 : 4;
-          return match < 4 ? match + (value.kind === 'asr' ? 2 : 0) : 4;
-        };
-        const preferred = options.filter(value => normalize(value.languageCode)).slice().sort((a, b) =>
-          rank(a) - rank(b) || normalize(a.languageCode).localeCompare(normalize(b.languageCode)))[0];
+        const rankProviderTrack = track => {
+          const language = normalizeLanguage(track.languageCode)
+          const index = languagePreferenceIndex(language)
+          if (index < 0) return preferences.length * 4
+          const automatic = track.kind === 'asr' ? 2 : 0
+          const primaryOnly = language === preferences[index] ? 0 : 1
+          return index * 4 + automatic + primaryOnly
+        }
+        const preferred = options.filter(track => normalizeLanguage(track.languageCode)).sort((a, b) =>
+          rankProviderTrack(a) - rankProviderTrack(b) ||
+          normalizeLanguage(a.languageCode).localeCompare(normalizeLanguage(b.languageCode)))[0]
         if (!webVTT && !captionURL && preferred?.baseUrl) {
           const url = new URL(preferred.baseUrl, view.location.href);
           url.searchParams.set('fmt', 'vtt');
