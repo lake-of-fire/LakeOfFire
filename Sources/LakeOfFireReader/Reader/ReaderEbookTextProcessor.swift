@@ -127,6 +127,35 @@ private func normalizeEbookResourceAttribute(
     _ = try? element.attr(attribute, normalized)
 }
 
+private func ebookImageIsInInlineSVG(_ image: Element, body: Element) -> Bool {
+    let svgNamespace = "http://www.w3.org/2000/svg"
+    var ancestor: Element? = image
+    var foundSVGRoot = false
+    var declaredNamespace: String?
+    while let current = ancestor {
+        if current === body {
+            // The direct response is HTML, which also recognizes an unprefixed
+            // <svg> without an xmlns declaration.
+            return foundSVGRoot && (declaredNamespace ?? svgNamespace) == svgNamespace
+        }
+        let name = current.tagName().lowercased()
+        switch name {
+        case "template", "foreignobject", "desc", "title", "math":
+            return false
+        default:
+            break
+        }
+        if !foundSVGRoot {
+            if declaredNamespace == nil, current.hasAttr("xmlns") {
+                declaredNamespace = try? current.attr("xmlns")
+            }
+            foundSVGRoot = name == "svg"
+        }
+        ancestor = current.parent()
+    }
+    return false
+}
+
 private func normalizeEbookPassiveResourceURLs(in doc: SwiftSoup.Document) {
     guard let body = doc.body(), let elements = try? body.select(
         "img[src], img[srcset], audio[src], video[src], video[poster], " +
@@ -146,6 +175,12 @@ private func normalizeEbookPassiveResourceURLs(in doc: SwiftSoup.Document) {
         default:
             normalizeEbookResourceAttribute("src", on: element, using: normalizedEbookNetworkPath)
         }
+    }
+
+    guard let images = try? body.getElementsByTag("image") else { return }
+    for image in images where ebookImageIsInInlineSVG(image, body: body) {
+        let attribute = image.hasAttr("href") ? "href" : "xlink:href"
+        normalizeEbookResourceAttribute(attribute, on: image, using: normalizedEbookNetworkPath)
     }
 }
 

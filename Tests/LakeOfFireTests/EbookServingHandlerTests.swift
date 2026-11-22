@@ -163,11 +163,21 @@ final class EbookServingHandlerTests: XCTestCase {
         <script id="script" src="//cdn.example/script.js"></script>
         <iframe id="iframe" src="//cdn.example/frame"></iframe>
         <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
-        <image id="svg-image" href="//cdn.example/vector.svg" xlink:href="#legacy" />
+        <image id="svg-image" href="//cdn.example/vector%2Fone%5Ctwo.svg?sig=a%2Bb&amp;v=1#part" xlink:href="//cdn.example/ignored.svg" />
+        <image id="svg-legacy" xlink:href="//cdn.example/legacy.svg?sig=x%2Fy#part" />
+        <image id="svg-empty" href="" xlink:href="//cdn.example/ignored.svg" />
+        <image id="svg-local" href="../images/vector%20art.svg?edition=2#part" />
+        <image id="svg-fragment" xlink:href="#local-image" />
+        <image id="svg-wrong-namespace" xmlns="urn:foreign" href="//cdn.example/foreign.svg" />
+        <use id="svg-use" href="//cdn.example/symbol.svg#symbol" />
+        <filter><feImage id="svg-filter" href="//cdn.example/filter.svg" /></filter>
+        <foreignObject><svg><image id="svg-foreign-object" href="//cdn.example/object.svg" /></svg></foreignObject>
         </svg>
+        <svg><image id="svg-implicit" href="//cdn.example/implicit.svg" /></svg>
         </body></html>
         """#
         let signedURL = "https://ebook/art%2Fone%5Ctwo.png?sig=a%2Bb&v=1#part"
+        let signedSVGURL = "https://cdn.example/vector%2Fone%5Ctwo.svg?sig=a%2Bb&v=1#part"
         let sidecar = Data(#"{"v":\#(ReaderCompactSegmentSidecarSchema.currentVersion),"t":{"j":[],"n":[],"s":[],"ns":[],"p":[],"h":["h"],"x":["本文"],"sid":["s"],"pid":["p"]},"s":[["!m",0,null,null,null,null,null,null,0,0,0]]}"#.utf8)
 
         for useCallback in [true, false] {
@@ -183,6 +193,7 @@ final class EbookServingHandlerTests: XCTestCase {
                     let transformed = await transform(parsed)
                     // The mounted provider may serialize here, before Lake's later sentinel work.
                     XCTAssertEqual(try transformed.getElementById("signed")?.attr("src"), signedURL)
+                    XCTAssertEqual(try transformed.getElementById("svg-image")?.attr("href"), signedSVGURL)
                     return transformed
                 }
             }
@@ -227,8 +238,18 @@ final class EbookServingHandlerTests: XCTestCase {
                 ("anchor", "href", "//cdn.example/page?token=a%2Bb"),
                 ("script", "src", "//cdn.example/script.js"),
                 ("iframe", "src", "//cdn.example/frame"),
-                ("svg-image", "href", "//cdn.example/vector.svg"),
-                ("svg-image", "xlink:href", "#legacy"),
+                ("svg-image", "href", signedSVGURL),
+                ("svg-image", "xlink:href", "//cdn.example/ignored.svg"),
+                ("svg-legacy", "xlink:href", "https://cdn.example/legacy.svg?sig=x%2Fy#part"),
+                ("svg-empty", "href", ""),
+                ("svg-empty", "xlink:href", "//cdn.example/ignored.svg"),
+                ("svg-local", "href", "../images/vector%20art.svg?edition=2#part"),
+                ("svg-fragment", "xlink:href", "#local-image"),
+                ("svg-wrong-namespace", "href", "//cdn.example/foreign.svg"),
+                ("svg-use", "href", "//cdn.example/symbol.svg#symbol"),
+                ("svg-filter", "href", "//cdn.example/filter.svg"),
+                ("svg-foreign-object", "href", "//cdn.example/object.svg"),
+                ("svg-implicit", "href", "https://cdn.example/implicit.svg"),
             ]
             for (id, attribute, value) in expected {
                 let element = try XCTUnwrap(document.getElementById(id), id)
