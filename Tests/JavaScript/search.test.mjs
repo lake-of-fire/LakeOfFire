@@ -221,6 +221,83 @@ test('complete-word expansion candidates retain accent sensitivity', () => {
     assert.equal(matches(['cœur'],'coeur',options).length, equal ? 1 : 0)
 })
 
+for (const [locales, text, query, startOffset, endOffset, sensitivity = 'base'] of [
+    ['da', 'blåbær', 'aa', 2, 3],
+    ['da', 'blaabaer', 'å', 2, 4],
+    ['da', 'blåbær', 'aa', 2, 3, 'accent'],
+    ['nb', 'blåbær', 'aa', 2, 3],
+    ['nb', 'blaabaer', 'å', 2, 4],
+    ['de-u-co-phonebk', 'schön', 'oe', 3, 4],
+    ['de-u-co-phonebk', 'schoen', 'ö', 3, 5],
+    ['de-u-co-phonebk', 'über', 'ue', 0, 1],
+    ['de-u-co-phonebk', 'haette', 'ä', 1, 3],
+    ['de-u-co-phonebk', 'Äbc', 'Ae', 0, 1, 'case'],
+    ['de-u-co-phonebk', 'Aebc', 'Ä', 0, 2, 'case'],
+    ['en', 'cælum', 'ae', 1, 2],
+    ['en', 'caelum', 'æ', 1, 3],
+    ['fr', '😀cœur', 'oe', 3, 4],
+    ['fr', '😀coeur', 'œ', 3, 5],
+]) {
+    test(`substring expansion preserves original text and offsets: ${locales}/${sensitivity} ${text} / ${query}`, () => {
+        const options = { locales, sensitivity }
+        const original = text.slice(startOffset, endOffset)
+        assert.equal(new Intl.Collator(locales, options).compare(original, query), 0)
+        const results = matches([text], query, options)
+        assert.deepEqual(results.map(({ range }) => range), [
+            { startIndex: 0, startOffset, endIndex: 0, endOffset },
+        ])
+        assert.equal(results[0].excerpt.match, original)
+    })
+}
+
+for (const [locales, parts, query, original] of [
+    ['da', ['😀bl', 'a', '\u030A', 'bær'], 'aa', 'a\u030A'],
+    ['de-u-co-phonebk', ['😀sch', 'o', 'e', 'n'], 'o\u0308', 'oe'],
+    ['fr', ['😀c', 'o', 'e', 'ur'], 'œ', 'oe'],
+]) {
+    test(`substring expansion crosses text-node boundaries: ${locales} ${parts.join('')} / ${query}`, () => {
+        const results = matches(parts, query, { locales })
+        assert.deepEqual(results.map(({ range }) => range), [
+            { startIndex: 1, startOffset: 0, endIndex: 2, endOffset: 1 },
+        ])
+        assert.equal(results[0].excerpt.match, original)
+    })
+}
+
+for (const [locales, text, query] of [
+    ['da', 'xåx å aa', 'aa'],
+    ['en', 'xæx æ ae', 'ae'],
+]) {
+    test(`substring and whole-word expansion candidates remain ordered and unique: ${locales} ${query}`, () => {
+        const expected = [
+            { startIndex: 0, startOffset: 1, endIndex: 0, endOffset: 2 },
+            { startIndex: 0, startOffset: 4, endIndex: 0, endOffset: 5 },
+            { startIndex: 0, startOffset: 6, endIndex: 0, endOffset: 8 },
+        ]
+        assert.deepEqual(matches([text], query, { locales }).map(({ range }) => range), expected)
+        assert.deepEqual(
+            matches([text], query, { locales, granularity: 'word' }).map(({ range }) => range),
+            expected.slice(1)
+        )
+    })
+}
+
+for (const [locales, letter, query, sensitivity = 'base'] of [
+    ['en', 'å', 'aa'],
+    ['de', 'ä', 'ae'],
+    ['de-u-co-phonebk', 'Ä', 'AE', 'case'],
+    ['da', 'å', 'a'],
+    ['en', 'æ', 'a'],
+    ['fr', 'œ', 'e'],
+    ['en', 'Æ', 'ae', 'case'],
+    ['fr', 'Œ', 'oe', 'case'],
+]) {
+    test(`substring expansion rejects nonequivalent spellings: ${locales}/${sensitivity} ${letter} / ${query}`, () => {
+        assert.notEqual(new Intl.Collator(locales, { sensitivity }).compare(letter, query), 0)
+        assert.deepEqual(matches([`x${letter}x`], query, { locales, sensitivity }), [])
+    })
+}
+
 
 for (const [parts, query, expected] of [
     [['e', '\u0301', '猫'], 'é', { startIndex:0, startOffset:0, endIndex:1, endOffset:1 }],
