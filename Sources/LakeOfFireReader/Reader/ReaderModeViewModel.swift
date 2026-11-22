@@ -1270,13 +1270,19 @@ private func propagateReaderModeDefaults(
     storage: ReaderContentLoader.ReaderModePropagationStorage,
     readabilityHTML: String,
     fallbackTitle: String?,
-    derivedTitle: String? = nil,
+    derivedTitle: String?,
+    articleTitleSourceHTML: String?,
+    originalTitle: String,
+    processingAccount: ReaderModeProcessingAccount?,
     permitsCommit: @escaping @Sendable () -> Bool
 ) async {
     guard !url.isSnippetURL, permitsCommit(), !Task.isCancelled else { return }
     let storageReadabilityHTML = stripRuntimeReadabilityAssets(from: readabilityHTML)
-    let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle
-    let processingAccount = ReaderModeProcessingAccountContext.account
+    let articleTitle = articleTitleSourceHTML.flatMap(readerArticleTitleEvidence(from:))
+    let resolvedTitle = articleTitleSourceHTML == nil
+        ? (derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle)
+        : articleTitle?.heading
+    let replacement = articleTitle?.replacement(for: originalTitle)
     do {
         try await ReaderContentLoader.propagateReaderModeDefaults(
             for: url,
@@ -1285,6 +1291,8 @@ private func propagateReaderModeDefaults(
             storage: storage,
             readabilityHTML: storageReadabilityHTML,
             resolvedTitle: resolvedTitle,
+            legacyFlattenedTitle: articleTitle?.legacyFlattenedTitle,
+            primaryTitleUpdate: replacement.map { (expected: originalTitle, replacement: $0) },
             account: processingAccount.map { (access: $0.access, snapshot: $0.snapshot) },
             permitsCommit: permitsCommit
         )
@@ -1466,6 +1474,7 @@ public class ReaderModeViewModel: ObservableObject {
     internal var swiftReadabilityProcessor: (@MainActor (String, URL, String?, Int) async -> String?)?
 #if DEBUG
     internal var readerDocumentDispatchedForTesting: (@MainActor () async -> Void)?
+    internal var readerModePropagationTaskScheduledForTesting: (@MainActor (Task<Void, Never>) -> Void)?
 #endif
 
     internal func waitForReaderModeRender(for url: URL) async {
@@ -2830,6 +2839,8 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
         let renderBinding = scriptCaller.currentJavaScriptBindingToken
         let initialContent = readerContent.content
+        let propagationStorage = ReaderContentLoader.ReaderModePropagationStorage()
+        let capturedPropagation = initialContent.map { propagationStorage.capturingPrimary($0) } ?? propagationStorage
         let selectionIsCurrent = readerContent.makeSelectionCommitFence(requiring: readerContent.currentSelectionID)
         let processingAccount = readerAccountSessionAccess.map(ReaderModeProcessingAccount.init(access:))
         guard processingAccount?.isCurrent != false else { return }
@@ -2879,6 +2890,7 @@ public class ReaderModeViewModel: ObservableObject {
                     renderBinding: renderBinding,
                     prefetchedContent: routeDecision.prefetchedContent,
                     prefetchedLocalHTML: routeDecision.prefetchedLocalHTML,
+                    propagationStorage: capturedPropagation,
                     selectionIsCurrent: selectionIsCurrent,
                     originatingContentIsCurrent: originatingContentIsCurrent
                 )
@@ -2930,6 +2942,8 @@ public class ReaderModeViewModel: ObservableObject {
                     try await self.showReadabilityContent(
                         readerContent: readerContent,
                         readabilityContent: resolvedReadabilityContent,
+                        articleTitleSourceHTML: cachedReadabilityContent,
+                        propagationStorage: capturedPropagation,
                         renderToSelector: cachedContainerSelector,
                         in: cachedContainerFrameInfo,
                         scriptCaller: scriptCaller,
@@ -2998,6 +3012,7 @@ public class ReaderModeViewModel: ObservableObject {
         renderBinding: WebViewScriptCaller.JavaScriptBindingToken?,
         prefetchedContent: (any ReaderContentProtocol)? = nil,
         prefetchedLocalHTML: String? = nil,
+        propagationStorage: ReaderContentLoader.ReaderModePropagationStorage,
         selectionIsCurrent: @escaping @Sendable () -> Bool,
         originatingContentIsCurrent: @escaping @MainActor () -> Bool
     ) async {
@@ -3037,6 +3052,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
             guard readerModeContentIsCurrent(content, readerContent: readerContent) else { return }
             let resolvedContentURL = content.url
+            let capturedPropagation = propagationStorage.capturingPrimary(content)
             let meaningfulContentMinChars = max(content.meaningfulContentMinLength, 1)
             let ownsContent = {
                 self.isCurrentRender(for: contentURL, generation: renderGeneration)
@@ -3072,7 +3088,8 @@ public class ReaderModeViewModel: ObservableObject {
             guard ownsContent() else { return }
 
             let resolvedReadabilityHTML: String?
-            if hasCanonicalReadabilityMarkup(in: html) {
+            let alreadyCanonical = hasCanonicalReadabilityMarkup(in: html)
+            if alreadyCanonical {
                 resolvedReadabilityHTML = rebuildCanonicalSnippetReadabilityHTML(
                     html: html,
                     contentURL: resolvedContentURL,
@@ -3118,6 +3135,8 @@ public class ReaderModeViewModel: ObservableObject {
                 try await showReadabilityContent(
                     readerContent: readerContent,
                     readabilityContent: resolvedReadabilityHTML,
+                    articleTitleSourceHTML: alreadyCanonical ? html : resolvedReadabilityHTML,
+                    propagationStorage: capturedPropagation,
                     renderToSelector: nil,
                     in: nil,
                     scriptCaller: scriptCaller,
@@ -3170,6 +3189,8 @@ public class ReaderModeViewModel: ObservableObject {
     internal func showReadabilityContent(
         readerContent: ReaderContent,
         readabilityContent: String,
+        articleTitleSourceHTML: String? = nil,
+        propagationStorage: ReaderContentLoader.ReaderModePropagationStorage = .init(),
         renderToSelector: String?,
         in frameInfo: WKFrameInfo?,
         scriptCaller: WebViewScriptCaller,
@@ -3201,6 +3222,8 @@ public class ReaderModeViewModel: ObservableObject {
         }
         // Keep the selection captured when this render began; a same-URL
         // replacement cannot grant an older HTML payload fresh authority.
+        let processingAccount = ReaderModeProcessingAccountContext.account
+        let preparedPropagation = readerContent.content.map { propagationStorage.capturingPrimary($0) } ?? propagationStorage
         let resolvedContent: (any ReaderContentProtocol)?
         do {
             resolvedContent = try await readerContent.getContent()
@@ -3224,6 +3247,11 @@ public class ReaderModeViewModel: ObservableObject {
         }
         guard selectionIsCurrent(), readerModeContentIsCurrent(content, readerContent: readerContent) else { return }
         let url = content.url
+        let capturedPropagation = preparedPropagation.capturingPrimary(content)
+        let originalTitle = capturedPropagation.capturedPrimaryTitle ?? content.title
+        let repairsArticleTitle = !url.isSnippetURL && !url.isEBookURL && !url.isFileURL
+            && !url.isNativeReaderView && !url.isReaderFileURL
+        let sourceHTMLForTitleRepair = repairsArticleTitle ? (articleTitleSourceHTML ?? readabilityContent) : nil
         // A render job may remain current while its row is removed or replaced.
         // Keep the original selection and live row while preparing HTML;
         // a fresh wrapper for the same Realm row retains its authority.
@@ -3244,7 +3272,7 @@ public class ReaderModeViewModel: ObservableObject {
             && (content.content?.isEmpty ?? true)
         let resolvedStoredHTML = shouldStoreReaderHTML ? stripRuntimeReadabilityAssets(from: readabilityContent) : nil
         let resolvedTitleIfNeeded: String? = {
-            guard content.title.isEmpty else { return nil }
+            guard !repairsArticleTitle, content.title.isEmpty else { return nil }
             return (resolvedStoredHTML ?? content.html)?
                 .strippingHTML()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3270,25 +3298,39 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         if needsAsyncWrite {
-            let processingAccount = ReaderModeProcessingAccountContext.account
             try await content.asyncWrite(
                 account: processingAccount.map { (access: $0.access, snapshot: $0.snapshot) },
                 admittingMutation: selectionIsCurrent
             ) { _, content in
                 guard selectionIsCurrent(), !Task.isCancelled else { throw CancellationError() }
-                content.isReaderModeByDefault = true
-                content.isReaderModeAvailable = false
-                content.isReaderModeOfferHidden = false
-                if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                    if let resolvedStoredHTML {
-                        content.html = resolvedStoredHTML
-                    }
-                    if let resolvedTitleIfNeeded {
-                        content.title = resolvedTitleIfNeeded
-                    }
-                    content.rssContainsFullContent = true
+                var changed = false
+                if !content.isReaderModeByDefault {
+                    content.isReaderModeByDefault = true
+                    changed = true
                 }
-                content.refreshChangeMetadata(explicitlyModified: true)
+                if content.isReaderModeAvailable {
+                    content.isReaderModeAvailable = false
+                    changed = true
+                }
+                if content.isReaderModeOfferHidden {
+                    content.isReaderModeOfferHidden = false
+                    changed = true
+                }
+                if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                    if let resolvedStoredHTML, content.html != resolvedStoredHTML {
+                        content.html = resolvedStoredHTML
+                        changed = true
+                    }
+                    if let resolvedTitleIfNeeded, !resolvedTitleIfNeeded.isEmpty, content.title.isEmpty {
+                        content.title = resolvedTitleIfNeeded
+                        changed = true
+                    }
+                    if !content.rssContainsFullContent {
+                        content.rssContainsFullContent = true
+                        changed = true
+                    }
+                }
+                if changed { content.refreshChangeMetadata(explicitlyModified: true) }
                 guard selectionIsCurrent(), !Task.isCancelled else { throw CancellationError() }
             }
         }
@@ -3318,7 +3360,6 @@ public class ReaderModeViewModel: ObservableObject {
         let tracksReadingProgress = content.tracksReadingProgress
         let primaryRecordCompoundKey = content.compoundKey
         let primaryRecordClassName = content.objectSchema.className
-        let propagationStorage = ReaderContentLoader.ReaderModePropagationStorage()
         
         try await { @ReaderViewModelActor [weak self] in
             guard let self,
@@ -3399,20 +3440,7 @@ public class ReaderModeViewModel: ObservableObject {
                     return
                 }
             }
-            let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
-            await propagateReaderModeDefaults(
-                for: url,
-                primaryKey: primaryRecordCompoundKey,
-                primaryClassName: primaryRecordClassName,
-                storage: propagationStorage,
-                readabilityHTML: readabilityContent,
-                fallbackTitle: titleForDisplay,
-                derivedTitle: derivedTitle,
-                permitsCommit: selectionIsCurrent
-            )
-            guard await ownsContent() else {
-                return
-            }
+            let derivedTitle = repairsArticleTitle ? nil : (titleFromReadabilityDocument(doc) ?? titleForDisplay)
             try await processForReaderMode(
                 doc: doc,
                 url: url,
@@ -3644,6 +3672,7 @@ public class ReaderModeViewModel: ObservableObject {
                         "readerModeScript": Readability.shared.scripts,
                         "requireReplacementRoot": false,
                     ]
+                    let replacedContent: Bool
                     if let preparedReplacement, let requiredReplacementBinding {
                         replacementArguments["requireReplacementRoot"] = true
                         replacementArguments["expectedNativeContentFingerprint"] = expectedNativeContentFingerprint
@@ -3668,15 +3697,17 @@ public class ReaderModeViewModel: ObservableObject {
                             readerModeInitializationScript,
                             arguments: ["readerModeScript": Readability.shared.scripts],
                             in: frameInfo, requiring: requiredReplacementBinding)
+                        replacedContent = true
                     } else {
                         guard let frameReplacementBinding,
                               scriptCaller.currentJavaScriptBindingToken == frameReplacementBinding else {
                             throw CancellationError()
                         }
-                        _ = try await scriptCaller.evaluateJavaScript(
-                            replacementScript + "\n" + readerModeInitializationScript,
+                        let result = try await scriptCaller.evaluateJavaScript(
+                            replacementScript + "\n" + readerModeInitializationScript + "\nreturn root != null;",
                             arguments: replacementArguments, in: frameInfo,
                             requiring: frameReplacementBinding)
+                        replacedContent = result as? Bool == true
                     }
                     guard ownsContent(), isCurrentRender(
                         for: requestedURL,
@@ -3685,6 +3716,7 @@ public class ReaderModeViewModel: ObservableObject {
                         return
                     }
                     markReaderModeLoadComplete(for: url, ifOwnedBy: renderGeneration)
+                    guard replacedContent else { return }
                 } else {
                     guard ownsContent() else {
                         return
@@ -3730,9 +3762,30 @@ public class ReaderModeViewModel: ObservableObject {
                     }
 #endif
                 }
-//                try await { @MainActor in
-//                    readerModeLoading(false)
-//                }()
+                // Storage discovery and title repair are outside the visible dispatch.
+                // The original selection, not the completed render token, owns them.
+                guard !url.isSnippetURL, originatingContentIsCurrent(),
+                      selectionIsCurrent(), !Task.isCancelled else { return }
+                let propagationTask = Task(priority: .utility) { @ReaderViewModelActor in
+                    await propagateReaderModeDefaults(
+                        for: url,
+                        primaryKey: primaryRecordCompoundKey,
+                        primaryClassName: primaryRecordClassName,
+                        storage: capturedPropagation,
+                        readabilityHTML: readabilityContent,
+                        fallbackTitle: titleForDisplay,
+                        derivedTitle: derivedTitle,
+                        articleTitleSourceHTML: sourceHTMLForTitleRepair,
+                        originalTitle: originalTitle,
+                        processingAccount: processingAccount,
+                        permitsCommit: selectionIsCurrent
+                    )
+                }
+#if DEBUG
+                readerModePropagationTaskScheduledForTesting?(propagationTask)
+#else
+                _ = propagationTask
+#endif
             }()
         }()
 

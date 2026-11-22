@@ -1505,4 +1505,160 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
         XCTAssertNotEqual(try journalState(for: record, in: realm).generation, changed.generation)
     }
 
+    @MainActor
+    private func withArticlePropagationRealm(_ run: @MainActor (Realm) async throws -> Void) async throws {
+        let configuration = makeConfiguration()
+        let priorBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let priorHistory = ReaderContentLoader.historyRealmConfiguration
+        let priorFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = priorBookmark
+            ReaderContentLoader.historyRealmConfiguration = priorHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = priorFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        try await run(realm)
+    }
+
+    @MainActor
+    func testSavedArticleTitleRepairJournalsChangesAndLeavesReplayUnchanged() async throws {
+        try await withArticlePropagationRealm { realm in
+            let url = URL(string: "https://example.com/article/\(UUID().uuidString)")!
+            let legacyTitle = "化学賞かがくしょうが決まった"
+            let heading = "化学賞が決まった"
+            let primaryHTML = "<p>Primary saved HTML.</p>"
+            let copiedHTML = "<h1>\(heading)</h1><p>Reader content.</p>"
+            let primary = try managedReaderRecord(in: realm, url: url, title: legacyTitle)
+            let related = Bookmark()
+            related.url = url
+            related.title = legacyTitle
+            related.html = copiedHTML
+            related.isReaderModeByDefault = true
+            related.isReaderModeAvailable = false
+            related.rssContainsFullContent = true
+            related.updateCompoundKey()
+            try realm.write {
+                primary.html = primaryHTML
+                primary.refreshChangeMetadata(explicitlyModified: true)
+                realm.add(related)
+                related.refreshChangeMetadata(explicitlyModified: true)
+            }
+            let originalPrimaryJournal = try journalState(for: primary, in: realm)
+            let originalRelatedJournal = try journalState(for: related, in: realm)
+            let primaryKey = primary.compoundKey
+            let primaryClass = primary.objectSchema.className
+            let storage = ReaderContentLoader.ReaderModePropagationStorage().capturingPrimary(primary)
+
+            func propagate() async throws {
+                try await ReaderContentLoader.propagateReaderModeDefaults(
+                    for: url, excludingPrimaryKey: primaryKey, primaryClassName: primaryClass,
+                    storage: storage, readabilityHTML: copiedHTML, resolvedTitle: heading,
+                    legacyFlattenedTitle: legacyTitle,
+                    primaryTitleUpdate: (expected: legacyTitle, replacement: heading),
+                    permitsCommit: { true }
+                )
+                await realm.asyncRefresh()
+            }
+
+            try await propagate()
+            XCTAssertEqual(primary.title, heading)
+            XCTAssertEqual(primary.html, primaryHTML)
+            XCTAssertEqual(related.title, heading)
+            let repairedPrimaryJournal = try journalState(for: primary, in: realm)
+            let repairedRelatedJournal = try journalState(for: related, in: realm)
+            XCTAssertNotEqual(repairedPrimaryJournal.generation, originalPrimaryJournal.generation)
+            XCTAssertNotEqual(repairedRelatedJournal.generation, originalRelatedJournal.generation)
+
+            try await propagate()
+            XCTAssertEqual(primary.title, heading)
+            XCTAssertEqual(related.title, heading)
+            XCTAssertEqual(try journalState(for: primary, in: realm), repairedPrimaryJournal)
+            XCTAssertEqual(try journalState(for: related, in: realm), repairedRelatedJournal)
+        }
+    }
+
+    @MainActor
+    func testSavedArticleTitleRepairDoesNotOverwriteAnEditOrAdoptARecreatedRow() async throws {
+        for physicallyReplace in [false, true] {
+            try await withArticlePropagationRealm { realm in
+                let url = URL(string: "https://example.com/article/\(UUID().uuidString)")!
+                let originalTitle = "化学賞かがくしょうが決まった"
+                let primary = try managedReaderRecord(in: realm, url: url, title: originalTitle)
+                let primaryKey = primary.compoundKey
+                let primaryClass = primary.objectSchema.className
+                let storage = ReaderContentLoader.ReaderModePropagationStorage().capturingPrimary(primary)
+                let gate = ReaderContentLoadingDiscoveryGate()
+                await { @RealmBackgroundActor in
+                    ReaderContentLoader.loadAllDiscoveryGateForTesting = { await gate.pause() }
+                }()
+                let propagation = Task {
+                    try await ReaderContentLoader.propagateReaderModeDefaults(
+                        for: url, excludingPrimaryKey: primaryKey, primaryClassName: primaryClass,
+                        storage: storage, readabilityHTML: "<h1>化学賞が決まった</h1>",
+                        resolvedTitle: "化学賞が決まった", legacyFlattenedTitle: originalTitle,
+                        primaryTitleUpdate: (expected: originalTitle, replacement: "化学賞が決まった"),
+                        permitsCommit: { true }
+                    )
+                }
+                let entered = expectation(description: "propagation waits before copy discovery")
+                let arrival = Task {
+                    if await gate.waitForArrivals(1) { entered.fulfill() }
+                }
+                addTeardownBlock {
+                    await gate.releaseAll()
+                    await arrival.value
+                    _ = await propagation.result
+                    await { @RealmBackgroundActor in
+                        ReaderContentLoader.loadAllDiscoveryGateForTesting = nil
+                    }()
+                }
+                await fulfillment(of: [entered], timeout: 5)
+                guard await gate.arrivalCount() == 1 else { return }
+
+                let expectedTitle = physicallyReplace ? originalTitle : "User-edited title"
+                let currentRow: HistoryRecord
+                if physicallyReplace {
+                    let replacement = HistoryRecord()
+                    replacement.url = url
+                    replacement.compoundKey = primaryKey
+                    // Keep the old value so a writer resolving by key would incorrectly pass its CAS.
+                    replacement.title = expectedTitle
+                    try realm.write {
+                        realm.delete(primary)
+                        realm.add(replacement)
+                        replacement.refreshChangeMetadata(explicitlyModified: true)
+                    }
+                    currentRow = replacement
+                } else {
+                    try realm.write {
+                        primary.title = expectedTitle
+                        primary.refreshChangeMetadata(explicitlyModified: true)
+                    }
+                    currentRow = primary
+                }
+                let expectedJournal = try journalState(for: currentRow, in: realm)
+
+                await gate.releaseAll()
+                await arrival.value
+                do {
+                    try await propagation.value
+                } catch is CancellationError where physicallyReplace {
+                    // Losing the captured physical row can retire its update.
+                }
+                await { @RealmBackgroundActor in
+                    ReaderContentLoader.loadAllDiscoveryGateForTesting = nil
+                }()
+                await realm.asyncRefresh()
+                XCTAssertEqual(currentRow.title, expectedTitle)
+                XCTAssertEqual(try journalState(for: currentRow, in: realm), expectedJournal)
+            }
+        }
+    }
+
 }
