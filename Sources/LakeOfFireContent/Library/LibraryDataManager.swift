@@ -1399,9 +1399,18 @@ public class LibraryDataManager: NSObject {
                     }
                 }
             } else if category != nil, !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
+                let downloadURL = download?.url
                 if let uuid, let existingDirectory = realm.object(ofType: FeedDirectory.self, forPrimaryKey: uuid) {
                     directory = existingDirectory
-                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, directory: existingDirectory, categoryID: categoryID, parentDirectoryID: directoryID, ordinal: ordinal) {
+                    if Self.hasChanges(
+                        opml: opml,
+                        opmlEntry: opmlEntry,
+                        directory: existingDirectory,
+                        categoryID: categoryID,
+                        parentDirectoryID: directoryID,
+                        ordinal: ordinal,
+                        downloadURL: downloadURL
+                    ) {
                         try await realm.asyncWritePreservingOwnership {
                             try Self.applyAttributes(
                                 opml: opml,
@@ -1410,7 +1419,7 @@ public class LibraryDataManager: NSObject {
                                 categoryID: categoryID,
                                 parentDirectoryID: directoryID,
                                 ordinal: ordinal,
-                                downloadURL: download?.url
+                                downloadURL: downloadURL
                             )
                         }
                     }
@@ -1426,7 +1435,7 @@ public class LibraryDataManager: NSObject {
                             categoryID: categoryID,
                             parentDirectoryID: directoryID,
                             ordinal: ordinal,
-                            downloadURL: download?.url
+                            downloadURL: downloadURL
                         )
                         try await realm.asyncWritePreservingOwnership {
                             realm.add(directory, update: .modified)
@@ -1693,7 +1702,15 @@ public class LibraryDataManager: NSObject {
         }
     }
 
-    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, directory: FeedDirectory, categoryID: UUID?, parentDirectoryID: UUID?, ordinal: Int? = nil) -> Bool {
+    static func hasChanges(
+        opml: OPML,
+        opmlEntry: OPMLEntry,
+        directory: FeedDirectory,
+        categoryID: UUID?,
+        parentDirectoryID: UUID?,
+        ordinal: Int? = nil,
+        downloadURL: URL?
+    ) -> Bool {
         if opmlEntry.attributeUUIDValue("uuid") != directory.id {
             return true
         }
@@ -1716,6 +1733,10 @@ public class LibraryDataManager: NSObject {
         }
         let newOpmlOwnerName = opml.ownerName ?? directory.opmlOwnerName
         if directory.opmlOwnerName != newOpmlOwnerName {
+            return true
+        }
+        // A local import does not replace a downloaded catalog's ownership.
+        if let downloadURL, directory.opmlURL != downloadURL {
             return true
         }
         let newIconURL = opmlEntry.attributeStringValue("iconUrl").flatMap(URL.init(string:))
@@ -1777,7 +1798,7 @@ public class LibraryDataManager: NSObject {
             directory.opmlOwnerName = newOpmlOwnerName
             didChange = true
         }
-        if directory.opmlURL != downloadURL {
+        if let downloadURL, directory.opmlURL != downloadURL {
             directory.opmlURL = downloadURL
             didChange = true
         }
