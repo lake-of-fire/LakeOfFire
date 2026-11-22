@@ -139,6 +139,9 @@ const xmlStylesheetHref = data => {
     }
 }
 
+const isSrcsetWhitespace = code => code === 0x20 || code === 0x09
+    || code === 0x0a || code === 0x0c || code === 0x0d
+
 const manabiEpubReaderLoadLog = (stage, payload = {}) => {
     try {
         void stage
@@ -961,6 +964,44 @@ export class Loader {
         const { fragment } = splitInternalResourceReference(href)
         return url && fragment ? `${url}${fragment}` : url
     }
+    async replaceSrcset(value, base, parents = []) {
+        if (this.#destroyed) return null
+        let cursor = 0
+        let copiedThrough = 0
+        let result = ''
+
+        // Locate URL tokens using HTML's srcset splitting rules. The browser
+        // still validates the descriptors and selects a candidate.
+        while (cursor < value.length) {
+            while (cursor < value.length && (isSrcsetWhitespace(value.charCodeAt(cursor)) || value[cursor] === ','))
+                cursor += 1
+            if (cursor === value.length) break
+            const start = cursor
+            while (cursor < value.length && !isSrcsetWhitespace(value.charCodeAt(cursor))) cursor += 1
+            let end = cursor
+            while (end > start && value[end - 1] === ',') end -= 1
+            const href = value.slice(start, end)
+            if (!/^blob:/i.test(href)) {
+                const url = await this.loadHref(href, base, parents)
+                if (this.#destroyed) return null
+                if (url && url !== href) {
+                    result += value.slice(copiedThrough, start) + url
+                    copiedThrough = end
+                }
+            }
+            if (end !== cursor) continue
+
+            let inParentheses = false
+            while (cursor < value.length) {
+                const character = value[cursor++]
+                if (inParentheses) {
+                    if (character === ')') inParentheses = false
+                } else if (character === ',') break
+                else if (character === '(') inParentheses = true
+            }
+        }
+        return result + value.slice(copiedThrough)
+    }
     async loadReplaced(item, parents = []) {
         if (this.#destroyed) return null
         const {
@@ -1051,7 +1092,6 @@ export class Loader {
                 }
             }
             // replace hrefs (excluding anchors)
-            // TODO: srcset?
             const replace = async (el, attr) => el.setAttribute(attr,
                 await this.loadHref(el.getAttribute(attr), href, parents))
             for (const el of doc.querySelectorAll('link[href]')) await replace(el, 'href')
@@ -1068,6 +1108,14 @@ export class Loader {
             })
             for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
             for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
+            for (const el of doc.querySelectorAll('img[srcset], picture > source[srcset]')) {
+                if (el.namespaceURI !== NS.XHTML
+                    || (el.localName === 'source' && el.parentElement?.namespaceURI !== NS.XHTML)) continue
+                const srcset = el.getAttribute('srcset')
+                const replacement = await this.replaceSrcset(srcset, href, parents)
+                if (replacement === null) return null
+                if (replacement !== srcset) el.setAttribute('srcset', replacement)
+            }
             // SVG 2 resource links use href; xlink:href is only the legacy form.
             // Navigation anchors and same-document fragment references stay authored.
             for (const el of doc.querySelectorAll('image[href], use[href], feImage[href]')) {

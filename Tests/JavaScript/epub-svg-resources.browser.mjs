@@ -115,3 +115,58 @@ export async function runSVGStylesheetInstructions() {
     } finally { loader.destroy() }
 }
 
+export async function runResponsiveImageReferences() {
+    const xhtmlNS = 'http://www.w3.org/1999/xhtml'
+    const svgNS = 'http://www.w3.org/2000/svg'
+    const local = 'cover%23%3F.png'
+    const data = 'data:image/png;base64,a,b'
+    const external = '//assets.example/art.png?sig=a%2Bb,more#part'
+    const picture = (prefix = '') => `<${prefix}picture>
+      <${prefix}source id="source" srcset="${local} 1x, ${external} 2x"/>
+      <${prefix}img id="cover" src="${local}" srcset="${local} 1x, ${data} 2x"/>
+    </${prefix}picture>`
+    const inputs = [
+        ['text/html', `<html><body>${picture()}
+          <template id="inert"><img srcset="${local} 1x"></template></body></html>`],
+        ['application/xhtml+xml', `<html xmlns="${xhtmlNS}"><body>${picture()}</body></html>`],
+        ['image/svg+xml', `<svg xmlns="${svgNS}" xmlns:h="${xhtmlNS}">
+          <foreignObject>${picture('h:')}</foreignObject><img id="foreign" srcset="${local} 1x"/>
+        </svg>`],
+    ]
+    for (const [mediaType, source] of inputs) {
+        const chapter = { href: 'OPS/chapter', mediaType }
+        const cover = { href: 'OPS/cover#?.png', mediaType: 'image/png' }
+        const reads = []
+        const loader = new Loader({
+            resources: { manifest: [chapter, cover] },
+            loadText: async href => href === chapter.href ? source : null,
+            loadBlob: async href => { reads.push(href); return new Blob(['packaged cover'], { type: cover.mediaType }) },
+        })
+        try {
+            const url = await loader.loadItem(chapter)
+            const output = await (await fetch(url)).text()
+            const doc = new DOMParser().parseFromString(output, mediaType)
+            check(!doc.querySelector('parsererror'), `${mediaType} remains parseable after srcset rewriting`)
+            const image = doc.getElementById('cover')
+            const imageURL = image?.getAttribute('src')
+            check(imageURL?.startsWith('blob:'), `${mediaType} fallback image is packaged`)
+            check(image.getAttribute('srcset') === `${imageURL} 1x, ${data} 2x`,
+                `${mediaType} srcset shares the local image blob and retains the complete data URL`)
+            check(doc.getElementById('source')?.getAttribute('srcset') === `${imageURL} 1x, https:${external} 2x`,
+                `${mediaType} picture source rewrites local and scheme-relative candidates`)
+            if (mediaType === 'text/html') {
+                check(doc.getElementById('inert')?.content.firstElementChild?.getAttribute('srcset') === `${local} 1x`,
+                    'Inert template content retains its authored candidates')
+            } else if (mediaType === 'image/svg+xml') {
+                check(doc.getElementById('foreign')?.getAttribute('srcset') === `${local} 1x`,
+                    'An element in the SVG namespace is not an HTML responsive image')
+            }
+            check(reads.join(' ') === cover.href, `${mediaType} repeated image references perform one archive read`)
+            check(await (await fetch(imageURL)).text() === 'packaged cover', 'Owned image blob contains the archive bytes')
+            loader.unloadItem(chapter)
+            check(await fetch(imageURL).catch(() => null) === null, 'Unloading the parent releases the shared image blob')
+        } finally { loader.destroy() }
+    }
+    return { passed: true }
+}
+

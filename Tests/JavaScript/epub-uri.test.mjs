@@ -285,6 +285,73 @@ test('internal references preserve the fragment and validate the path before dot
     } finally { loader?.destroy(); f.close() }
 })
 
+test('srcset rewrites complete URL tokens and preserves candidate spacing and descriptors', async () => {
+    const directory = 'OPS/literal%20'
+    const chapter = `${directory}/chapter.xhtml`
+    const sharedPath = `${directory}/image#?%2F.png`
+    const alternatePath = `${directory}/alt,wide.png`
+    const spacedHref = 'page\u3000image.png'
+    const spacedPath = `${directory}/${spacedHref}`
+    const sharedHref = 'image%23%3F%252F.png'
+    const data = 'data:image/png;base64,a,b'
+    const external = '//invalid.invalid/OPS/pixel.png?sig=a%2Bb,more#part'
+    const owned = 'blob:https://example.com/owned'
+    const rejected = 'nested%2F/../would-read.png'
+    const authored = ` , ${sharedHref}?rev=2#glyph 1x,  ${data} 2x,\n ${external} 3x, `
+        + `${sharedHref} shape(1,//ignored), alt,wide.png,, ${spacedHref}\f1x\t , `
+        + `${rejected} 6x, ${owned} 4x, missing.png,other.png 5x`
+    const reads = []
+    const loader = new Loader({
+        resources: { manifest: [sharedPath, alternatePath, spacedPath, `${directory}/would-read.png`, 'OPS/pixel.png', owned]
+            .map(href => ({ href, mediaType: 'image/png' })) },
+        loadBlob: async href => {
+            reads.push(href)
+            return new Blob([href], { type: 'image/png' })
+        },
+    })
+    try {
+        const output = await loader.replaceSrcset(authored, chapter)
+        const [shared, repeated, alternate, spaced, unchanged] = output.match(/blob:[^#,\s]+/g)
+        assert.equal(shared, repeated)
+        assert.equal(unchanged, owned)
+        assert.equal(output, ` , ${shared}#glyph 1x,  ${data} 2x,\n https:${external} 3x, `
+            + `${shared} shape(1,//ignored), ${alternate},, ${spaced}\f1x\t , `
+            + `${rejected} 6x, ${owned} 4x, missing.png,other.png 5x`)
+        assert.deepEqual(reads, [sharedPath, alternatePath, spacedPath])
+        assert.equal(await (await fetch(shared)).text(), sharedPath)
+        assert.equal(await (await fetch(alternate)).text(), alternatePath)
+        assert.equal(await (await fetch(spaced)).text(), spacedPath)
+    } finally { loader.destroy() }
+})
+
+test('retired srcset work discards a held image read and stops before the next candidate', async () => {
+    const reads = []
+    const firstRead = Promise.withResolvers()
+    const response = Promise.withResolvers()
+    const lateImage = new Blob(['late image'])
+    const loader = new Loader({
+        resources: { manifest: ['OPS/first.png', 'OPS/second.png']
+            .map(href => ({ href, mediaType: 'image/png' })) },
+        loadBlob: href => {
+            reads.push(href)
+            firstRead.resolve()
+            return response.promise
+        },
+    })
+    const replacing = loader.replaceSrcset('first.png 1x, second.png 2x', 'OPS/chapter.xhtml')
+    try {
+        await firstRead.promise
+        loader.destroy()
+        response.resolve(lateImage)
+        assert.equal(await replacing, null)
+        assert.deepEqual(reads, ['OPS/first.png'])
+    } finally {
+        loader.destroy()
+        response.resolve(lateImage)
+        await replacing.catch(() => {})
+    }
+})
+
 test('direct section writing probe installs only the exact archived stylesheet', async () => {
     const directory = 'OPS/literal%20'
     const chapter = { href: `${directory}/chapter.xhtml`, mediaType: 'application/xhtml+xml' }

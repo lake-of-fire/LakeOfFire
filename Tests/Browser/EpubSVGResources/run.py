@@ -83,10 +83,12 @@ def main() -> int:
                 map.textContent = JSON.stringify({ imports })
                 document.head.append(map)
                 try {
-                    const { runSVGResourceReferences, runSVGStylesheetInstructions } = await import(entries[0])
+                    const { runSVGResourceReferences, runSVGStylesheetInstructions, runResponsiveImageReferences } =
+                        await import(entries[0])
                     const cases = [
                         ['SVG 2 packaged resource references', runSVGResourceReferences],
                         ['SVG XML prolog stylesheet references', runSVGStylesheetInstructions],
+                        ['EPUB responsive image references', runResponsiveImageReferences],
                     ]
                     const names = cases.map(([name]) => name)
                     if (!names.length || new Set(names).size !== names.length) {
