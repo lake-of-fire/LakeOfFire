@@ -167,7 +167,6 @@ struct ReaderUnhandledTapUserScript {
         activePointers.delete(event.pointerId);
     }
 
-    let lastScrollPosition = { x: window.scrollX || 0, y: window.scrollY || 0 }
     let accumulatedScroll = { value: 0 }
     let lastPostedScrollHidden = { value: null }
     const requiresUserScrollIntent = \(requiresUserScrollIntent ? "true" : "false")
@@ -178,25 +177,48 @@ struct ReaderUnhandledTapUserScript {
     const USER_SCROLL_INTENT_LIFETIME_MS = 1500
     let bottomRevealAwaitingDeparture = false
     let observedBottomDeparture = false
-    function documentScrollHeight() {
-        return (document.scrollingElement || document.documentElement)?.scrollHeight || 0
+
+    function readScrollGeometry() {
+        // Use the native coordinator's resolver so initial/restored geometry and
+        // DOM arrival/departure agree about vertical writing and page overrides.
+        const semantics = \(WebViewNavigationScrollSemantics.javaScript)
+        const horizontal = semantics.axis === 'horizontal'
+        const root = document.scrollingElement || document.documentElement
+        const viewport = horizontal
+            ? root?.clientWidth || window.innerWidth
+            : root?.clientHeight || window.innerHeight
+        const extent = (horizontal ? root?.scrollWidth : root?.scrollHeight) || 0
+        const maximum = Math.max(0, extent - viewport)
+        const forwardSign = horizontal ? semantics.horizontalForwardSign : 1
+        // CSSOM's horizontal viewport origin is zero: vertical-rl advances
+        // toward negative scrollX, while vertical-lr advances toward positive X.
+        const offset = horizontal ? (window.scrollX || 0) * forwardSign : window.scrollY || 0
+        return {
+            axis: semantics.axis,
+            forwardSign,
+            viewport,
+            extent,
+            maximum,
+            position: Math.min(maximum, Math.max(0, offset)),
+            crossPosition: horizontal ? window.scrollY || 0 : window.scrollX || 0
+        }
     }
-    function maximumScrollY() {
-        return Math.max(0, documentScrollHeight() - window.innerHeight)
-    }
-    let lastMaximumScrollY = maximumScrollY()
-    let lastViewportHeight = window.innerHeight
-    let lastDocumentScrollHeight = documentScrollHeight()
+
+    let lastScrollGeometry = readScrollGeometry()
+
     function isScrollInput(event) {
         if (event.isTrusted !== true || event.defaultPrevented) return false
         switch (event.type) {
         case 'touchmove':
             return event.touches?.length === 1
         case 'wheel':
-            return !event.ctrlKey && Math.abs(event.deltaY) > 0
+            return !event.ctrlKey && (Math.abs(event.deltaY || 0) > 0
+                || (readScrollGeometry().axis === 'horizontal' && Math.abs(event.deltaX || 0) > 0))
         case 'keydown':
-            return ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)
-                && !elementLooksInteractive(event.target)
+            return !elementLooksInteractive(event.target)
+                && (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)
+                    || (readScrollGeometry().axis === 'horizontal'
+                        && ['ArrowLeft', 'ArrowRight'].includes(event.key)))
         default:
             return false
         }
@@ -207,11 +229,7 @@ struct ReaderUnhandledTapUserScript {
         lastTrustedScrollInputAt.value = Date.now()
         if (!scrollNavigationEnabled) {
             scrollNavigationEnabled = true
-            lastScrollPosition.x = window.scrollX || 0
-            lastScrollPosition.y = window.scrollY || 0
-            lastMaximumScrollY = maximumScrollY()
-            lastViewportHeight = window.innerHeight
-            lastDocumentScrollHeight = documentScrollHeight()
+            lastScrollGeometry = readScrollGeometry()
             accumulatedScroll.value = 0
         }
     }
@@ -253,23 +271,19 @@ struct ReaderUnhandledTapUserScript {
     }
 
     function handleDocumentScroll() {
-        const currentX = window.scrollX || 0
-        const maximumY = maximumScrollY()
-        const viewportHeight = window.innerHeight
-        const scrollHeight = documentScrollHeight()
-        const rangeChanged = Math.abs(maximumY - lastMaximumScrollY) > 0.5
-            || Math.abs(viewportHeight - lastViewportHeight) > 0.5
-            || Math.abs(scrollHeight - lastDocumentScrollHeight) > 0.5
-        const currentY = Math.min(maximumY, Math.max(0, window.scrollY || 0))
-        const previousY = Math.min(maximumY, Math.max(0, lastScrollPosition.y))
-        const dx = currentX - lastScrollPosition.x
-        const dy = currentY - previousY
-        lastScrollPosition.x = currentX
-        lastScrollPosition.y = currentY
-        lastMaximumScrollY = maximumY
-        lastViewportHeight = viewportHeight
-        lastDocumentScrollHeight = scrollHeight
+        const geometry = readScrollGeometry()
+        const semanticsChanged = geometry.axis !== lastScrollGeometry.axis
+            || geometry.forwardSign !== lastScrollGeometry.forwardSign
+        const rangeChanged = semanticsChanged
+            || Math.abs(geometry.maximum - lastScrollGeometry.maximum) > 0.5
+            || Math.abs(geometry.viewport - lastScrollGeometry.viewport) > 0.5
+            || Math.abs(geometry.extent - lastScrollGeometry.extent) > 0.5
+        const previousPosition = Math.min(geometry.maximum, lastScrollGeometry.position)
+        const delta = geometry.position - previousPosition
+        const crossDelta = geometry.crossPosition - lastScrollGeometry.crossPosition
+        lastScrollGeometry = geometry
         if (rangeChanged) {
+            if (semanticsChanged) bottomRevealAwaitingDeparture = false
             observedBottomDeparture = false
             accumulatedScroll.value = 0
             return
@@ -284,22 +298,22 @@ struct ReaderUnhandledTapUserScript {
             accumulatedScroll.value = 0
             return
         }
-        if (Math.abs(dx) > Math.abs(dy)) {
+        if (Math.abs(crossDelta) > Math.abs(delta)) {
             return
         }
 
-        const bottomThreshold = Math.max(0, maximumY - 2)
-        const crossedOutOfBottom = maximumY > 0 && previousY >= bottomThreshold
-            && currentY < bottomThreshold && dy < -0.5
-        if (maximumY > 0 && previousY < bottomThreshold
-            && currentY >= bottomThreshold && dy > 0) {
+        const bottomThreshold = Math.max(0, geometry.maximum - 2)
+        const crossedOutOfBottom = geometry.maximum > 0 && previousPosition >= bottomThreshold
+            && geometry.position < bottomThreshold && delta < -0.5
+        if (geometry.maximum > 0 && previousPosition < bottomThreshold
+            && geometry.position >= bottomThreshold && delta > 0) {
             observedBottomDeparture = false
             postHideNavigationForScroll(false, 'documentScrollBottom')
             accumulatedScroll.value = 0
             return
         }
-        if (bottomRevealAwaitingDeparture && dy < -0.5) {
-            accumulatedScroll.value += dy
+        if (bottomRevealAwaitingDeparture && delta < -0.5) {
+            accumulatedScroll.value += delta
             if (crossedOutOfBottom || accumulatedScroll.value < -SCROLL_THRESHOLD) {
                 postHideNavigationForScroll(false, 'documentScrollUp')
                 accumulatedScroll.value = 0
@@ -311,14 +325,13 @@ struct ReaderUnhandledTapUserScript {
             // position without a WebKit bottom-arrival message.
             observedBottomDeparture = true
         }
-        const delta = Math.abs(dy) >= Math.abs(dx) ? dy : dx
         if (Math.abs(delta) < 0.5) {
             return
         }
         accumulatedScroll.value += delta
         if (accumulatedScroll.value > SCROLL_THRESHOLD) {
-            // A real downward reading gesture leaves the bottom-reveal
-            // interval. The next upward gesture is an ordinary visibility
+            // A real forward reading gesture leaves the bottom-reveal
+            // interval. The next backward gesture is an ordinary visibility
             // change, even when a layout resize rebased the scroll range.
             bottomRevealAwaitingDeparture = false
             observedBottomDeparture = false
