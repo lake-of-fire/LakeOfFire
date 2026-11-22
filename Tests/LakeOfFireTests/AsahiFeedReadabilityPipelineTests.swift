@@ -66,6 +66,107 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testAtomRefreshDistinguishesEmptyAndMissingLinkReferences() async throws {
+        let feedURL = try XCTUnwrap(URL(string: "https://example.com/feeds/current.atom?revision=7"))
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        let originalRequestHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = originalRequestHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = feedURL
+        try realm.write {
+            realm.add(feed)
+            feed.refreshChangeMetadata(explicitlyModified: true)
+        }
+
+        let body = Data("""
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <id>urn:test:atom-feed</id>
+              <title>Empty Atom link references</title>
+              <updated>2026-11-06T00:00:00Z</updated>
+              <author><name>Fixture Author</name></author>
+              <entry>
+                <id>urn:test:empty-href</id>
+                <title>Empty href</title>
+                <updated>2026-11-06T00:00:00Z</updated>
+                <link type="text/html" href=""/>
+              </entry>
+              <entry>
+                <id>urn:test:missing-href</id>
+                <title>Missing href</title>
+                <updated>2026-11-06T00:00:00Z</updated>
+                <link type="text/html"/>
+              </entry>
+              <entry xml:base="articles/">
+                <id>urn:test:empty-base</id>
+                <title>Empty XML base</title>
+                <updated>2026-11-06T00:00:00Z</updated>
+                <link xml:base="" type="text/html" href="one.html"/>
+              </entry>
+              <entry xml:base="https://cdn.example/article?view=full%23quoted#toc">
+                <id>urn:test:inherited-fragment</id>
+                <title>Inherited fragment</title>
+                <updated>2026-11-06T00:00:00Z</updated>
+                <link type="text/html" href=""/>
+              </entry>
+              <entry xml:base="https://cdn.example/article?view=full%23quoted#toc">
+                <id>urn:test:explicit-fragment</id>
+                <title>Explicit fragment</title>
+                <updated>2026-11-06T00:00:00Z</updated>
+                <link type="text/html" href="#section"/>
+              </entry>
+            </feed>
+            """.utf8)
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        FeedURLProtocol.requestHandler = { _ in
+            (200, ["Content-Type": "application/atom+xml"], body)
+        }
+
+        try await feed.freeze().fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+
+        let feedID = feed.id
+        let entries = realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted }
+        XCTAssertEqual(entries.count, 4)
+        XCTAssertFalse(entries.contains { $0.title == "Missing href" })
+        XCTAssertEqual(entries.first { $0.title == "Empty href" }?.url.absoluteString, feedURL.absoluteString)
+        XCTAssertEqual(
+            entries.first { $0.title == "Empty XML base" }?.url.absoluteString,
+            "https://example.com/feeds/articles/one.html"
+        )
+        XCTAssertEqual(
+            entries.first { $0.title == "Inherited fragment" }?.url.absoluteString,
+            "https://cdn.example/article?view=full%23quoted"
+        )
+        XCTAssertEqual(
+            entries.first { $0.title == "Explicit fragment" }?.url.absoluteString,
+            "https://cdn.example/article?view=full%23quoted#section"
+        )
+    }
+
     private final class FeedURLProtocol: URLProtocol {
         nonisolated(unsafe) static var responses = [URL: Data]()
         nonisolated(unsafe) static var requestHandler:
