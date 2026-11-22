@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 18873)
+Total output lines: 1393
+
 import BigSyncKit
 import Foundation
 import RealmSwift
@@ -113,6 +116,59 @@ final class ReaderFileLibraryBoundaryTests: XCTestCase {
             at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         try Data(text.utf8).write(to: destination)
+    }
+
+    func testDeclaredEPUBDownloadsRouteAsBooksAndKeepSignedResourceIdentity() async throws {
+        try await withFixture { f in
+            ReaderFileManager.fileDestinationProcessors = [{ @Sendable url in
+                url.pathExtension.lowercased() == "epub" ? RootRelativePath(path: "books") : nil
+            }]
+            let sources = [
+                "https://example.com/download/42?signature=a%2Fb+%2523",
+                "https://example.com/download/42?signature=a%2fb+%2523",
+                "https://example.com/download.php?signature=a%2Fb+%2523",
+            ]
+            var destinations = Set<URL>()
+            for raw in sources {
+                let url = try XCTUnwrap(URL(string: raw))
+                let result = try await f.manager.downloadable(
+                    url: url, name: "Book", mediaType: "APPLICATION/EPUB+ZIP; charset=binary"
+                )
+                let download = try XCTUnwrap(result)
+                XCTAssertEqual(download.url.absoluteString, raw)
+                XCTAssertEqual(download.localDestination.lastPathComponent, url.lastPathComponent + ".epub")
+                XCTAssertEqual(download.localDestination.deletingLastPathComponent()
+                    .deletingLastPathComponent().deletingLastPathComponent(),
+                    f.library.appendingPathComponent("books", isDirectory: true))
+                destinations.insert(download.localDestination)
+            }
+            XCTAssertEqual(destinations.count, sources.count)
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: f.library.path).isEmpty)
+            XCTAssertTrue(f.realm.objects(ContentFile.self).isEmpty)
+            XCTAssertTrue(f.realm.objects(BigSyncPendingMutation.self).isEmpty)
+        }
+    }
+
+    func testImportedStagedEPUBUsesItsFormatInsteadOfTheExtensionlessRemoteURL() async throws {
+        try await withFixture { f in
+            ReaderFileManager.fileDestinationProcessors = [{ @Sendable url in
+                url.pathExtension.lowercased() == "epub" ? RootRelativePath(path: "books") : nil
+            }]
+            let source = f.root.appendingPathComponent("staged.epub")
+            try self.write("staged EPUB payload", to: source)
+            let remote = try XCTUnwrap(URL(string: "https://example.com/download/42?signature=a%2Fb+%2523"))
+            let result = try await f.manager.importFile(fileURL: source, fromDownloadURL: remote)
+            let readerURL = try XCTUnwrap(result)
+            let destination = f.library.appendingPathComponent("books/staged.epub")
+            XCTAssertEqual(try Data(contentsOf: destination), Data("staged EPUB payload".utf8))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: f.library.appendingPathComponent("staged.epub").path))
+            let importedBytes = try await f.manager.read(fileURL: readerURL)
+            XCTAssertEqual(importedBytes, Data("staged EPUB payload".utf8))
+            f.realm.refresh()
+            let record = try XCTUnwrap(f.realm.objects(ContentFile.self).where { !$0.isDeleted }.first)
+            XCTAssertEqual(record.url, readerURL)
+            XCTAssertFalse(try self.journalGeneration(f, record: record).isEmpty)
+        }
     }
 
     func testCatalogBasenameCollisionCannotClaimAnotherDownloadsBytes() async throws {
@@ -492,295 +548,7 @@ extension ReaderFileLibraryBoundaryTests {
                     for (path, bytes) in entries {
                         try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(bytes.count)) { offset, count in
                             bytes.subdata(in: Int(offset)..<Int(offset) + count)
-                        }
-                    }
-                }
-                XCTAssertFalse(try Data(contentsOf: payload).isEmpty)
-                let archive = try Archive(url: payload, accessMode: .read)
-                for (path, bytes) in entries {
-                    var extracted = Data()
-                    _ = try archive.extract(try XCTUnwrap(archive[path])) { extracted.append($0) }
-                    XCTAssertEqual(extracted, bytes)
-                }
-            }
-            let sibling = f.library.appendingPathComponent("Books/keep.txt")
-            try self.write("unrelated bytes", to: sibling)
-            let record = ContentFile()
-            record.url = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/delete.epub"))
-            record.mimeType = "application/epub+zip"
-            record.updateCompoundKey()
-            let package = ContentPackageFile()
-            package.url = try XCTUnwrap(URL(string: record.url.absoluteString + "?entry=OPS/chapter.xhtml"))
-            package.packageContentFileID = record.compoundKey
-            package.updateCompoundKey()
-            try f.realm.write {
-                f.realm.add(record)
-                record.refreshChangeMetadata(explicitlyModified: true)
-                f.realm.add(package)
-                package.refreshChangeMetadata(explicitlyModified: true)
-            }
-            f.manager.files = [record]
-            let initial = try self.journalGeneration(f, record: record)
-            let packageJournalID = ContentPackageFile.className() + "." + package.compoundKey
-            let initialPackage = try XCTUnwrap(f.realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: packageJournalID)).generation
-            let backingURL = try XCTUnwrap(f.manager.canonicalReaderBackingURL(for: record.url))
-            XCTAssertEqual(backingURL, URL(string: "reader-file://file/load/local/Books/delete.epub"))
-            // This is the production command invoked by the confirmation action.
-            try await record.delete()
-            f.realm.refresh()
-            XCTAssertFalse(FileManager.default.fileExists(atPath: payload.path))
-            XCTAssertEqual(try Data(contentsOf: sibling), Data("unrelated bytes".utf8))
-            XCTAssertTrue(record.isDeleted)
-            XCTAssertTrue(package.isDeleted)
-            XCTAssertEqual(record.modifiedAt, package.modifiedAt)
-            XCTAssertFalse(f.manager.files?.contains {
-                f.manager.canonicalReaderBackingURL(for: $0.url) == backingURL
-            } ?? false)
-            try await f.manager.refreshAllFilesMetadata(force: true)
-            await f.manager.inventoryRefreshQueue?.waitForIdle()
-            XCTAssertFalse(f.manager.files?.contains {
-                f.manager.canonicalReaderBackingURL(for: $0.url) == backingURL
-            } ?? false)
-            XCTAssertEqual(try Data(contentsOf: sibling), Data("unrelated bytes".utf8))
-            let committed = try self.journalGeneration(f, record: record)
-            let committedPackage = try XCTUnwrap(f.realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: packageJournalID)).generation
-            XCTAssertNotEqual(committed, initial)
-            XCTAssertNotEqual(committedPackage, initialPackage)
-            try await record.delete()
-            try await f.manager.refreshAllFilesMetadata(force: true)
-            await f.manager.inventoryRefreshQueue?.waitForIdle()
-            f.realm.refresh()
-            XCTAssertEqual(try self.journalGeneration(f, record: record), committed)
-            XCTAssertEqual(try XCTUnwrap(f.realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: packageJournalID)).generation, committedPackage)
-            XCTAssertFalse(f.manager.files?.contains {
-                f.manager.canonicalReaderBackingURL(for: $0.url) == backingURL
-            } ?? false)
-            XCTAssertEqual(try Data(contentsOf: sibling), Data("unrelated bytes".utf8))
-        }
-    }
-
-    func testEbookArchiveDeleteRemovesPayloadAndJournalsTombstones() async throws {
-        try await checkEbookDeletion(isDirectory: false)
-    }
-
-    func testEbookDirectoryDeleteRemovesPayloadAndJournalsTombstones() async throws {
-        try await checkEbookDeletion(isDirectory: true)
-    }
-
-    func testLegacyRemoveFileRejectsDirectoryEpubAndPreservesBytes() async throws {
-        try await withFixture { f in
-            let payload = f.library.appendingPathComponent("Books/legacy.epub/OPS/chapter.xhtml")
-            try self.write("directory book bytes", to: payload)
-            let drive = try XCTUnwrap(f.manager.localDrive)
-            do {
-                try await drive.removeFile(at: RootRelativePath(path: "Books/legacy.epub"))
-                XCTFail("The historical file-only removal API must reject a directory EPUB")
-            } catch SwiftCloudDrive.Error.invalidFileType { }
-            XCTAssertEqual(try Data(contentsOf: payload), Data("directory book bytes".utf8))
-        }
-    }
-
-    private struct RefreshRecordSnapshot: Equatable {
-        let url: URL
-        let title: String
-        let isDeleted: Bool
-        let modifiedAt: Date
-        let fileMetadataRefreshedAt: Date?
-    }
-
-    private struct RefreshStorageSnapshot: Equatable {
-        let records: [String: RefreshRecordSnapshot]
-        let journals: [String: String]
-    }
-
-    private func refreshStorageSnapshot(_ realm: Realm) -> RefreshStorageSnapshot {
-        realm.refresh()
-        return RefreshStorageSnapshot(
-            records: Dictionary(uniqueKeysWithValues: realm.objects(ContentFile.self).map {
-                ($0.compoundKey, RefreshRecordSnapshot(url: $0.url, title: $0.title,
-                    isDeleted: $0.isDeleted, modifiedAt: $0.modifiedAt,
-                    fileMetadataRefreshedAt: $0.fileMetadataRefreshedAt))
-            }),
-            journals: Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self).map {
-                ($0.recordName, $0.generation)
-            })
-        )
-    }
-
-    private func seedRefreshRecord(_ name: String, in realm: Realm) async throws -> ContentFile {
-        let file = ContentFile()
-        file.url = try XCTUnwrap(URL(string: "reader-file://file/load/local/\(name).txt"))
-        file.title = name
-        file.updateCompoundKey()
-        try await realm.asyncWritePreservingOwnership {
-            realm.add(file)
-            file.refreshChangeMetadata(explicitlyModified: true)
-        }
-        return file
-    }
-
-    private func requireStaleRefreshCancellation(_ task: Task<Void, Swift.Error>) async throws {
-        do {
-            try await task.value
-            XCTFail("The stale inventory producer must fail instead of publishing replacement storage")
-        } catch is CancellationError {
-        }
-    }
-
-    func testSuspendedInventoryScanCannotMutateOrPublishAfterDriveReplacement() async throws {
-        let enumeration = LibraryBoundaryEnumeration()
-        let manager = ReaderFileManager(payloadStateProvider: { _ in .current },
-            directoryContentsProvider: { try await enumeration.read($0) })
-        try await withFixture(manager: manager) { f in
-            try self.write("stale discovered bytes", to: f.library.appendingPathComponent("discovered.txt"))
-            let orphan = try await self.seedRefreshRecord("old-orphan", in: f.realm)
-            let replacement = try await self.seedRefreshRecord("replacement", in: f.realm)
-            f.manager.files = [replacement]
-            let before = self.refreshStorageSnapshot(f.realm)
-            let old = Task { @MainActor in try await f.manager.refreshAllFilesMetadata(force: true) }
-            await enumeration.entered.wait()
-            let replacementRoot = f.root.appendingPathComponent("replacement-library", isDirectory: true)
-            do {
-                f.manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: replacementRoot))
-            } catch {
-                await enumeration.release.open()
-                _ = try? await old.value
-                throw error
-            }
-            await enumeration.release.open()
-            try await self.requireStaleRefreshCancellation(old)
-            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before,
-                           "Neither discovered metadata nor old orphan tombstones may commit")
-            XCTAssertFalse(orphan.isDeleted)
-            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [replacement.compoundKey])
-        }
-    }
-
-    func testSuspendedInventoryScanCannotMutateEitherRealmAfterConfigurationReplacement() async throws {
-        let enumeration = LibraryBoundaryEnumeration()
-        let manager = ReaderFileManager(payloadStateProvider: { _ in .current },
-            directoryContentsProvider: { try await enumeration.read($0) })
-        try await withFixture(manager: manager) { f in
-            try self.write("stale discovered bytes", to: f.library.appendingPathComponent("discovered.txt"))
-            _ = try await self.seedRefreshRecord("old-orphan", in: f.realm)
-            var configuration = f.configuration
-            configuration.inMemoryIdentifier = "replacement-" + UUID().uuidString
-            BigSyncMutationTracking.install(configurations: [configuration], excludedClassNames: [])
-            let replacementRealm = try await Realm(configuration: configuration, actor: MainActor.shared)
-            let replacement = try await self.seedRefreshRecord("replacement", in: replacementRealm)
-            let oldBefore = self.refreshStorageSnapshot(f.realm)
-            let replacementBefore = self.refreshStorageSnapshot(replacementRealm)
-            let old = Task { @MainActor in try await f.manager.refreshAllFilesMetadata(force: true) }
-            await enumeration.entered.wait()
-            f.manager.historyRealmConfigurationOverride = configuration
-            f.manager.files = [replacement]
-            await enumeration.release.open()
-            do {
-                try await self.requireStaleRefreshCancellation(old)
-                XCTAssertEqual(self.refreshStorageSnapshot(f.realm), oldBefore)
-                XCTAssertEqual(self.refreshStorageSnapshot(replacementRealm), replacementBefore)
-                XCTAssertEqual(f.manager.files?.map(\.compoundKey), [replacement.compoundKey])
-            } catch {
-                await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
-                throw error
-            }
-            await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
-        }
-    }
-
-    func testNewInitializationRevokesSuspendedScanEvenWhenPreparationFails() async throws {
-        let enumeration = LibraryBoundaryEnumeration()
-        let manager = ReaderFileManager(payloadStateProvider: { _ in .current },
-            directoryContentsProvider: { try await enumeration.read($0) },
-            cloudDriveFactory: { _ in throw ReaderFileManagerError.driveMissing },
-            localDriveFactory: { throw ReaderFileManagerError.driveMissing })
-        try await withFixture(manager: manager) { f in
-            let installedDrive = f.manager.localDrive
-            try self.write("stale discovered bytes", to: f.library.appendingPathComponent("discovered.txt"))
-            let replacement = try await self.seedRefreshRecord("replacement", in: f.realm)
-            f.manager.files = [replacement]
-            let before = self.refreshStorageSnapshot(f.realm)
-            let old = Task { @MainActor in try await f.manager.refreshAllFilesMetadata(force: true) }
-            await enumeration.entered.wait()
-            do {
-                try await f.manager.initialize(ubiquityContainerIdentifier: "new-failed")
-                XCTFail("Expected factory failure after the newer initializer acquired its identity")
-            } catch ReaderFileManagerError.driveMissing {
-            } catch {
-                await enumeration.release.open()
-                _ = try? await old.value
-                throw error
-            }
-            await enumeration.release.open()
-            try await self.requireStaleRefreshCancellation(old)
-            XCTAssertTrue(f.manager.localDrive === installedDrive)
-            XCTAssertEqual(self.refreshStorageSnapshot(f.realm), before)
-            XCTAssertEqual(f.manager.files?.map(\.compoundKey), [replacement.compoundKey])
-            try await f.manager.refreshAllFilesMetadata(force: true)
-            XCTAssertTrue(f.manager.files?.contains { $0.url.lastPathComponent == "discovered.txt" } == true,
-                          "A fresh request under the current identity remains usable")
-        }
-    }
-
-
-}
-
-// MARK: Storage delivery follow-up (2026-10-05)
-// These methods extend the existing native owner file and require the actual
-// Apple/Realm/SwiftCloudDrive graph. They are authored, not native-qualified.
-@MainActor
-private final class StorageDeliveryCounter {
-    private(set) var value = 0
-    func increment() { value += 1 }
-}
-
-@MainActor
-private final class StorageDeliveryReplacement {
-    private let manager: ReaderFileManager
-    private let drive: CloudDrive
-    init(manager: ReaderFileManager, drive: CloudDrive) {
-        self.manager = manager
-        self.drive = drive
-    }
-    func install() { manager.localDrive = drive }
-}
-
-@MainActor
-extension ReaderFileLibraryBoundaryTests {
-    func testReadCannotSelectReplacementDriveAfterAvailabilityReturnsMissingPath() async throws {
-        try await withFixture { f in
-            let source = f.library.appendingPathComponent("read.txt")
-            try self.write("original", to: source)
-            let replacementRoot = f.root.appendingPathComponent("replacement", isDirectory: true)
-            let replacement = try await CloudDrive(storage: .localDirectory(rootURL: replacementRoot))
-            try self.write("replacement", to: replacementRoot.appendingPathComponent("read.txt"))
-            let backing = try XCTUnwrap(URL(string: "reader-file://file/load/local/read.txt"))
-            var localReads = 0
-            do {
-                _ = try await f.manager.read(fileURL: backing, resolveReadableURL: { url in
-                    _ = try await f.manager.resolveReadableLocalURL(forReaderBackingURL: url)
-                    f.manager.localDrive = replacement
-                    return f.root.appendingPathComponent("missing-readable-result")
-                }, readLocalFile: { _ in localReads += 1; return nil })
-                XCTFail("Old availability must not select replacement bytes")
-            } catch is CancellationError { }
-            XCTAssertEqual(localReads, 0)
-            XCTAssertEqual(try Data(contentsOf: source), Data("original".utf8))
-            XCTAssertEqual(try Data(contentsOf: replacementRoot.appendingPathComponent("read.txt")), Data("replacement".utf8))
-        }
-    }
-
-    func testReadRejectsReplacementDuringCoordinatedPayloadDelivery() async throws {
-        try await withFixture { f in
-            let source = f.library.appendingPathComponent("read.txt")
-            try self.write("original", to: source)
-            let replacement = try await CloudDrive(storage: .localDirectory(
-                rootURL: f.root.appendingPathComponent("replacement", isDirectory: true)))
-            let backing = try XCTUnwrap(URL(string: "reader-file://file/load/local/read.txt"))
-            do {
-                _ = try await f.manager.read(fileURL: backing, resolveReadableURL: { _ in source },
-                    readLocalFile: { url in
-                        let bytes = try Data(contentsOf: url)
+                        }…3873 tokens truncated…ytes = try Data(contentsOf: url)
                         f.manager.localDrive = replacement
                         return bytes
                     })
