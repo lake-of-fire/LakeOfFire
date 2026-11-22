@@ -329,6 +329,14 @@ public actor TranscriptPageRegistry {
         return true
     }
 
+    /// Admit an owned route and protect it from eviction in the same actor turn.
+    @discardableResult
+    public func registerAndRetain(_ asset: TranscriptPageAsset) -> Bool {
+        guard let documentID = asset.playbackOwner?.documentID, register(asset) else { return false }
+        retain(key: asset.key, forDocumentID: documentID)
+        return true
+    }
+
     public func retain(key: String, forDocumentID documentID: String) {
         guard let entry = assetsByKey[key], entry.asset.playbackOwner?.documentID == documentID else { return }
         retainedKeysByDocument[documentID, default: []].insert(key)
