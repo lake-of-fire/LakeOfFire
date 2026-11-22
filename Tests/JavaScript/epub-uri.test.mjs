@@ -224,6 +224,66 @@ test('script resource references cannot confuse a percent-named file with its sp
     } finally { loader?.destroy(); f.close() }
 })
 
+test('stylesheet output retains external URI data without loading matching package paths', async () => {
+    const window = globalThis.window
+    globalThis.window = { innerWidth: 800, innerHeight: 600 }
+    const stylesheet = { href: 'OPS/style.css', mediaType: 'text/css' }
+    const manifest = [stylesheet,
+        { href: 'OPS/theme.css', mediaType: 'text/css' },
+        { href: 'OPS/image.png', mediaType: 'image/png' },
+    ]
+    const reads = [], blobs = []
+    const importHref = '//invalid.invalid/OPS/theme.css?key=a%2Bb#edition'
+    const imageHref = '//invalid.invalid/OPS/image.png?size=2#detail'
+    const escapedHref = '//assets.example/a%2Fb%5Cc.png?key=x%2By#detail'
+    const css = `@import "${importHref}" screen;\n`
+        + `.image { background: url(${imageHref}); mask: url('${escapedHref}') }`
+    const loader = new Loader({
+        resources: { manifest },
+        loadText: async href => {
+            reads.push(href)
+            return href === stylesheet.href ? css : ''
+        },
+        loadBlob: async href => {
+            blobs.push(href)
+            return new Blob(['archive asset'])
+        },
+    })
+    try {
+        const url = await loader.loadItem(stylesheet)
+        const rewritten = await (await fetch(url)).text()
+        assert.equal(rewritten, `@import "https:${importHref}" screen;\n`
+            + `.image { background: url("https:${imageHref}"); mask: url("https:${escapedHref}") }`)
+        assert.deepEqual(reads, [stylesheet.href])
+        assert.deepEqual(blobs, [])
+    } finally {
+        loader.destroy()
+        globalThis.window = window
+    }
+})
+
+test('internal references preserve the fragment and validate the path before dot segments collapse', async () => {
+    const f = makeURIFixture({ names: ['chapter.xhtml'] })
+    let loader
+    try {
+        await f.book.init()
+        const section = f.book.sections[0]
+        assert.equal(section.resolveHref(`chapter.xhtml?edition=2#${encodedFragment}`),
+            `OPS/chapter.xhtml#${encodedFragment}`)
+        loader = new Loader({ resources: f.book.resources, loadBlob: f.loadBlob, replaceURL: f.book.replaceURL })
+        for (const href of ['#glyph', '?edition=2#glyph', 'blob:https://example.com/id#glyph']) {
+            assert.equal(await loader.loadHref(href, section.id), href)
+        }
+        for (const href of ['nested%2F/../chapter.xhtml', 'nested%5C/../chapter.xhtml',
+            'nested%2\nf/../chapter.xhtml', String.raw`\\invalid.invalid/OPS/chapter.xhtml`]) {
+            assert.throws(() => section.resolveHref(href), URIError)
+            assert.equal(await loader.loadHref(href, section.id), href)
+        }
+        assert.deepEqual(f.processed, [])
+        assert.deepEqual(f.blobs, [])
+    } finally { loader?.destroy(); f.close() }
+})
+
 // Only DOM storage and the renderer are doubles. EPUB, View link handling,
 // TOC click callbacks, navigation resolution and history run as shipped.
 class DOMElement extends EventTarget {
@@ -245,11 +305,20 @@ class Renderer extends DOMElement {
     destroy() {}
 }
 
-test('real View content links and TOC clicks reach the intended percent/reserved-name sections', async () => {
+const withViewLinks = async (hrefs, fixtureOptions, run) => {
     globalThis.HTMLElement = DOMElement
-    globalThis.ResizeObserver = class { observe() {}; unobserve() {}; disconnect() {} }
+    globalThis.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+    }
     globalThis.CSSStyleSheet = class { replaceSync() {} }
-    globalThis.CustomEvent = class extends Event { constructor(type, options = {}) { super(type, options); this.detail = options.detail } }
+    globalThis.CustomEvent = class extends Event {
+        constructor(type, options = {}) {
+            super(type, options)
+            this.detail = options.detail
+        }
+    }
     globalThis.customElements = { define() {} }
     globalThis.NodeFilter = { SHOW_ELEMENT: 1, SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8, FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3 }
     const renderer = new Renderer()
@@ -258,16 +327,15 @@ test('real View content links and TOC clicks reach the intended percent/reserved
         createTreeWalker: () => ({}),
     }
     const { View } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/view.js')
-    const { createTOCView } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ui/tree.js')
-    const f = makeURIFixture({ directory: 'OPS/literal%20' })
+    const f = makeURIFixture(fixtureOptions)
     const view = new View()
     try {
         await f.book.init()
         f.book.rendition.layout = 'pre-paginated'
         await view.open(f.book)
-        const anchors = filenames.map(name => {
+        const anchors = hrefs.map(href => {
             const anchor = new DOMElement()
-            anchor.setAttribute('href', `${encodeURIComponent(name)}#${encodedFragment}`)
+            anchor.setAttribute('href', href)
             return anchor
         })
         const doc = new EventTarget()
@@ -275,6 +343,14 @@ test('real View content links and TOC clicks reach the intended percent/reserved
         doc.location = { href: 'ebook://processed/chapter' }
         doc.querySelectorAll = selector => selector === 'a[href]' ? anchors : []
         renderer.dispatchEvent(new CustomEvent('load', { detail: { doc, index: 0, location: doc.location.href } }))
+        await run({ f, view, renderer, anchors })
+    } finally { view.close(); f.close() }
+}
+
+test('real View content links and TOC clicks reach the intended percent/reserved-name sections', async () => {
+    const { createTOCView } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ui/tree.js')
+    const hrefs = filenames.map(name => `${encodeURIComponent(name)}#${encodedFragment}`)
+    await withViewLinks(hrefs, { directory: 'OPS/literal%20' }, async ({ f, view, renderer, anchors }) => {
         for (const [i, anchor] of anchors.entries()) {
             anchor.dispatchEvent(new Event('click', { cancelable: true }))
             await new Promise(resolve => setImmediate(resolve))
@@ -287,5 +363,56 @@ test('real View content links and TOC clicks reach the intended percent/reserved
             assert.equal((await jump)?.index, i)
             assert.equal(renderer.calls.at(-1)?.index, i)
         }
-    } finally { view.close(); f.close() }
+    })
+})
+
+test('real View hands complete external URIs to consumers and respects cancellation', async () => {
+    const cases = [
+        ['https://example.com/page?title=a%2Bb#part'],
+        ['mailto:reader@example.com?subject=Book#part'],
+        ['itms-apps://apps.apple.com/app/id123?mt=8#details'],
+        ['Web+Reader:book?edition=2#part'],
+        ['foo.bar:target?edition=2#part'],
+        ['blobster:target?edition=2#part'],
+        ['//example.com/a%2Fb%5Cc?token=x%2By#part', 'https://example.com/a%2Fb%5Cc?token=x%2By#part'],
+        ['//invalid.invalid/OPS/chapter.xhtml?edition=2#part', 'https://invalid.invalid/OPS/chapter.xhtml?edition=2#part'],
+        [' \t//invalid.invalid/OPS/chapter.xhtml?edition=3#part\n', 'https://invalid.invalid/OPS/chapter.xhtml?edition=3#part'],
+        ['Web+Reader:cancel?edition=2#part'],
+    ]
+    const expected = cases.map(([authored, resolved = authored]) => resolved)
+    const cancelled = expected.at(-1)
+    await withViewLinks(cases.map(([href]) => href), { names: ['chapter.xhtml'] }, async ({ f, view, renderer, anchors }) => {
+        const external = [], internal = [], opened = []
+        const open = globalThis.open
+        globalThis.open = (...args) => opened.push(args)
+        view.addEventListener('external-link', event => {
+            external.push(event.detail.href)
+            if (event.detail.href === cancelled) event.preventDefault()
+        })
+        view.addEventListener('link', event => internal.push(event.detail.href))
+        try {
+            for (const [i, anchor] of anchors.entries()) {
+                assert.equal(f.book.sections[0].resolveHref(anchor.getAttribute('href')), expected[i])
+                assert.equal(anchor.dispatchEvent(new Event('click', { cancelable: true })), false)
+            }
+            await new Promise(resolve => setImmediate(resolve))
+            assert.deepEqual(external, expected)
+            assert.deepEqual(opened, expected.slice(0, -1).map(href => [href, '_blank']))
+            assert.deepEqual(internal, [])
+            assert.deepEqual(renderer.calls, [])
+        } finally { globalThis.open = open }
+    })
+})
+
+test('EPUB scheme classification uses ASCII URI grammar and excludes only blob itself', () => {
+    const f = makeURIFixture()
+    try {
+        for (const href of ['A1+.-:target', 'blobster:target', 'blob+reader:target']) {
+            assert.equal(f.book.isExternal(href), true, href)
+        }
+        for (const href of ['blob:https://example.com/id', 'BLOB:https://example.com/id',
+            '1reader:target', 'reader_name:target', './A:B.xhtml', 'OPS/chapter.xhtml#part']) {
+            assert.equal(f.book.isExternal(href), false, href)
+        }
+    } finally { f.close() }
 })

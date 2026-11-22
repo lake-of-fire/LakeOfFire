@@ -73,7 +73,12 @@ const childGetter = (doc, ns) => {
     }
 }
 
-const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
+const isExternal = uri => /^(?!blob:)[a-z][a-z\d+.-]*:/i.test(uri)
+
+const archiveURLBase = 'https://invalid.invalid/'
+const normalizeURLReference = url => url
+    .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '')
+    .replace(/[\t\n\r]/g, '')
 
 // Archive identities are raw names. URI references stay encoded until an
 // exact storage lookup; a literal "%20" must never become a space twice.
@@ -92,22 +97,22 @@ const uriToArchivePath = href => {
 // relativeTo is always a raw archive path, never an already encoded URI.
 const resolveURL = (url, relativeTo) => {
     if (isExternal(url)) return url
-    // Check before URL dot-segment normalization can discard the component.
-    if (/%(?:2f|5c)/i.test(splitInternalResourceReference(url).resourceHref))
-        throw new URIError('Encoded archive path separator')
-    const root = 'https://invalid.invalid/'
-    let obj
+    const reference = normalizeURLReference(url)
+    if (isExternal(reference) || /^blob:/i.test(reference)) return reference
     try {
-        obj = new URL(url, root + archivePathToURI(relativeTo))
+        // An authored authority is external even if it names the synthetic host.
+        if (reference.startsWith('//')) return new URL(reference, archiveURLBase).href
+        if (/^[\\/]{2}/.test(reference)) throw new URIError('Invalid archive URI reference')
+        // Check before URL dot-segment normalization can discard the component.
+        if (/%(?:2f|5c)/i.test(splitInternalResourceReference(reference).resourceHref))
+            throw new URIError('Encoded archive path separator')
+        const url = new URL(reference, archiveURLBase + archivePathToURI(relativeTo))
+        return `${archivePathToURI(decodeArchivePath(url.pathname.slice(1)))}${url.hash}`
     } catch (error) {
         if (error instanceof TypeError)
             throw new URIError('Invalid archive URI reference')
         throw error
     }
-    obj.search = ''
-    return obj.href.startsWith(root)
-        ? `${archivePathToURI(decodeArchivePath(obj.pathname.slice(1)))}${obj.hash}`
-        : obj.href
 }
 
 const manabiEpubReaderLoadLog = (stage, payload = {}) => {
@@ -913,10 +918,15 @@ export class Loader {
     async loadHref(href, base, parents = []) {
         if (this.#destroyed) return null
         if (typeof href !== 'string' || !href || isExternal(href)) return href
-        const { resourceHref, fragment } = splitInternalResourceReference(href)
-        if (!resourceHref) return href
+        const reference = normalizeURLReference(href)
+        if (!reference || /^[?#]/.test(reference)) return href
+        let resolved
         let path
-        try { path = uriToArchivePath(resolveURL(resourceHref, base)) }
+        try {
+            resolved = resolveURL(href, base)
+            if (isExternal(resolved)) return resolved
+            path = uriToArchivePath(resolved)
+        }
         catch (error) {
             if (error instanceof URIError) return href
             throw error
@@ -924,6 +934,7 @@ export class Loader {
         const item = this.manifest.find(item => item.href === path)
         if (!item) return href
         const url = await this.loadItem(item, parents.concat(base))
+        const { fragment } = splitInternalResourceReference(href)
         return url && fragment ? `${url}${fragment}` : url
     }
     async loadReplaced(item, parents = []) {
