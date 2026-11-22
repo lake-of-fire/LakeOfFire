@@ -197,6 +197,47 @@ const makeBook = () => ({
     },
 })
 
+test('view ignores relocations with invalid section identity', async () => {
+    const renderer = new FakeRenderer()
+    globalThis.__viewRendererFactory = () => renderer
+    const view = new View()
+    const book = makeBook()
+    book.sections = [
+        { id: 'chapter-1.xhtml', size: 1500, cfi: 'epubcfi(/6/2)' },
+        { id: 'chapter-2.xhtml', size: 1500, cfi: 'epubcfi(/6/4)' },
+    ]
+    book.splitTOCHref = href => [href]
+    book.getTOCFragment = () => null
+    const relocations = []
+    view.addEventListener('relocate', event => relocations.push(event.detail))
+    const relocate = (index, reason, relocationID) => renderer.dispatchEvent(new CustomEvent('relocate', {
+        detail: { index, reason, range: null, fraction: 0.25, size: 0.5, relocationID },
+    }))
+
+    try {
+        assert.equal(await view.open(book), true)
+        view.history.pushState(0)
+        relocate(1, 'navigation', 'valid')
+        assert.equal(relocations.length, 1)
+        const [location] = relocations
+        assert.equal(location.sectionIndex, 1)
+        assert.equal(location.cfi, 'epubcfi(/6/4)')
+        assert.equal(location.relocationID, 'valid')
+
+        for (const index of ['1', -1, 2, 0.5, undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+            relocate(index, 'page', 'invalid')
+        }
+
+        assert.equal(relocations.length, 1)
+        assert.equal(view.lastLocation, location)
+        view.history.pushState(1)
+        assert.equal(await view.history.back(), true)
+        assert.deepEqual(renderer.goToCalls, [{ index: 0 }])
+    } finally {
+        view.close()
+    }
+})
+
 test('view relocation preserves its range and receipt when progress geometry is unavailable', async () => {
     const renderer = new FakeRenderer()
     globalThis.__viewRendererFactory = () => renderer

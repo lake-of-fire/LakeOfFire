@@ -83,6 +83,9 @@ export class SectionProgress {
     getProgress(index, fractionInSection, pageFraction = 0) {
         if (!Number.isFinite(fractionInSection) || !Number.isFinite(pageFraction)) return null
         const { sizes, sizePerLoc, sizePerTimeUnit, sizeTotal } = this
+        if (sizes.length > 0 && (!Number.isInteger(index) || index < 0 || index >= sizes.length)) {
+            return null
+        }
         const sizeInSection = sizes[index] ?? 0
         const sizeBefore = this.sectionStarts[index] ?? 0
         const sectionFraction = Math.max(0, Math.min(1, fractionInSection))

@@ -467,6 +467,7 @@ export class View extends HTMLElement {
         pageTurnDirection,
         relocationID,
     }) {
+        if (!Number.isInteger(index) || index < 0 || index >= (this.book?.sections?.length ?? 0)) return
         const progress = this.#sectionProgress?.getProgress(index, fraction, size) ?? {}
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)

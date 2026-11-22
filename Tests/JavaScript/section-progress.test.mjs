@@ -99,6 +99,16 @@ test('does not derive progress from non-finite geometry', () => {
     assert.equal(progress.getProgress(0, 0.25).fraction, 0.25)
 })
 
+test('does not derive progress for an invalid section index', () => {
+    const progress = new SectionProgress([section(100), section(0)], 10, 10)
+
+    for (const index of [-1, 2, 0.5, '1', undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+        assert.equal(progress.getProgress(index, 0.25), null)
+    }
+    assert.equal(progress.getProgress(0, 0.25).fraction, 0.25)
+    assert.deepEqual(progress.getProgress(1, 0.25).section, { current: 1, total: 2 })
+})
+
 test('round trips monotonic progress across positive sections', () => {
     const progress = new SectionProgress([
         section(75),
