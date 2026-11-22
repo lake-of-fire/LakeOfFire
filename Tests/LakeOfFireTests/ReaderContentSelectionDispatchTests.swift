@@ -176,4 +176,117 @@ final class ReaderContentSelectionDispatchTests: XCTestCase {
         XCTAssertEqual(deferredCalls, 0)
         XCTAssertEqual(selection.key, "selected")
     }
+
+    func testQueuedRefreshCannotClearReplacementOrSameKeyNewGeneration() async throws {
+        let page = URL(string: "https://example.invalid/old")!
+        for replacementKey in ["B", "A"] {
+            let selection = Selection("A")
+            let stale = try XCTUnwrap(refresh(contents: [], page: page, selection: selection))
+            selection.key = "B"
+            if replacementKey == "A" {
+                selection.key = "A"
+                selection.generation = UUID()
+            }
+
+            try await stale.value
+
+            XCTAssertEqual(selection.key, replacementKey)
+        }
+    }
+
+    func testRefreshPairsSelectedURLWithItsKeyBeforeDeferredClear() async throws {
+        let page = URL(string: "https://example.invalid/visible")!
+        let visible = record("visible")
+        visible.url = page
+        let selected = record("selected")
+        selected.url = URL(string: "https://example.invalid/not-visible")!
+        var rows = [visible, selected]
+        let selection = Selection(selected.compoundKey)
+        let clear = try XCTUnwrap(refresh(contents: rows, page: page, selection: selection))
+
+        // The retained work has already captured its row identity and URL.
+        rows.swapAt(0, 1)
+        selected.url = page
+        try await clear.value
+        XCTAssertNil(selection.key)
+
+        selection.key = selected.compoundKey
+        selection.generation = UUID()
+        XCTAssertNil(refresh(contents: rows, page: page, selection: selection))
+        XCTAssertEqual(selection.key, selected.compoundKey)
+    }
+
+    func testRefreshPreservesMatchingProvisionalAndInternalLoadingSelections() {
+        let page = URL(string: "https://example.invalid/visible")!
+        let row = record("selected")
+        row.url = page
+        let selection = Selection(row.compoundKey)
+        XCTAssertNil(refresh(contents: [row], page: page, selection: selection))
+        XCTAssertNil(refresh(contents: [], page: page, provisional: true, selection: selection))
+        XCTAssertNil(refresh(contents: [], page: URL(string: "internal://local/load/reader")!, selection: selection))
+        XCTAssertEqual(selection.key, row.compoundKey)
+    }
+
+    func testRefreshClearsCurrentSelectionOnNativePageAndWithEmptyList() async throws {
+        let nativePage = URL(string: "about:blank")!
+        let row = record("selected")
+        row.url = nativePage
+        let selection = Selection(row.compoundKey)
+        let nativeRefresh = try XCTUnwrap(refresh(contents: [row], page: nativePage, selection: selection))
+        try await nativeRefresh.value
+        XCTAssertNil(selection.key)
+
+        selection.key = row.compoundKey
+        selection.generation = UUID()
+        let page = URL(string: "https://example.invalid/visible")!
+        let emptyRefresh = try XCTUnwrap(refresh(contents: [], page: page, selection: selection))
+        try await emptyRefresh.value
+        XCTAssertNil(selection.key)
+    }
+
+    func testCancelledRefreshCannotClearCurrentBinding() async throws {
+        let selection = Selection("selected")
+        let page = URL(string: "https://example.invalid/visible")!
+        let queued = try XCTUnwrap(refresh(contents: [], page: page, selection: selection))
+        queued.cancel()
+        _ = await queued.result
+        XCTAssertEqual(selection.key, "selected")
+    }
+
+    func testDefaultDeferredDispatchRejectsReplacementBindingAndCancellation() async throws {
+        for cancelled in [false, true] {
+            let content = record()
+            let selection = Selection(content.compoundKey)
+            var deferredCalls = 0
+            let task = try XCTUnwrap(ReaderContentSelectionDispatch.dispatch(
+                selectedContent: content, selectedKey: content.compoundKey,
+                capturedGeneration: selection.generation, selection: selection.binding,
+                currentGeneration: { selection.generation }, onSelectionSynchronously: nil,
+                deferred: { deferredCalls += 1 }
+            ))
+            if cancelled {
+                task.cancel()
+            } else {
+                // The binding can change before SwiftUI delivers its onChange.
+                selection.key = "replacement"
+            }
+            await task.value
+            XCTAssertEqual(deferredCalls, 0)
+            XCTAssertEqual(selection.key, cancelled ? content.compoundKey : "replacement")
+        }
+    }
+
+    private func refresh(
+        contents: [HistoryRecord],
+        page: URL,
+        provisional: Bool = false,
+        selection: Selection
+    ) -> Task<Void, Error>? {
+        ReaderContentSelectionDispatch.refresh(
+            contents: contents, readerPageURL: page, isReaderProvisionallyNavigating: provisional,
+            selectedKey: selection.key, capturedGeneration: selection.generation,
+            selection: selection.binding, currentGeneration: { selection.generation }
+        )
+    }
+
 }
