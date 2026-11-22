@@ -1588,6 +1588,18 @@ fileprivate func getRssData(
     }
 }
 
+fileprivate func resolveRSSItemURL(
+    _ reference: String?, documentURL: URL, allowLegacyEscaping: Bool = false
+) -> URL? {
+    guard let reference, !reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    // Resolve the original reference first so signed queries, existing escapes
+    // and fragments survive. The channel's website is not the feed document base.
+    if let url = URL(string: reference, relativeTo: documentURL) { return url.absoluteURL }
+    guard allowLegacyEscaping,
+          let escaped = reference.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) else { return nil }
+    return URL(string: escaped, relativeTo: documentURL)?.absoluteURL
+}
+
 fileprivate func collapseRubyTags(doc: SwiftSoup.Document, restrictToReaderContentElement: Bool = true) throws {
     let pageElement = try doc.getElementById("reader-content")?.getElementsByClass("page").first()
     guard !restrictToReaderContentElement || pageElement != nil else { return }
@@ -1710,6 +1722,7 @@ public extension Feed {
     @MainActor
     private func persist(
         rssItems: [RSSFeedItem],
+        documentURL: URL,
         owner: FeedFetchOwner,
         deleteOrphans: Bool
     ) async throws {
@@ -1734,23 +1747,19 @@ public extension Feed {
             
             var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
-                // Existing escapes and fragment delimiters belong to the URL;
-                // apply the legacy escaping fallback only when parsing fails.
-                guard let link = item.link,
-                      let url = URL(string: link)
-                        ?? link.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
+                guard let url = resolveRSSItemURL(item.link, documentURL: documentURL, allowLegacyEscaping: true)
                 else { return nil }
                 var imageUrl: URL? = nil
                 if let enclosureAttribs = item.enclosure?.attributes, enclosureAttribs.type?.hasPrefix("image/") ?? false {
                     if let imageUrlRaw = enclosureAttribs.url {
-                        imageUrl = URL(string: imageUrlRaw)
+                        imageUrl = resolveRSSItemURL(imageUrlRaw, documentURL: documentURL)
                     }
 //                } else if let rawImageURL = item.media?.contents?
 //                    .lazy.compactMap({ $0.attributes?.url })
 //                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
                 } else if let mediaImageURL = item.media?.mediaContents?
                     .lazy.compactMap({ $0.attributes?.url })
-                    .compactMap({ URL(string: $0) })
+                    .compactMap({ resolveRSSItemURL($0, documentURL: documentURL) })
                     .first(where: { entryImageExtensions.contains($0.pathExtension.lowercased()) })
                 {
                     imageUrl = mediaImageURL
@@ -1758,12 +1767,7 @@ public extension Feed {
                 let content = item.content?.contentEncoded ?? item.description
                 let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                let audioSubtitlesURL: URL? = rawSubtitleHref
-                    .flatMap { rawValue in
-                        guard !rawValue.isEmpty else { return nil }
-                        return URL(string: rawValue)
-                            ?? rawValue.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
-                    }
+                let audioSubtitlesURL = resolveRSSItemURL(rawSubtitleHref, documentURL: documentURL, allowLegacyEscaping: true)
                 
                 var title = item.title
                 do {
@@ -2196,7 +2200,7 @@ public extension Feed {
                     itemCount = items.count
                     if shouldLogNiponica { logNiponica("stage=feed.fetch.parsed feedID=\(diagnosticFeedID.uuidString) title=\(diagnosticTitle) rssURL=\(requestedRSSURL.absoluteString) feedType=rss items=\(items.count)") }
                     try await persist(
-                        rssItems: items, owner: owner,
+                        rssItems: items, documentURL: documentURL, owner: owner,
                         deleteOrphans: deleteOrphans
                     )
                 case .atom(let atomFeed):
