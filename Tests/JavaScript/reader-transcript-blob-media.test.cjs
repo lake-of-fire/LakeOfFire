@@ -24,12 +24,12 @@ class ObservedWindow extends EventTarget {
     if (type === 'pagehide') this.pagehideListeners.delete(listener)
   }
 }
-function fixture(fetcher = async () => new Response(new Blob(['audio bytes'], { type: 'audio/wav' }))) {
+function fixture(fetcher = async () => new Response(new Blob(['audio bytes'], { type: 'audio/wav' })), run = evaluate) {
   const snapshot = { documentID: 'physical-document', mediaIdentity: 'physical-frame-node-source', documentURL: 'https://article.example/read', mediaURL: 'blob:https://child.example/media' }
   const owner = Object.assign(new ObservedWindow(), { fetch: fetcher })
   const doc = { defaultView: new ObservedWindow(), __manabiTranscriptCapture: callback => typeof callback === 'function' ? callback({ ...snapshot }, owner) : { ...snapshot } }
   const expected = { ...snapshot }
-  const call = (operation, id, extra = {}) => evaluate(doc, operation, id,
+  const call = (operation, id, extra = {}) => run(doc, extra.selection === undefined ? operation : { kind: operation, selection: extra.selection }, id,
     extra.expectedDocumentID ?? expected.documentID, extra.expectedMediaIdentity ?? expected.mediaIdentity,
     extra.expectedDocumentURL ?? expected.documentURL, extra.expectedMediaURL ?? expected.mediaURL,
     extra.offset ?? 0, extra.maximumByteCount ?? 536870912, extra.chunkByteCount ?? 4).then(JSON.parse)
@@ -87,6 +87,71 @@ test('selected owning child window is the fetch receiver', async () => {
   assert.equal((await f.call('open', id)).mimeType, 'audio/ogg')
   assert.equal(receiver, f.owner)
   assert.equal((await collect(f, id)).toString(), 'child')
+})
+
+test('legacy transfer ignores page global selectors and owned mode requires its own selector', async () => {
+  const selection = { scriptDocumentID: 'unrelated-document', tagID: 'unrelated-media', sourceURL: 'blob:https://elsewhere.example/media' }
+  const context = vm.createContext({ URL, AbortController, btoa, selection })
+  const run = vm.runInContext('(async function(' + names.join(',') + ') {\n' + source + '\n})', context)
+  const f = fixture(undefined, run)
+  async function copy() {
+    const id = randomUUID()
+    assert.equal((await f.call('open', id)).status, 'ok')
+    assert.equal((await collect(f, id)).toString(), 'audio bytes')
+    assert.equal((await f.call('close', id)).status, 'ok')
+  }
+  await copy()
+  vm.runInContext('let selection = ' + JSON.stringify(selection), context)
+  await copy()
+  assert.equal((await f.call({ kind: 'open' }, randomUUID())).error, 'invalidRequest')
+})
+
+test('owned transfer freezes the exact selector and fetches in its owning window', async () => {
+  const fetchStarted = gate()
+  const finishFetch = gate()
+  let receiver
+  const f = fixture(async function () {
+    receiver = this
+    fetchStarted.resolve()
+    await finishFetch.promise
+    return new Response(new Blob(['owned'], { type: 'audio/ogg' }))
+  })
+  const selection = { scriptDocumentID: 'child-document', tagID: 'selected-node', sourceURL: f.snapshot.mediaURL }
+  const original = { ...selection }
+  f.doc.__manabiTranscriptCapture = () => { assert.fail('owned transfer must not use generic capture') }
+  f.doc.__manabiTranscriptCaptureOwned = (received, callback) => {
+    assert.deepEqual(received, original)
+    return callback ? callback({ ...f.snapshot }, f.owner) : { ...f.snapshot }
+  }
+  const id = randomUUID()
+  const opened = f.call('open', id, { selection })
+  await Promise.race([fetchStarted.promise, opened.then(result => assert.fail(JSON.stringify(result)))])
+  selection.tagID = 'replacement-node'
+  finishFetch.resolve()
+  assert.equal((await opened).status, 'ok')
+  assert.equal(receiver, f.owner)
+  assert.equal((await f.call('read', id, { selection })).error, 'invalidRequest')
+  assert.equal((await f.call('read', id)).error, 'invalidRequest')
+  assert.equal((await collect(f, id, { selection: original })).toString(), 'owned')
+  assert.equal((await f.call('close', id)).status, 'ok')
+})
+
+test('owned transfer never falls back when its hook or selected element disappears', async () => {
+  let fetches = 0
+  const f = fixture(async () => { fetches++; return new Response('owned') })
+  const selection = { scriptDocumentID: 'child-document', tagID: 'selected-node', sourceURL: f.snapshot.mediaURL }
+  assert.equal((await f.call('open', randomUUID(), { selection })).error, 'staleSelection')
+  assert.equal(fetches, 0)
+
+  f.doc.__manabiTranscriptCaptureOwned = (_, callback) =>
+    callback ? callback({ ...f.snapshot }, f.owner) : { ...f.snapshot }
+  const id = randomUUID()
+  assert.equal((await f.call('open', id, { selection })).status, 'ok')
+  assert.equal(fetches, 1)
+  f.doc.__manabiTranscriptCaptureOwned = () => null
+  assert.equal((await f.call('read', id, { selection })).error, 'staleSelection')
+  assert.equal((await f.call('close', id)).status, 'ok')
+  assert.equal(f.doc.__manabiTranscriptBlobTransfers.size, 0)
 })
 
 test('declared length is checked against actual EOF and exact positive control', async () => {
