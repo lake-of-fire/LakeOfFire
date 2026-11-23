@@ -73,13 +73,24 @@ if (!doc.__manabiTranscriptCapture) {
     visit(doc, [])
     return result
   }
-  doc.__manabiTranscriptCapture = withContext => {
+  const mediaSource = node => node.currentSrc || node.src || node.querySelector('source[src]')?.src || ''
+  const capture = (withContext, ownedSelection) => {
     if (document !== doc) return null;
     const media = candidates();
-    const selected = media.find(value => !value.node.paused && !value.node.ended) || media[0];
+    let selected
+    if (ownedSelection) {
+      const matches = media.filter(({ node, view }) =>
+        view.__manabiReaderMediaDocumentID === ownedSelection.scriptDocumentID
+          && node.__manabiReaderMediaTagID === ownedSelection.tagID
+          && mediaSource(node) === ownedSelection.sourceURL)
+      if (matches.length !== 1) return null
+      selected = matches[0]
+    } else {
+      selected = media.find(value => !value.node.paused && !value.node.ended) || media[0]
+    }
     if (!selected) return null;
     const { node, ownerDocument, view, documentPath } = selected;
-    const source = node.currentSrc || node.src || node.querySelector('source[src]')?.src || '';
+    const source = mediaSource(node)
     const tracks = Array.from(node.textTracks || []).filter(track => ['captions', 'subtitles'].includes(track.kind));
     const languages = view.navigator.languages || [view.navigator.language || ''];
     const normalizeLanguage = value => (value || '').trim().toLowerCase().replace(/_/g, '-')
@@ -154,6 +165,16 @@ if (!doc.__manabiTranscriptCapture) {
     // The optional synchronous callback receives this capture's context only;
     // no mutable selected-window slot survives between requests.
     return typeof withContext === 'function' ? withContext(snapshot, view) : snapshot;
-  };
+  }
+  doc.__manabiTranscriptCapture = withContext => capture(withContext)
+  doc.__manabiTranscriptCaptureOwned = (selection, withContext) => {
+    if (![selection?.scriptDocumentID, selection?.tagID, selection?.sourceURL]
+      .every(value => typeof value === 'string' && value.length > 0)) return null
+    return capture(withContext, selection)
+  }
 }
-return JSON.stringify(doc.__manabiTranscriptCapture());
+// WebKit invokes this body as an async function. Legacy capture passes no
+// arguments and owned capture passes exactly one selector.
+if (arguments.length === 0) return JSON.stringify(doc.__manabiTranscriptCapture())
+if (arguments.length !== 1) return 'null'
+return JSON.stringify(doc.__manabiTranscriptCaptureOwned?.(arguments[0]) ?? null)

@@ -5,6 +5,20 @@ import SwiftUIWebView
 
 /// Owns the connection from a transcript to one exact live media element.
 /// Neither URL equality nor the globally shared player grants playback rights.
+public struct ReaderTranscriptBlobSelection: Sendable {
+    public let sourceOwner: ReaderMediaPlaybackOwner
+    public let scriptDocumentID: String
+    public let tagID: String
+    public let sourceURL: URL
+
+    fileprivate init(sourceOwner: ReaderMediaPlaybackOwner, scriptDocumentID: String, tagID: String, sourceURL: URL) {
+        self.sourceOwner = sourceOwner
+        self.scriptDocumentID = scriptDocumentID
+        self.tagID = tagID
+        self.sourceURL = sourceURL
+    }
+}
+
 @MainActor
 public final class ReaderWebMediaPlaybackRouter {
     public static let shared = ReaderWebMediaPlaybackRouter()
@@ -74,6 +88,7 @@ public final class ReaderWebMediaPlaybackRouter {
             guard !Task.isCancelled, entries[owner] === entry, entry.document.isCurrent else { return false }
             if result as? Bool == true { return true }
         } catch { }
+        guard !Task.isCancelled else { return false }
         if entries[owner] === entry {
             entries.removeValue(forKey: owner)
             revokeCommand(in: entry)
@@ -85,31 +100,47 @@ public final class ReaderWebMediaPlaybackRouter {
         isCurrent(owner: owner) && entries[owner]?.document.caller === scriptCaller
     }
 
+    private func domSourceEntry(for original: Entry) async -> Entry? {
+        if original.frame != nil { return original }
+        let owner = original.owner
+        let matches = entries.values.filter {
+            $0.frame != nil && $0.document.isCurrent
+                && $0.owner.documentID == owner.documentID
+                && $0.owner.resourceIdentity == owner.resourceIdentity
+        }
+        // A replaced iframe can still share the main binding token. Prove
+        // the concrete DOM documents before deciding there is one source.
+        guard matches.count <= 8 else { return nil }
+        var live: [Entry] = []
+        for candidate in matches {
+            if await validate(owner: candidate.owner) { live.append(candidate) }
+            guard !Task.isCancelled, entries[owner] === original, original.document.isCurrent, live.count <= 1 else { return nil }
+        }
+        return live.first
+    }
+
+    /// Selects only the original live element or an unambiguous matching element
+    /// for a native restored owner. Page-wide media preference is never used.
+    public func blobMediaSelection(for owner: ReaderMediaPlaybackOwner, caller: WebViewScriptCaller) async -> ReaderTranscriptBlobSelection? {
+        guard !Task.isCancelled, belongs(owner: owner, to: caller), let original = entries[owner],
+              let sourceEntry = await domSourceEntry(for: original),
+              sourceEntry.document.caller === caller,
+              let sourceURL = sourceEntry.sourceURL, sourceURL.scheme?.lowercased() == "blob",
+              let scriptDocumentID = sourceEntry.scriptDocumentID, let tagID = sourceEntry.tagID,
+              await validate(owner: sourceEntry.owner), !Task.isCancelled,
+              entries[owner] === original, entries[sourceEntry.owner] === sourceEntry,
+              belongs(owner: owner, to: caller), belongs(owner: sourceEntry.owner, to: caller),
+              sourceEntry.sourceURL?.absoluteString == sourceURL.absoluteString else { return nil }
+        return ReaderTranscriptBlobSelection(sourceOwner: sourceEntry.owner, scriptDocumentID: scriptDocumentID,
+                                             tagID: tagID, sourceURL: sourceURL)
+    }
+
     /// Resolves transport URLs from the element that owns this resource. A
     /// native restored selection may borrow one matching DOM source, but it may
     /// never adopt a generic page candidate or the shared player's current item.
     public func sourceCandidates(owner: ReaderMediaPlaybackOwner) async -> [ReaderMediaSourceCandidate] {
-        guard isCurrent(owner: owner), let original = entries[owner] else { return [] }
-        let sourceEntry: Entry
-        if original.frame != nil {
-            sourceEntry = original
-        } else {
-            let matches = entries.values.filter {
-                $0.frame != nil && $0.document.isCurrent
-                    && $0.owner.documentID == owner.documentID
-                    && $0.owner.resourceIdentity == owner.resourceIdentity
-            }
-            // A replaced iframe can still share the main binding token. Prove
-            // the concrete DOM documents before deciding there is one source.
-            guard matches.count <= 8 else { return [] }
-            var live: [Entry] = []
-            for candidate in matches {
-                if await validate(owner: candidate.owner) { live.append(candidate) }
-                guard !Task.isCancelled, entries[owner] === original, original.document.isCurrent, live.count <= 1 else { return [] }
-            }
-            guard live.count == 1 else { return [] }
-            sourceEntry = live[0]
-        }
+        guard isCurrent(owner: owner), let original = entries[owner],
+              let sourceEntry = await domSourceEntry(for: original) else { return [] }
         guard let caller = sourceEntry.document.caller, let frame = sourceEntry.frame,
               let frameURL = frame.request.url, let tagID = sourceEntry.tagID,
               let scriptDocumentID = sourceEntry.scriptDocumentID else { return [] }
