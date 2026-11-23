@@ -61,6 +61,8 @@ private struct ReaderLoadingOverlay: View {
     let showsImmediately: Bool
 
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
+    @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
 
     private let minimumVisibleNanoseconds: UInt64 = 250_000_000
 
@@ -140,7 +142,11 @@ private struct ReaderLoadingOverlay: View {
     }
 
     private var overlayColor: Color {
-        colorScheme == .dark ? .black : .white
+        readerThemeBackgroundColor(
+            colorScheme: colorScheme,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme
+        )
     }
 
     @MainActor
