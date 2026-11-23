@@ -1,6 +1,14 @@
 (function () {
+    // In-place Reader replacements can evaluate this script again in the same document.
+    const refreshKey = Symbol.for('manabi.readabilityCarouselRefresh')
+    if (document[refreshKey]) {
+        document[refreshKey]()
+        return
+    }
+
     const wiredCarousels = new WeakMap();
-    let observerStarted = false;
+    let observedBody
+    const observer = new MutationObserver(refresh)
 
     function wireReadabilityCarousels() {
         let carousels = document.querySelectorAll('[data-readability-carousel="true"]');
@@ -82,28 +90,27 @@
         }
     }
 
-    function init() {
-        if (document.body?.classList.contains('readability-mode')) {
-            wireReadabilityCarousels();
-            if (!observerStarted) {
-                observerStarted = true;
-                new MutationObserver(() => wireReadabilityCarousels())
-                    .observe(document, { childList: true, subtree: true, attributes: false });
+    function refresh() {
+        if (document.readyState === 'loading') return
+
+        const body = document.body
+        if (body !== observedBody) {
+            observedBody = body
+            observer.disconnect()
+            observer.observe(document, { childList: true, subtree: true })
+            if (body) {
+                observer.observe(body, { attributes: true, attributeFilter: ['class'] })
             }
-        } else {
-            const observer = new MutationObserver(() => {
-                if (document.body?.classList.contains('readability-mode')) {
-                    observer.disconnect();
-                    init();
-                }
-            });
-            observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+        }
+        if (body?.classList.contains('readability-mode')) {
+            wireReadabilityCarousels()
         }
     }
 
-    if (document.readyState === 'complete') {
-        init();
+    document[refreshKey] = refresh
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', refresh, { once: true })
     } else {
-        document.addEventListener('DOMContentLoaded', init);
+        refresh()
     }
 })();
