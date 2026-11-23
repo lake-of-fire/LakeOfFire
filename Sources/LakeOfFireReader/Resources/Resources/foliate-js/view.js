@@ -464,18 +464,21 @@ export class View extends HTMLElement {
         index,
         fraction,
         size,
+        progressUnavailable,
         pageTurnDirection,
         relocationID,
     }) {
         if (!Number.isInteger(index) || index < 0 || index >= (this.book?.sections?.length ?? 0)) return
-        const progress = this.#sectionProgress?.getProgress(index, fraction, size) ?? {}
+        const progress = progressUnavailable === true
+            ? null
+            : this.#sectionProgress?.getProgress(index, fraction, size)
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)
         const cfi = this.getCFI(index, range)
         this.lastLocation = {
-            ...progress,
-            fractionInSection: fraction,
-            pageFraction: size,
+            ...(progress === null
+                ? { progressUnavailable: true }
+                : { ...progress, fractionInSection: fraction, pageFraction: size }),
             index,
             sectionIndex: index,
             tocItem,

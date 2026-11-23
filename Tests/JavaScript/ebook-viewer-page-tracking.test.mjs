@@ -7,6 +7,7 @@ import { bookScopeKey } from '../../Sources/LakeOfFireReader/Resources/Resources
 import { applyBookReadingProjection } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-projection.js'
 import { createNativeMarkReadRequestCoordinator, refreshCommittedVisibleMarkReadState, committedVisibleMarkReadStateIsPresented, captureVisibleMarkReadNavigation } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
 import { refreshNativeMarkReadBookStateForRecovery } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
+import { ebookProgressFractionForRelocate } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-reading-progress.js'
 
 // Evaluate the complete shipping Reader class. Only the module/startup adapter
 // and DOM/native collaborators are replaced; no command or render method is
@@ -18,8 +19,9 @@ const classStart = source.indexOf('class Reader {')
 const classEnd = source.indexOf('\n}\n', classStart)
 const readerClass = source.slice(classStart, classEnd)
 
-function fixture({ realCoordinator = false, onControl } = {}) {
+function fixture({ realCoordinator = false, onControl, deferProgressPosts = false } = {}) {
     const packets = [], requests = [], controls = [], attributes = new Map(), timers = new Map(), moves = []
+    const progressPosts = { pending: null, scheduled: 0 }
     const lifecycle = new EventTarget()
     let coordinatorSequence = 0, timerSequence = 0
     const doc = { location: { href: 'ebook://fixture/chapter.xhtml' }, defaultView: {}, body: {} }
@@ -48,7 +50,12 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         refreshCommittedVisibleMarkReadState,
         committedVisibleMarkReadStateIsPresented,
         captureVisibleMarkReadNavigation,
-        debounce: callback => callback,
+        debounce: (callback, delay) => deferProgressPosts && delay === 400
+            ? message => {
+                progressPosts.pending = { message, deliver: () => callback(message) }
+                progressPosts.scheduled += 1
+            }
+            : callback,
         applyStoredChromeInsets() {},
         NavigationHUD: class { refreshAuxiliaryLayout() {} },
         createNativeMarkReadRequestCoordinator: options => realCoordinator
@@ -126,6 +133,7 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         testNativeBookReadProjection(state, details = { passChanged: false }) { return this.#applyNativeBookReadProjection(state, details) }
         testSuccessfulPublication() { return this.#successfulBookReadPublication }
         testInvalidateBookPublication() { this.#successfulBookReadPublication = null }
+        testRelocate(detail) { return this.#onRelocate({ detail }) }
     }; Reader`, context)
     const reader = new Reader()
     context.reader = reader
@@ -154,8 +162,95 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         reader.testRender('fixture-current-page')
     }
     return { reader, Reader, packets, requests, controls, attributes, seedPage, installPage, visibleRange,
-        context, doc, timers, moves, lifecycle, retireNavigation }
+        context, doc, timers, moves, lifecycle, retireNavigation, progressPosts }
 }
+
+function progressFixture() {
+    const f = fixture({ deferProgressPosts: true })
+    const deliveries = [], relocated = []
+    Object.assign(f.context, {
+        // Geometry and native collaborators are controlled; the complete Reader
+        // relocation, persistence decisions and dispatch methods remain real.
+        isDocumentLike: () => false,
+        requestLookupCloseForPageMotion() {},
+        postNativeLookupPageTurnDisplayReady() {},
+        scheduleAfterNextFrame: () => {},
+        safeRound: value => Number.isFinite(value) ? value : null,
+        ebookProgressFractionForRelocate,
+        getAuthoritativeReaderFractionDiagnostics: () => ({ fraction: 0.9, source: 'retained-HUD' }),
+        roundedDisplayPercent: value => Math.round(value * 100),
+        makeSyntheticRestoreLocator: () => 'fixture-synthetic-locator',
+        getVisibleJapaneseTextStateForRenderer: () => ({
+            hasVisibleJapaneseText: false, visibleSegmentCount: 0, observedSegmentCount: 0,
+        }),
+        carryReaderArticleProducerOwner: payload => payload,
+    })
+    f.context.parent = f.context
+    f.context.document.location = f.context.location
+    f.context.webkit.messageHandlers.updateReadingProgress = {
+        postMessage: message => deliveries.push(message),
+    }
+    f.reader.hasLoadedLastPosition = true
+    f.reader.clearLoadingForRelocatedVisibleContent = async () => {}
+    f.reader.updateNavButtons = async () => {}
+    f.reader.navHUD.handleRelocate = async detail => { relocated.push(detail) }
+    f.reader.navHUD.rendererPageSnapshot = { current: 3, total: 8 }
+    f.reader.view.book = { sections: [{ cfi: 'epubcfi(/6/2!)' }] }
+    f.reader.view.renderer.localName = 'foliate-paginator'
+    f.reader.view.renderer.pageMetrics = async () => ({ page: 3, pages: 10, size: 100, viewSize: 1000 })
+    return { ...f, deliveries, relocated }
+}
+
+test('an unavailable relocation cannot replace a queued valid save or poison CFI stability', async () => {
+    const f = progressFixture()
+    const valid = { fraction: 0.4, sectionIndex: 0, index: 0, reason: 'scroll', cfi: 'epubcfi(/6/2!/4/2)' }
+    f.reader.view.lastLocation = valid
+    await f.reader.testRelocate(valid)
+    assert.equal(f.progressPosts.scheduled, 1)
+    const pending = f.progressPosts.pending
+    const observation = f.reader.lastCFIPersistenceObservation
+    assert.equal(pending.message.fraction, 0.4)
+    f.reader.view.renderer.pageMetrics = async () => ({ page: 0, pages: 0, size: 0, viewSize: 0 })
+    const unavailable = { ...valid, fraction: undefined, progressUnavailable: true, relocationID: 'unmeasured' }
+    f.reader.view.lastLocation = unavailable
+    await f.reader.testRelocate(unavailable)
+    assert.equal(f.relocated.at(-1), unavailable)
+    assert.equal(f.progressPosts.scheduled, 1)
+    assert.equal(f.progressPosts.pending, pending)
+    assert.equal(f.reader.lastCFIPersistenceObservation, observation)
+    assert.equal(f.reader.unstableCFIs.has(valid.cfi), false)
+    const nextLocation = { ...unavailable, cfi: 'epubcfi(/6/2!/4/6)', relocationID: 'next-unmeasured' }
+    f.reader.view.lastLocation = nextLocation
+    await f.reader.testRelocate(nextLocation)
+    assert.equal(f.relocated.at(-1), nextLocation)
+    assert.equal(f.progressPosts.pending, pending)
+    assert.equal(f.progressPosts.scheduled, 1)
+    assert.equal(f.reader.lastCFIPersistenceObservation, observation)
+    pending.deliver()
+    assert.equal(f.deliveries.length, 1)
+    assert.equal(f.deliveries[0].fractionalCompletion, 0.4)
+    assert.equal(f.deliveries[0].cfi, valid.cfi)
+})
+
+test('unavailable page geometry does not consume restore suppression and measured saves recover', async () => {
+    const f = progressFixture()
+    f.context.__manabiSuppressNextRestoreRelocateSave = true
+    const unavailable = { sectionIndex: 0, index: 0, reason: 'page', cfi: 'epubcfi(/6/2!/4/4)',
+        fraction: 0.8, progressUnavailable: true, relocationID: 'measuring' }
+    f.reader.view.lastLocation = unavailable
+    await f.reader.testRelocate(unavailable)
+    assert.equal(f.context.__manabiSuppressNextRestoreRelocateSave, true)
+    assert.equal(f.progressPosts.scheduled, 0)
+    const measured = { ...unavailable, fraction: 0.45, progressUnavailable: false }
+    f.reader.view.lastLocation = measured
+    await f.reader.testRelocate(measured)
+    assert.equal(f.context.__manabiSuppressNextRestoreRelocateSave, false)
+    assert.equal(f.progressPosts.scheduled, 0)
+    await f.reader.testRelocate(measured)
+    assert.equal(f.progressPosts.scheduled, 1)
+    f.progressPosts.pending.deliver()
+    assert.equal(f.deliveries[0].fractionalCompletion, 0.45)
+})
 
 function bookRuntimeFixture(f) {
     class Element extends EventTarget {
