@@ -132,20 +132,20 @@ final class ReaderWebViewHandler {
                                    sourceNavigationProgressID: UUID? = nil) async throws {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
-        let capturedSourceNavigationProgressID = sourceNavigationProgressID
-            ?? (state.pageURL.isReaderURLLoaderURL
-                ? navigator.captureReaderModeProgressSource(
-                    progressID: state.committedNavigationProgressID,
-                    forCommittedURL: state.pageURL
-                )
-                : nil)
         var progressSourceTransferred = false
         defer {
-            if let capturedSourceNavigationProgressID, !progressSourceTransferred {
-                navigator.retireReaderModeProgressSource(capturedSourceNavigationProgressID)
+            if let sourceNavigationProgressID, !progressSourceTransferred {
+                navigator.retireReaderModeProgressSource(sourceNavigationProgressID)
             }
         }
-        try Task.checkCancellation()
+        let requireCurrentCommit = { @MainActor in
+            try Task.checkCancellation()
+            if let sourceNavigationProgressID,
+               !navigator.canContinueReaderModeNavigation(from: sourceNavigationProgressID) {
+                throw CancellationError()
+            }
+        }
+        try requireCurrentCommit()
         if let urlChangeContext { try requireCurrentURLChange(urlChangeContext) }
         // The owned blank stage replaces the physical renderer, but does not
         // select content or consume the final article's playback admission.
@@ -174,11 +174,11 @@ final class ReaderWebViewHandler {
             readerContent.isRenderingReaderHTML = false
         }
         do {
-            try Task.checkCancellation()
+            try requireCurrentCommit()
             ReaderSnippetFinalDocumentDiagnostics.record("content-load-start", contentURL: state.pageURL)
             try await readerContent.load(url: state.pageURL, consuming: selectionIntent)
             ReaderSnippetFinalDocumentDiagnostics.record("content-load-returned", contentURL: state.pageURL)
-            try Task.checkCancellation()
+            try requireCurrentCommit()
             guard readerContent.pageURL.matchesReaderURL(state.pageURL),
                   navigationBinding != nil || !scriptCaller.canEvaluateJavaScript,
                   scriptCaller.currentJavaScriptBindingToken == navigationBinding else {
@@ -211,7 +211,7 @@ final class ReaderWebViewHandler {
                 content: content,
                 newState: state
             )
-            try Task.checkCancellation()
+            try requireCurrentCommit()
             guard ownsLoadedSelection() else { throw CancellationError() }
             if let urlChangeContext {
                 try requireCurrentURLChange(urlChangeContext)
@@ -223,7 +223,7 @@ final class ReaderWebViewHandler {
                 try await readerModeViewModel.onNavigationCommitted(
                     readerContent: readerContent, newState: state,
                     scriptCaller: scriptCaller, navigator: navigator,
-                    sourceNavigationProgressID: capturedSourceNavigationProgressID,
+                    sourceNavigationProgressID: sourceNavigationProgressID,
                     onProgressSourceTransferred: { progressSourceTransferred = true }
                 )
             }

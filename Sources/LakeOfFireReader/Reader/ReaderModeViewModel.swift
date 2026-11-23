@@ -1784,6 +1784,7 @@ public class ReaderModeViewModel: ObservableObject {
         var hasDispatchedHTML = false
         let accountSession: AccountSessionSnapshot?
         let accountBoundaryID: AccountSessionBoundaryID?
+        let sourceNavigationProgressID: UUID?
     }
 
     private var activeRendersByURL: [String: ActiveRender] = [:]
@@ -1855,9 +1856,12 @@ public class ReaderModeViewModel: ObservableObject {
         updatePendingReaderModeURL(nil)
         publishSyntheticReaderLoaderExpectation(for: nil)
         lastRenderedURL = nil
-        if let completedURL,
-           completedRenderOwner?.key == canonicalRenderKey(completedURL) {
+        if let completedURL, let completed = completedRenderOwner,
+           completed.key == canonicalRenderKey(completedURL) {
             completedRenderOwner = nil
+            if let sourceID = completed.sourceNavigationProgressID {
+                navigator?.retireReaderModeProgressSource(sourceID)
+            }
         }
         readerModeLoading(false)
     }
@@ -1888,6 +1892,15 @@ public class ReaderModeViewModel: ObservableObject {
         guard matchesPending || matchesLastRendered || matchesExpected else {
             return
         }
+        let renderKey = canonicalRenderKey(canonicalURL)
+        let completed = completedRenderOwner
+        let sourceID = activeRendersByURL[renderKey]?.sourceNavigationProgressID
+            ?? (completed?.key == renderKey ? completed?.sourceNavigationProgressID : nil)
+        defer {
+            if let sourceID, !isReaderModeLoadPending(for: canonicalURL) {
+                navigator?.completeReaderModeProgressSource(sourceID)
+            }
+        }
         if let pendingReaderModeURL, (readabilityContent?.utf8.count ?? 0) == 0 {
             if handleEmptyReadabilityCompletion(url: canonicalURL, pendingReaderModeURL: pendingReaderModeURL) {
                 return
@@ -1896,14 +1909,14 @@ public class ReaderModeViewModel: ObservableObject {
         updatePendingReaderModeURL(nil)
         publishSyntheticReaderLoaderExpectation(for: nil)
         readerModeLoading(false)
-        let renderKey = canonicalRenderKey(canonicalURL)
         if let activeRender = activeRendersByURL[renderKey],
            completedRenderOwner?.generation != activeRender.generation {
             completedRenderOwner = CompletedRenderOwner(
                 key: renderKey,
                 generation: activeRender.generation,
                 accountSession: activeRender.accountSession,
-                accountBoundaryID: activeRender.accountBoundaryID
+                accountBoundaryID: activeRender.accountBoundaryID,
+                sourceNavigationProgressID: activeRender.sourceNavigationProgressID
             )
         }
         lastRenderedURL = canonicalURL
@@ -1932,8 +1945,11 @@ public class ReaderModeViewModel: ObservableObject {
         publishSyntheticReaderLoaderExpectation(for: nil)
         if matchesLastRendered {
             lastRenderedURL = nil
-            if completedRenderOwner?.key == canonicalRenderKey(canonicalURL) {
+            if let completed = completedRenderOwner, completed.key == canonicalRenderKey(canonicalURL) {
                 completedRenderOwner = nil
+                if let sourceID = completed.sourceNavigationProgressID {
+                    navigator?.retireReaderModeProgressSource(sourceID)
+                }
             }
         }
         if matchesPending {
@@ -2808,15 +2824,18 @@ public class ReaderModeViewModel: ObservableObject {
             return false
         }
         guard !render.task.isCancelled, render.originatingContentIsCurrent(),
-              render.hasDispatchedHTML || render.documentBindingIsCurrent() else {
-            activeRendersByURL.removeValue(forKey: key)
-            if let sourceID = render.sourceNavigationProgressID {
-                navigator?.retireReaderModeProgressSource(sourceID)
-            }
-            render.task.cancel()
+              canReuseRender(render) else {
+            retireRender(forKey: key, ifOwnedBy: render.generation)
             return false
         }
         return true
+    }
+
+    private func canReuseRender(_ render: ActiveRender) -> Bool {
+        if render.hasDispatchedHTML { return true }
+        guard render.documentBindingIsCurrent() else { return false }
+        guard let sourceID = render.sourceNavigationProgressID else { return true }
+        return navigator?.canContinueReaderModeNavigation(from: sourceID) != false
     }
 
     private func ownsRender(for url: URL, generation: UUID) -> Bool {
@@ -2846,6 +2865,7 @@ public class ReaderModeViewModel: ObservableObject {
         completedRenderOwner = CompletedRenderOwner(
             key: key, generation: generation,
             accountSession: render.accountSession, accountBoundaryID: render.accountBoundaryID,
+            sourceNavigationProgressID: render.sourceNavigationProgressID,
             contentIsCurrent: contentIsCurrent
         )
     }
@@ -2870,7 +2890,7 @@ public class ReaderModeViewModel: ObservableObject {
         guard ownsRender(for: url, generation: generation) else { return }
         guard originatingContentIsCurrent(),
               let render = activeRendersByURL[canonicalRenderKey(url)],
-              render.hasDispatchedHTML || render.documentBindingIsCurrent() else {
+              canReuseRender(render) else {
             let key = canonicalRenderKey(url)
             if activeRendersByURL[key]?.hasDispatchedHTML != true {
                 retireRender(forKey: key, ifOwnedBy: generation)
@@ -2906,10 +2926,12 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func finishRenderTask(for url: URL, generation: UUID) {
         let key = canonicalRenderKey(url)
-        guard activeRendersByURL[key]?.generation == generation else { return }
-        // Dispatch or explicit frame completion already published the completed
-        // owner. Merely returning from preparation cannot manufacture readiness.
+        guard let render = activeRendersByURL[key], render.generation == generation else { return }
+        // A dispatched document keeps the progress source until it is ready.
         activeRendersByURL.removeValue(forKey: key)
+        if !render.hasDispatchedHTML, let sourceID = render.sourceNavigationProgressID {
+            navigator?.retireReaderModeProgressSource(sourceID)
+        }
     }
 
     private func cancelActiveRender(for url: URL) {
@@ -3437,37 +3459,26 @@ public class ReaderModeViewModel: ObservableObject {
             let directHTML = prepareHTMLForDirectLoad(html)
             guard ownsContent() else { return }
             let displayURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
-            if let htmlData = directHTML.data(using: .utf8) {
-                let issued = navigator.load(
-                    htmlData,
-                    mimeType: "text/html",
-                    characterEncodingName: "UTF-8",
-                    baseURL: displayURL,
-                    progressSourceID: sourceNavigationProgressID
+            guard navigator.load(
+                Data(directHTML.utf8),
+                mimeType: "text/html",
+                characterEncodingName: "UTF-8",
+                baseURL: displayURL,
+                progressSourceID: sourceNavigationProgressID
+            ) else {
+                cancelReaderModeLoad(
+                    for: contentURL,
+                    ifOwnedBy: renderGeneration,
+                    readerContent: readerContent,
+                    originatingContentIsCurrent: originatingContentIsCurrent
                 )
-                guard issued else {
-                    cancelReaderModeLoad(
-                        for: contentURL,
-                        ifOwnedBy: renderGeneration,
-                        readerContent: readerContent,
-                        originatingContentIsCurrent: originatingContentIsCurrent
-                    )
-                    return
-                }
-                recordOwnedHTMLDispatch(for: contentURL, generation: renderGeneration) { [weak self, weak readerContent] in
-                    guard let self, let readerContent else { return false }
-                    return !content.isInvalidated
-                        && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
-                        && self.readerModeContentIsCurrent(content, readerContent: readerContent)
-                }
-            } else {
-                recordOwnedHTMLDispatch(for: contentURL, generation: renderGeneration) { [weak self, weak readerContent] in
-                    guard let self, let readerContent else { return false }
-                    return !content.isInvalidated
-                        && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
-                        && self.readerModeContentIsCurrent(content, readerContent: readerContent)
-                }
-                navigator.loadHTML(directHTML, baseURL: displayURL)
+                return
+            }
+            recordOwnedHTMLDispatch(for: contentURL, generation: renderGeneration) { [weak self, weak readerContent] in
+                guard let self, let readerContent else { return false }
+                return !content.isInvalidated
+                    && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
+                    && self.readerModeContentIsCurrent(content, readerContent: readerContent)
             }
         } catch is CancellationError {
             // Retired work has no authority to clean up a newer selection.
@@ -4201,6 +4212,10 @@ public class ReaderModeViewModel: ObservableObject {
         let accountBoundaryID = readerAccountSessionAccess?.boundaryID
         let requireCurrentDocument = { @MainActor in
             try Task.checkCancellation()
+            if let sourceNavigationProgressID,
+               !navigator.canContinueReaderModeNavigation(from: sourceNavigationProgressID) {
+                throw CancellationError()
+            }
             guard self.readerAccountSessionAccess?.snapshot == accountSession,
                   self.readerAccountSessionAccess?.boundaryID == accountBoundaryID,
                   !content.isInvalidated,
