@@ -959,6 +959,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     func beginReadAloudAudioInterruption() {
+        // Retire pending preparation before it can install and autoplay a queue.
+        if isPreparingReadAloud { cancelReadAloudPreparation() }
         guard playbackSource == .aiTextToSpeech else { return }
         shouldResumeAITTSAfterAudioInterruption = isPlaying
         pauseAITTSPlayback()

@@ -6,6 +6,50 @@ import XCTest
 @MainActor
 final class ReaderReadAloudSpeechOwnershipTests: XCTestCase {
 
+    func testAudioInterruptionRetiresPreparationBeforeReadAloudSourceSwitch() throws {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        XCTAssertEqual(viewModel.playbackSource, .recordedAudio)
+        let retiredPreparation = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+
+        viewModel.beginReadAloudAudioInterruption()
+
+        XCTAssertFalse(viewModel.isPreparingReadAloud)
+        XCTAssertFalse(viewModel.isCurrentReadAloudPreparation(retiredPreparation))
+        XCTAssertNil(viewModel.readAloudErrorMessage)
+        viewModel.endReadAloudAudioInterruption(permitsResume: true)
+        XCTAssertEqual(viewModel.playbackSource, .recordedAudio)
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertTrue(synthesizer.utterances.isEmpty)
+
+        let successor = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+        viewModel.failReadAloudPreparation(retiredPreparation, message: "Retired preparation failed")
+        XCTAssertTrue(viewModel.isCurrentReadAloudPreparation(successor))
+        XCTAssertNil(viewModel.readAloudErrorMessage)
+        viewModel.completeReadAloudPreparation(retiredPreparation)
+        XCTAssertTrue(viewModel.isCurrentReadAloudPreparation(successor))
+
+        viewModel.completeReadAloudPreparation(successor)
+        XCTAssertFalse(viewModel.isPreparingReadAloud)
+    }
+
+    func testAudioInterruptionPreservesExistingReadAloudPreparationFailure() throws {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        let preparation = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+        let message = "Prepared text unavailable"
+        viewModel.failReadAloudPreparation(preparation, message: message)
+
+        viewModel.beginReadAloudAudioInterruption()
+        viewModel.endReadAloudAudioInterruption(permitsResume: false)
+
+        XCTAssertEqual(viewModel.readAloudErrorMessage, message)
+        XCTAssertFalse(viewModel.isPreparingReadAloud)
+        XCTAssertFalse(viewModel.isPlaying)
+    }
+
     func testAudioInterruptionResumesCurrentVisibleQueueOnlyOnce() {
         let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
         let lease = SpeechOwnershipTestAudioSessionLease()
