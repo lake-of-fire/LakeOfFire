@@ -3101,6 +3101,35 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     @MainActor
+    public func reloadRenderedReaderContent(
+        readerContent: ReaderContent,
+        scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator
+    ) -> Bool {
+        guard isReaderMode,
+              let lastRenderedURL,
+              lastRenderedURL.matchesReaderURL(readerContent.pageURL),
+              let content = readerContent.validCachedContent,
+              content.url.matchesReaderURL(readerContent.pageURL) else {
+            return false
+        }
+
+        // A reload is an explicit request to rebuild from the current stored
+        // source. Keep the previous rendered DOM mounted until this preparation
+        // publishes its replacement HTML.
+        readabilityContent = nil
+        readabilityContainerSelector = nil
+        readabilityContainerFrameInfo = nil
+        readerContent.isRenderingReaderHTML = true
+        showReaderView(
+            readerContent: readerContent,
+            scriptCaller: scriptCaller,
+            navigator: navigator
+        )
+        return true
+    }
+
+    @MainActor
     private func showReaderView(
         readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller,
