@@ -19,6 +19,7 @@ public final class ReaderEBookServingPackage: Sendable {
     private let snapshot: ReaderEBookPackageSnapshot
     private let source: ReaderPackageEntrySource
     private let resources: [Data: ReaderEBookPackageFingerprint.Resource]
+    private let stylesheetPaths: Set<Data>
     fileprivate let fontObfuscation: ReaderEBookFontObfuscation
 
     public init(sourceURL: URL, snapshot: ReaderEBookPackageSnapshot,
@@ -46,11 +47,29 @@ public final class ReaderEBookServingPackage: Sendable {
                   return UInt64(entry.size) == resource.byteCount
               }) else { throw ReaderEBookServingError.mismatchedResource }
         try snapshot.validateObservation(snapshot.observationToken)
-        let fontObfuscation = try ReaderEBookFontObfuscation.prepare(
-            entries: entries, packageDocumentPath: selectedPath
-        ) { path in
+        let readEntry: (String) throws -> Data = { path in
             try Self.readVerifiedEntry(subpath: path, snapshot: snapshot, source: source, resources: resources)
         }
+        // The selected OPF is already fingerprinted. Parse its authentic bytes
+        // once for MIME information and, when present, font identifiers.
+        guard let selectedResource = resources[Data(selectedPath.utf8)] else {
+            throw ReaderEBookServingError.mismatchedResource
+        }
+        let selectedPackageDocument: ReaderEBookPackageXML.Node?
+        if selectedResource.byteCount <= UInt64(ReaderEBookPackageXML.maximumDocumentBytes) {
+            selectedPackageDocument = try ReaderEBookPackageXML.document(readEntry(selectedPath))
+        } else {
+            selectedPackageDocument = nil
+        }
+        try Task.checkCancellation()
+        let stylesheetPaths = ReaderEBookStylesheetManifest.localPaths(
+            in: selectedPackageDocument,
+            packageDocumentPath: selectedPath
+        )
+        let fontObfuscation = try ReaderEBookFontObfuscation.prepare(
+            entries: entries, packageDocumentPath: selectedPath,
+            selectedPackageDocument: { selectedPackageDocument }, readEntry: readEntry
+        )
         try snapshot.validateObservation(snapshot.observationToken)
         self.fontObfuscation = fontObfuscation
         self.sourceURL = sourceURL
@@ -59,6 +78,7 @@ public final class ReaderEBookServingPackage: Sendable {
         self.source = source
         self.entries = entries
         self.resources = resources
+        self.stylesheetPaths = stylesheetPaths
     }
 
     /// Stable content observation for binding enrollment, unlike a session's
@@ -89,12 +109,18 @@ public final class ReaderEBookServingPackage: Sendable {
         return bytes
     }
 
-    fileprivate func metadata(subpath: String, data: Data) throws -> ReaderPackageEntryResponseMetadata {
+    fileprivate func metadata(
+        subpath: String, data: Data, nativeResource: Bool
+    ) throws -> ReaderPackageEntryResponseMetadata {
         try validate()
-        guard resources[Data(subpath.utf8)] != nil else {
+        let key = Data(subpath.utf8)
+        guard resources[key] != nil else {
             throw ReaderPackageEntrySourceError.entryNotFound
         }
-        return try source.mimeType(subpath: subpath, data: data)
+        let metadata = try source.mimeType(subpath: subpath, data: data)
+        guard nativeResource, metadata.mimeType == "application/octet-stream",
+              stylesheetPaths.contains(key) else { return metadata }
+        return ReaderPackageEntrySource.textResponseMetadata(mimeType: "text/css", data: data)
     }
 }
 
@@ -145,8 +171,19 @@ public final class ReaderEBookServingLease: @unchecked Sendable {
     }
 
     public func metadata(subpath: String, data: Data) throws -> ReaderPackageEntryResponseMetadata {
+        try responseMetadata(subpath: subpath, data: data, nativeResource: false)
+    }
+
+    /// Native path-backed resource requests may use selected OPF declarations.
+    public func nativeResourceMetadata(subpath: String, data: Data) throws -> ReaderPackageEntryResponseMetadata {
+        try responseMetadata(subpath: subpath, data: data, nativeResource: true)
+    }
+
+    private func responseMetadata(
+        subpath: String, data: Data, nativeResource: Bool
+    ) throws -> ReaderPackageEntryResponseMetadata {
         try validate()
-        let metadata = try package.metadata(subpath: subpath, data: data)
+        let metadata = try package.metadata(subpath: subpath, data: data, nativeResource: nativeResource)
         try validate()
         return metadata
     }

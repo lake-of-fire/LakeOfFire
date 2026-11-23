@@ -14,39 +14,46 @@ struct ReaderEBookFontObfuscation: Sendable {
     }
     private var decoders: [Data: Decoder] = [:]
     static let empty = Self()
-    private static let metadataLimit = 1_048_576
     private static let opfNamespace = "http://www.idpf.org/2007/opf"
     private static let dcNamespace = "http://purl.org/dc/elements/1.1/"
     private static let encryptionNamespace = "http://www.w3.org/2001/04/xmlenc#"
 
     static func prepare(entries: [ReaderPackageEntryMetadata], packageDocumentPath: String?,
+                        selectedPackageDocument: (() -> ReaderEBookPackageXML.Node?)? = nil,
                         readEntry: (String) throws -> Data) throws -> Self {
         let sizes = Dictionary(entries.map { (Data($0.path.utf8), $0.size) }, uniquingKeysWith: { first, _ in first })
         func metadata(_ path: String) throws -> Data? {
             try Task.checkCancellation()
-            guard let size = sizes[Data(path.utf8)], size >= 0, size <= metadataLimit else { return nil }
+            guard let size = sizes[Data(path.utf8)], size >= 0,
+                  size <= ReaderEBookPackageXML.maximumDocumentBytes else { return nil }
             let data = try readEntry(path)
-            guard data.count <= metadataLimit else { return nil }
+            guard data.count <= ReaderEBookPackageXML.maximumDocumentBytes else { return nil }
             return data
         }
         guard let encryptionData = try metadata("META-INF/encryption.xml"),
-              let encryption = try document(encryptionData),
+              let encryption = try ReaderEBookPackageXML.document(encryptionData),
               encryption.name == "encryption",
               encryption.namespace == "urn:oasis:names:tc:opendocument:xmlns:container" else { return .empty }
-        let selectedPath: String
-        if let packageDocumentPath { selectedPath = packageDocumentPath }
-        else {
-            // Legacy Foliate selects the first declared rendition. Do not guess
-            // from arbitrary .opf filenames or use another generation's OPF.
-            guard let container = try metadata("META-INF/container.xml"),
-                  let paths = try? ReaderEBookRenditionSelection.packageDocuments(in: container),
-                  let first = paths.first else {
-                try Task.checkCancellation()
-                return .empty
+        let opf: ReaderEBookPackageXML.Node?
+        if let selectedPackageDocument {
+            opf = selectedPackageDocument()
+        } else {
+            let selectedPath: String
+            if let packageDocumentPath { selectedPath = packageDocumentPath }
+            else {
+                // Legacy Foliate selects the first declared rendition. Do not
+                // guess from .opf filenames or another generation's document.
+                guard let container = try metadata("META-INF/container.xml"),
+                      let paths = try? ReaderEBookRenditionSelection.packageDocuments(in: container),
+                      let first = paths.first else {
+                    try Task.checkCancellation()
+                    return .empty
+                }
+                selectedPath = first
             }
-            selectedPath = first
+            opf = try metadata(selectedPath).flatMap { try ReaderEBookPackageXML.document($0) }
         }
-        guard let opfData = try metadata(selectedPath), let opf = try document(opfData),
+        guard let opf,
               opf.name == "package", opf.namespace == opfNamespace,
               let metadataNode = opf.children.first(where: { $0.isElement("metadata", opfNamespace) }) else { return .empty }
         let identifiers = metadataNode.children.filter { $0.isElement("identifier", dcNamespace) }
@@ -72,7 +79,9 @@ struct ReaderEBookFontObfuscation: Sendable {
             guard cipherData.count == 1 else { continue }
             let references = cipherData[0].children.filter { $0.isElement("CipherReference", encryptionNamespace) }
             guard references.count == 1, let uri = references[0].attributes["URI"],
-                  let path = resourcePath(uri), sizes[Data(path.utf8)] != nil else { continue }
+                  !uri.contains(":"),
+                  let path = ReaderEBookPackageXML.resourcePath(uri),
+                  sizes[Data(path.utf8)] != nil else { continue }
             let pathKey = Data(path.utf8)
             // Conflicting/stacked declarations are not a supported XOR format.
             // Never choose a key based on declaration order.
@@ -111,15 +120,17 @@ struct ReaderEBookFontObfuscation: Sendable {
         }
         return key.count == 16 ? key : nil
     }
+}
 
-    /// OCF CipherReference URIs are relative to the container root, not OPF or
-    /// META-INF. Decode each component once; encoded separators never alias a
-    /// different entry. A literal %2F filename must be referenced as %252F.
-    private static func resourcePath(_ uri: String) -> String? {
-        guard !uri.isEmpty, !uri.hasPrefix("//"), !uri.contains("?"), !uri.contains("#"),
-              !uri.contains(":") else { return nil }
+enum ReaderEBookPackageXML {
+    static let maximumDocumentBytes = 1_048_576
+
+    /// Resolve a local archive reference once, relative to the owning document
+    /// or the container root. Encoded separators never alias a different entry.
+    static func resourcePath(_ uri: String, relativeTo directory: [String] = []) -> String? {
+        guard !uri.isEmpty, !uri.hasPrefix("//"), !uri.contains("?"), !uri.contains("#") else { return nil }
         let path = uri.hasPrefix("/") ? String(uri.dropFirst()) : uri
-        var components: [String] = []
+        var components = uri.hasPrefix("/") ? [] : directory
         for encoded in path.split(separator: "/", omittingEmptySubsequences: false) {
             if encoded == "." { continue }
             if encoded == ".." {
@@ -136,7 +147,7 @@ struct ReaderEBookFontObfuscation: Sendable {
         return components.isEmpty ? nil : components.joined(separator: "/")
     }
 
-    private final class Node {
+    final class Node {
         let name: String
         let namespace: String?
         let attributes: [String: String]
@@ -185,8 +196,9 @@ struct ReaderEBookFontObfuscation: Sendable {
         func parser(_ parser: XMLParser, resolveExternalEntityName: String, systemID: String?) -> Data? { reject(parser); return nil }
     }
 
-    private static func document(_ data: Data) throws -> Node? {
+    static func document(_ data: Data) throws -> Node? {
         try Task.checkCancellation()
+        guard data.count <= maximumDocumentBytes else { return nil }
         let delegate = DocumentParser(), parser = XMLParser(data: data)
         parser.shouldProcessNamespaces = true
         parser.shouldResolveExternalEntities = false

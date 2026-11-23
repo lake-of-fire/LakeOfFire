@@ -248,8 +248,12 @@ public struct ReaderPackageEntrySource: Sendable {
     ) throws -> ReaderPackageEntryResponseMetadata {
         let metadata = try mimeType(subpath: rawSubpath)
         guard metadata.textEncodingName != nil else { return metadata }
+        return Self.textResponseMetadata(mimeType: metadata.mimeType, data: data)
+    }
+
+    static func textResponseMetadata(mimeType: String, data: Data) -> ReaderPackageEntryResponseMetadata {
         return ReaderPackageEntryResponseMetadata(
-            mimeType: metadata.mimeType,
+            mimeType: mimeType,
             textEncodingName: Self.detectedTextEncoding(in: data).ianaName
         )
     }
