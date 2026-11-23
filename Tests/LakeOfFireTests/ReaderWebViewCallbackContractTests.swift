@@ -1752,6 +1752,37 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         }
     }
 
+    func testStaleCommittedLoaderReceiptPreservesSameURLRetry() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let source = try XCTUnwrap(URL(string: "reader-file://file/load/local/retry.html"))
+        let record = HistoryRecord()
+        record.url = source
+        record.title = "Retry"
+        record.html = "<html><body>Retry</body></html>"
+        record.updateCompoundKey()
+        fixture.readerContent.preloadResolvedContent(record, for: source)
+        try await fixture.readerContent.load(url: source)
+        let selectionID = fixture.readerContent.currentSelectionID
+        fixture.handler.navigator.load(URLRequest(url: source))
+        let retryIdentity = try XCTUnwrap(fixture.handler.navigator.issuedNavigationIdentity)
+        let retryIntent = fixture.handler.navigator.navigationIntent
+        var stale = WebViewState.empty
+        var loaderComponents = URLComponents()
+        loaderComponents.scheme = "internal"
+        loaderComponents.host = "local"
+        loaderComponents.path = "/load/reader"
+        loaderComponents.queryItems = [URLQueryItem(name: "reader-url", value: source.absoluteString)]
+        stale.pageURL = try XCTUnwrap(loaderComponents.url)
+        stale.committedNavigationProgressID = UUID()
+
+        fixture.handler.onNavigationCommitted(state: stale)
+
+        XCTAssertEqual(fixture.handler.navigator.issuedNavigationIdentity, retryIdentity)
+        XCTAssertTrue(fixture.handler.navigator.isCurrent(retryIntent))
+        XCTAssertEqual(fixture.readerContent.currentSelectionID, selectionID)
+        XCTAssertNil(fixture.taskManager.onNavigationCommittedTask)
+    }
+
     func testSameBindingRowReplacementDoesNotManufactureCompletedRender() async throws {
         let fixture = makeReaderWebViewHandlerFixture()
         let renderingRealm = try makeReaderHTMLRenderingRealm()

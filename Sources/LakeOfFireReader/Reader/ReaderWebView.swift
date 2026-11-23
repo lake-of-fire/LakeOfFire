@@ -141,7 +141,7 @@ final class ReaderWebViewHandler {
         let requireCurrentCommit = { @MainActor in
             try Task.checkCancellation()
             if let sourceNavigationProgressID,
-               !navigator.canContinueReaderModeNavigation(from: sourceNavigationProgressID) {
+               !self.navigator.canContinueReaderModeNavigation(from: sourceNavigationProgressID) {
                 throw CancellationError()
             }
         }
@@ -316,6 +316,11 @@ final class ReaderWebViewHandler {
                 forCommittedURL: state.pageURL
             )
             : nil
+        if state.pageURL.isReaderURLLoaderURL,
+           state.committedNavigationProgressID != nil,
+           sourceNavigationProgressID == nil {
+            return
+        }
         readerModeViewModel.bindManagedFontsToPreparedReaderDocument(
             pageURL: state.pageURL, scriptCaller: scriptCaller, navigator: navigator
         )
@@ -326,6 +331,8 @@ final class ReaderWebViewHandler {
                     state: state,
                     sourceNavigationProgressID: sourceNavigationProgressID
                 )
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 if !Task.isCancelled { self.readerContent.withdrawSelectionIntent() }
                 throw error
