@@ -29,8 +29,189 @@ private final class CategoryPresentationCommitCounter: @unchecked Sendable {
     }
 }
 
+private actor LibraryOPMLImportTestGate {
+    struct Invocation: Equatable, Sendable {
+        let fileURLs: [URL]
+        let realmIdentifier: String?
+    }
+
+    private(set) var invocations = [Invocation]()
+    private var waiters = [CheckedContinuation<Void, Never>]()
+    private var isReleased = false
+
+    func run(
+        fileURLs: [URL], realmIdentifier: String?,
+        started: XCTestExpectation, result: OPMLImportResult
+    ) async -> OPMLImportResult {
+        invocations.append(Invocation(fileURLs: fileURLs, realmIdentifier: realmIdentifier))
+        if invocations.count == 1 { started.fulfill() }
+        if !isReleased {
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        return result
+    }
+
+    func release() {
+        isReleased = true
+        let currentWaiters = waiters
+        waiters.removeAll()
+        for waiter in currentWaiters { waiter.resume() }
+    }
+}
+
 @MainActor
 final class LibraryCategoryPresentationTests: XCTestCase {
+    func testOPMLImportUsesCapturedRealmAndPublishesPartialResult() async throws {
+        let priorConfiguration = LibraryDataManager.realmConfiguration
+        let capturedConfiguration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        defer { LibraryDataManager.realmConfiguration = priorConfiguration }
+        let completed = URL(fileURLWithPath: "/accepted.opml")
+        let malformed = URL(fileURLWithPath: "/malformed.opml")
+        let selection = [completed, malformed]
+        let result = OPMLImportResult(
+            totalFileCount: selection.count, completedFileURLs: [completed],
+            failures: [.init(fileURL: malformed, message: "Malformed OPML")], wasCancelled: false
+        )
+        let started = expectation(description: "The OPML importer receives the captured selection")
+        let gate = LibraryOPMLImportTestGate()
+        let model = LibraryCategoriesViewModel(
+            observesRealm: false, realmConfiguration: capturedConfiguration,
+            opmlImporter: { urls, configuration in
+                await gate.run(fileURLs: urls, realmIdentifier: configuration.inMemoryIdentifier,
+                               started: started, result: result)
+            }
+        )
+        LibraryDataManager.realmConfiguration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+
+        let emptyAttempt = model.importOPML(fileURLs: [])
+        joinOPMLImportOnTeardown(emptyAttempt, gates: [gate])
+        XCTAssertNil(emptyAttempt)
+        XCTAssertEqual(model.opmlImportState, .idle)
+        let task = try XCTUnwrap(model.importOPML(fileURLs: selection))
+        joinOPMLImportOnTeardown(task, gates: [gate])
+        guard case let .importing(id, false) = model.opmlImportState else {
+            XCTFail("The admitted selection should be importing")
+            return
+        }
+        await fulfillment(of: [started], timeout: 5)
+        let duplicateAttempt = model.importOPML(fileURLs: [malformed])
+        joinOPMLImportOnTeardown(duplicateAttempt, gates: [gate])
+        XCTAssertNil(duplicateAttempt)
+        await gate.release()
+        await task.value
+
+        let invocations = await gate.invocations
+        XCTAssertEqual(invocations, [.init(fileURLs: selection,
+                                          realmIdentifier: capturedConfiguration.inMemoryIdentifier)])
+        XCTAssertEqual(model.opmlImportState, .finished(id: id, result: result))
+        model.dismissOPMLImportResult(id)
+        XCTAssertEqual(model.opmlImportState, .idle)
+    }
+
+    func testOPMLImportCancellationJoinsWorkerAndRetiredActionsDoNotAffectNextSelection() async throws {
+        let firstURL = URL(fileURLWithPath: "/first.opml")
+        let secondURL = URL(fileURLWithPath: "/second.opml")
+        let cancelledResult = OPMLImportResult(
+            totalFileCount: 1, completedFileURLs: [], failures: [], wasCancelled: true
+        )
+        let completedResult = OPMLImportResult(
+            totalFileCount: 1, completedFileURLs: [secondURL], failures: [], wasCancelled: false
+        )
+        let firstStarted = expectation(description: "The first OPML import is awaiting completion")
+        let secondStarted = expectation(description: "A subsequent OPML import has started")
+        let firstGate = LibraryOPMLImportTestGate()
+        let secondGate = LibraryOPMLImportTestGate()
+        let model = LibraryCategoriesViewModel(
+            observesRealm: false,
+            opmlImporter: { urls, configuration in
+                if urls == [firstURL] {
+                    return await firstGate.run(fileURLs: urls, realmIdentifier: configuration.inMemoryIdentifier,
+                                               started: firstStarted, result: cancelledResult)
+                }
+                return await secondGate.run(fileURLs: urls, realmIdentifier: configuration.inMemoryIdentifier,
+                                            started: secondStarted, result: completedResult)
+            }
+        )
+
+        let firstTask = try XCTUnwrap(model.importOPML(fileURLs: [firstURL]))
+        joinOPMLImportOnTeardown(firstTask, gates: [firstGate, secondGate])
+        guard case let .importing(firstID, false) = model.opmlImportState else {
+            XCTFail("The first selection should be importing")
+            return
+        }
+        await fulfillment(of: [firstStarted], timeout: 5)
+        let firstInvocations = await firstGate.invocations
+        guard !firstInvocations.isEmpty else { return }
+        model.cancelOPMLImport(firstID)
+        XCTAssertTrue(firstTask.isCancelled)
+        let earlyAttempt = model.importOPML(fileURLs: [secondURL])
+        joinOPMLImportOnTeardown(earlyAttempt, gates: [firstGate, secondGate])
+        XCTAssertNil(earlyAttempt)
+        let earlyInvocations = await secondGate.invocations
+        XCTAssertTrue(earlyInvocations.isEmpty)
+        XCTAssertEqual(model.opmlImportState, .importing(id: firstID, isCancelling: true))
+        await firstGate.release()
+        await firstTask.value
+        XCTAssertEqual(model.opmlImportState, .finished(id: firstID, result: cancelledResult))
+
+        let secondTask = try XCTUnwrap(model.importOPML(fileURLs: [secondURL]))
+        joinOPMLImportOnTeardown(secondTask, gates: [firstGate, secondGate])
+        guard case let .importing(secondID, false) = model.opmlImportState else {
+            XCTFail("The next selection should be importing")
+            return
+        }
+        XCTAssertNotEqual(firstID, secondID)
+        await fulfillment(of: [secondStarted], timeout: 5)
+        model.cancelOPMLImport(firstID)
+        XCTAssertFalse(secondTask.isCancelled)
+        XCTAssertEqual(model.opmlImportState, .importing(id: secondID, isCancelling: false))
+        await secondGate.release()
+        await secondTask.value
+        model.dismissOPMLImportResult(firstID)
+        XCTAssertEqual(model.opmlImportState, .finished(id: secondID, result: completedResult))
+        model.dismissOPMLImportResult(secondID)
+        XCTAssertEqual(model.opmlImportState, .idle)
+    }
+
+    func testDroppingOPMLImportOwnerCancelsItsWorkerAndLeavesReplacementIdle() async throws {
+        let fileURL = URL(fileURLWithPath: "/former-selection.opml")
+        let completedResult = OPMLImportResult(
+            totalFileCount: 1, completedFileURLs: [fileURL], failures: [], wasCancelled: false
+        )
+        let started = expectation(description: "The retiring owner's import was admitted")
+        let gate = LibraryOPMLImportTestGate()
+        var owner: LibraryCategoriesViewModel? = LibraryCategoriesViewModel(
+            observesRealm: false,
+            opmlImporter: { urls, configuration in
+                await gate.run(fileURLs: urls, realmIdentifier: configuration.inMemoryIdentifier,
+                               started: started, result: completedResult)
+            }
+        )
+        weak var retiredOwner = owner
+        let task = try XCTUnwrap(owner?.importOPML(fileURLs: [fileURL]))
+        joinOPMLImportOnTeardown(task, gates: [gate])
+        await fulfillment(of: [started], timeout: 5)
+
+        owner = nil
+        XCTAssertNil(retiredOwner)
+        XCTAssertTrue(task.isCancelled)
+        let replacement = LibraryCategoriesViewModel(observesRealm: false)
+        await gate.release()
+        await task.value
+        XCTAssertEqual(replacement.opmlImportState, .idle)
+    }
+
+    private func joinOPMLImportOnTeardown(
+        _ task: Task<Void, Never>?, gates: [LibraryOPMLImportTestGate]
+    ) {
+        guard let task else { return }
+        addTeardownBlock {
+            task.cancel()
+            for gate in gates { await gate.release() }
+            await task.value
+        }
+    }
+
     func testCreatedCategoryMovesToArchiveAndDeletesThroughRetainedDisplayedIdentity() async throws {
         let (realm, restoreConfiguration) = try makeRealm()
         defer { restoreConfiguration() }

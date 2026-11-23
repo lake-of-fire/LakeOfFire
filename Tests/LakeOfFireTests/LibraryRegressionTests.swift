@@ -315,9 +315,13 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         LibraryDataManager.realmConfiguration = replacementConfiguration
         let manager = LibraryDataManager()
         defer { manager.realmCancellables.forEach { $0.cancel() } }
-        await manager.importOPML(
+        let result = await manager.importOPMLWithResult(
             fileURLs: [firstURL, secondURL], realmConfiguration: capturedConfiguration
         )
+        XCTAssertEqual(result.totalFileCount, 2)
+        XCTAssertEqual(result.completedFileURLs, [firstURL, secondURL])
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertFalse(result.wasCancelled)
 
         for categoryID in [firstCategoryID, secondCategoryID] {
             XCTAssertNotNil(capturedRealm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
@@ -329,6 +333,70 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         }
         XCTAssertFalse(capturedRealm.objects(BigSyncPendingMutation.self).isEmpty)
         XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @RealmBackgroundActor
+    func testMultiFileOPMLReportsMalformedFileAndCompletesRemainingFiles() async throws {
+        let configuration = makeOPMLConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let firstURL = directory.appendingPathComponent("first.opml")
+        let malformedURL = directory.appendingPathComponent("malformed.opml")
+        let lastURL = directory.appendingPathComponent("last.opml")
+        let firstCategoryID = UUID()
+        let lastCategoryID = UUID()
+        let firstFeedID = UUID()
+        let lastFeedID = UUID()
+        let validFiles = [
+            (url: firstURL, categoryID: firstCategoryID, feedID: firstFeedID, title: "First"),
+            (url: lastURL, categoryID: lastCategoryID, feedID: lastFeedID, title: "Last"),
+        ]
+        for file in validFiles {
+            let xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <opml version="2.0"><head/><body>
+              <outline text="\(file.title)" uuid="\(file.categoryID.uuidString)">
+                <outline text="\(file.title) feed" uuid="\(file.feedID.uuidString)" xmlUrl="https://example.com/\(file.title).xml"/>
+              </outline>
+            </body></opml>
+            """
+            try xml.write(to: file.url, atomically: true, encoding: .utf8)
+        }
+        try "<opml><body><outline></body></opml>"
+            .write(to: malformedURL, atomically: true, encoding: .utf8)
+
+        let result = await LibraryDataManager.shared.importOPMLWithResult(
+            fileURLs: [firstURL, malformedURL, lastURL], realmConfiguration: configuration
+        )
+
+        XCTAssertEqual(result.totalFileCount, 3)
+        XCTAssertEqual(result.completedFileURLs, [firstURL, lastURL])
+        XCTAssertFalse(result.wasCancelled)
+        let failure = try XCTUnwrap(result.failures.first)
+        XCTAssertEqual(result.failures.count, 1)
+        XCTAssertEqual(failure.fileURL, malformedURL)
+        XCTAssertFalse(failure.message.isEmpty)
+
+        let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+        XCTAssertEqual(Array(library.categoryIDs), [firstCategoryID, lastCategoryID])
+        XCTAssertEqual(realm.objects(FeedCategory.self).count, 2)
+        XCTAssertEqual(realm.objects(Feed.self).count, 2)
+        let generations = opmlJournalGenerations(in: realm)
+        XCTAssertNotNil(generations["LibraryConfiguration.\(library.id)"])
+        for file in validFiles {
+            XCTAssertEqual(realm.object(ofType: FeedCategory.self, forPrimaryKey: file.categoryID)?.title, file.title)
+            XCTAssertEqual(realm.object(ofType: Feed.self, forPrimaryKey: file.feedID)?.categoryID, file.categoryID)
+            XCTAssertNotNil(generations["FeedCategory.\(file.categoryID)"])
+            XCTAssertNotNil(generations["Feed.\(file.feedID)"])
+        }
     }
 
     @RealmBackgroundActor
@@ -424,8 +492,12 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         importTask.cancel()
         LibraryDataManager.realmConfiguration = replacementConfiguration
         await boundary.resume()
-        await importTask.value
+        let result = await importTask.value
         XCTAssertTrue(importTask.isCancelled)
+        XCTAssertTrue(result.wasCancelled)
+        XCTAssertEqual(result.totalFileCount, 2)
+        XCTAssertEqual(result.completedFileURLs, [firstURL])
+        XCTAssertTrue(result.failures.isEmpty)
         let completedFileURLs = await boundary.completedFileURLs
         XCTAssertEqual(completedFileURLs, [firstURL])
 
@@ -465,7 +537,7 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
 
         // The canceled operation has fully returned. A new operation on the same
         // manager can finish the remaining file using the captured Realm.
-        await manager.importOPML(fileURLs: [secondURL], realmConfiguration: capturedConfiguration)
+        let _: Void = await manager.importOPML(fileURLs: [secondURL], realmConfiguration: capturedConfiguration)
         XCTAssertNotNil(reopenedRealm.object(ofType: FeedCategory.self, forPrimaryKey: secondCategoryID))
         XCTAssertNotNil(reopenedRealm.object(ofType: Feed.self, forPrimaryKey: secondFeedID))
         XCTAssertNotNil(reopenedRealm.object(

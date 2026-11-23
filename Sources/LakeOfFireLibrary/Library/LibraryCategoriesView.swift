@@ -22,6 +22,10 @@ let libraryCategoriesQueue = DispatchQueue(label: "LibraryCategories")
 @MainActor
 class LibraryCategoriesViewModel: ObservableObject {
     let realmConfiguration: Realm.Configuration
+    private let opmlImporter: @Sendable ([URL], Realm.Configuration) async -> OPMLImportResult
+    private var activeOPMLImport: (id: UUID, task: Task<Void, Never>)?
+
+    @Published private(set) var opmlImportState: LibraryOPMLImportState = .idle
 
     @Published var categories: [FeedCategory]? = nil
     @Published var userLibraryCategories: [FeedCategory]? = nil
@@ -35,9 +39,15 @@ class LibraryCategoriesViewModel: ObservableObject {
     
     init(
         observesRealm: Bool = true,
-        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration,
+        opmlImporter: @escaping @Sendable ([URL], Realm.Configuration) async -> OPMLImportResult = { urls, configuration in
+            await LibraryDataManager.shared.importOPMLWithResult(
+                fileURLs: urls, realmConfiguration: configuration
+            )
+        }
     ) {
         self.realmConfiguration = realmConfiguration
+        self.opmlImporter = opmlImporter
         guard observesRealm else { return }
         Task { @RealmBackgroundActor [weak self] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
@@ -66,6 +76,43 @@ class LibraryCategoriesViewModel: ObservableObject {
                 })
                 .store(in: &cancellables)
         }
+    }
+
+    deinit {
+        activeOPMLImport?.task.cancel()
+    }
+
+    @discardableResult
+    func importOPML(fileURLs: [URL]) -> Task<Void, Never>? {
+        guard !fileURLs.isEmpty, activeOPMLImport == nil else { return nil }
+        let id = UUID()
+        let task = Task { @MainActor [weak self, realmConfiguration, opmlImporter] in
+            let result = await opmlImporter(fileURLs, realmConfiguration)
+            guard let self, self.activeOPMLImport?.id == id else { return }
+            // Keep admission closed while publishing the completed result.
+            // A new selection can start only after this worker has returned.
+            self.opmlImportState = .finished(id: id, result: result)
+            self.activeOPMLImport = nil
+        }
+        activeOPMLImport = (id, task)
+        opmlImportState = .importing(id: id, isCancelling: false)
+        return task
+    }
+
+    func cancelOPMLImport(_ id: UUID) {
+        guard let activeOPMLImport, activeOPMLImport.id == id,
+              case .importing = opmlImportState else { return }
+        activeOPMLImport.task.cancel()
+        // Cancellation preserves committed work. Keep the picker disabled
+        // until the importer finishes its current owned operation and returns.
+        opmlImportState = .importing(id: id, isCancelling: true)
+    }
+
+    func dismissOPMLImportResult(_ id: UUID) {
+        guard activeOPMLImport == nil,
+              case .finished(let currentID, _) = opmlImportState,
+              currentID == id else { return }
+        opmlImportState = .idle
     }
         
     @discardableResult
@@ -337,18 +384,67 @@ struct LibraryCategoriesView: View {
         .disabled(libraryManagerViewModel.exportedOPML == nil)
 #endif
         FilePicker(types: [UTType(exportedAs: "public.opml"), .xml], allowMultiple: true, afterPresented: nil, onPicked: { urls in
-            let realmConfiguration = viewModel.realmConfiguration
-            Task.detached {
-                await LibraryDataManager.shared.importOPML(
-                    fileURLs: urls, realmConfiguration: realmConfiguration
-                )
-            }
+            viewModel.importOPML(fileURLs: urls)
         }, label: {
             Label("Import My Library…", systemImage: "square.and.arrow.down")
 #if os(macOS)
                 .frame(maxWidth: .infinity)
 #endif
         })
+        .disabled(viewModel.opmlImportState.isImporting)
+        .accessibilityIdentifier("library-opml-import")
+
+        // Inline feedback survives the picker's callback-before-dismissal
+        // ordering without opening another modal presentation over it.
+        switch viewModel.opmlImportState {
+        case .idle:
+            EmptyView()
+        case .importing(let id, let isCancelling):
+            HStack {
+                ProgressView {
+                    if isCancelling {
+                        Text("Stopping import…")
+                    } else {
+                        Text("Importing library…")
+                    }
+                }
+                Spacer()
+                Button("Cancel") { viewModel.cancelOPMLImport(id) }
+                    .buttonStyle(.borderless)
+                    .disabled(isCancelling)
+                    .accessibilityIdentifier("library-opml-import-cancel")
+            }
+        case .finished(let id, let result):
+            VStack(alignment: .leading, spacing: 8) {
+                if result.wasCancelled {
+                    Text("Import stopped")
+                        .font(.headline)
+                } else if !result.failures.isEmpty {
+                    Text("Import finished with errors")
+                        .font(.headline)
+                } else {
+                    Text("Import finished")
+                        .font(.headline)
+                }
+                Text("\(result.completedFileURLs.count) of \(result.totalFileCount) files finished importing.")
+                if !result.failures.isEmpty {
+                    Text("Files that didn’t finish importing:")
+                    Text(result.failures.map { "\($0.fileURL.lastPathComponent): \($0.message)" }
+                        .joined(separator: "\n\n"))
+                        .font(.callout)
+                }
+                if result.wasCancelled || !result.failures.isEmpty {
+                    Text("Changes already made were kept.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Dismiss") { viewModel.dismissOPMLImportResult(id) }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("library-opml-import-dismiss")
+            }
+            .id(id)
+            .accessibilityIdentifier("library-opml-import-result")
+        }
     }
     
     @ViewBuilder var userLibraryView: some View {

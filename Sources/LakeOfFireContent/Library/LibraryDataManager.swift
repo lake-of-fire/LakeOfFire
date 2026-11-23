@@ -903,6 +903,14 @@ public class LibraryDataManager: NSObject {
         fileURLs: [URL],
         realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
     ) async {
+        _ = await importOPMLWithResult(fileURLs: fileURLs, realmConfiguration: realmConfiguration)
+    }
+
+    /// Continues past individual file errors and returns the outcome for the entire selection.
+    public func importOPMLWithResult(
+        fileURLs: [URL],
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async -> OPMLImportResult {
         await importOPML(
             fileURLs: fileURLs,
             realmConfiguration: realmConfiguration,
@@ -912,22 +920,36 @@ public class LibraryDataManager: NSObject {
 
     // Keep the completed-file boundary observable without replacing the real
     // single-file importer or relying on Realm notification timing in tests.
+    @discardableResult
     func importOPML(
         fileURLs: [URL],
         realmConfiguration: Realm.Configuration,
         afterImportingFile: (@Sendable (URL) async -> Void)?
-    ) async {
+    ) async -> OPMLImportResult {
+        var completedFileURLs: [URL] = []
+        var failures: [OPMLImportResult.Failure] = []
+        var wasCancelled = false
         for fileURL in fileURLs {
             do {
                 try Task.checkCancellation()
                 try await importOPML(fileURL: fileURL, realmConfiguration: realmConfiguration)
+                completedFileURLs.append(fileURL)
                 await afterImportingFile?(fileURL)
             } catch is CancellationError {
-                return
+                wasCancelled = true
+                break
             } catch {
-                print("Failed to import OPML from local file \(fileURL.absoluteString). Error: \(error.localizedDescription)")
+                let message = error.localizedDescription
+                failures.append(.init(fileURL: fileURL, message: message))
+                print("Failed to import OPML from local file \(fileURL.absoluteString). Error: \(message)")
             }
         }
+        return OPMLImportResult(
+            totalFileCount: fileURLs.count,
+            completedFileURLs: completedFileURLs,
+            failures: failures,
+            wasCancelled: wasCancelled || Task.isCancelled
+        )
     }
     
     @RealmBackgroundActor
