@@ -4,27 +4,46 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
 
 async function checkDefinitionReadOwnership(makeLoader, texts, section, definitionPath) {
     const existingURLs = new Set(globalThis.__manabiBlobResourceMap?.keys())
-    const hasNewURLs = () =>
-        [...(globalThis.__manabiBlobResourceMap?.keys() ?? [])].some(url => !existingURLs.has(url))
+    const newURLs = () =>
+        [...(globalThis.__manabiBlobResourceMap?.keys() ?? [])].filter(url => !existingURLs.has(url))
+    const checkRevoked = async (urls, message) => {
+        const results = await Promise.allSettled(urls.map(url => fetch(url)))
+        check(results.every(result => result.status === 'rejected'), message)
+    }
     const readFailure = new Error('Controlled SVG definition read failure')
     let definitionReads = 0
+    let beforeFailure = []
     const retrying = makeLoader(async href => {
-        if (href === definitionPath && ++definitionReads === 1) throw readFailure
+        if (href === definitionPath && ++definitionReads === 1) {
+            beforeFailure = newURLs()
+            throw readFailure
+        }
         return texts.get(href)
     })
     try {
         const [failed] = await Promise.allSettled([retrying.loadItem(section)])
         check(failed.status === 'rejected' && failed.reason === readFailure,
             'A failed packaged definition reaches the section caller')
-        check(!hasNewURLs(), 'A failed section releases its previously loaded SVG resources')
+        check(beforeFailure.length > 0, 'The section publishes earlier SVG resources before the controlled failure')
+        await checkRevoked(beforeFailure, 'A failed section revokes its earlier SVG resources')
+        check(newURLs().length === 0, 'A failed section leaves no SVG resource publications')
 
         const [first, second] = await Promise.all([retrying.loadItem(section), retrying.loadItem(section)])
         check(first?.startsWith('blob:') && first === second && definitionReads === 2,
             'Concurrent retry callers share the section and its retried definition')
+        const retrySource = await (await fetch(first)).text()
+        const retryDoc = new DOMParser().parseFromString(retrySource, 'image/svg+xml')
+        const definitionHref = retryDoc.getElementById('linear')?.getAttribute('href')
+        check(definitionHref?.startsWith('blob:') && definitionHref.endsWith('#linearSource'),
+            'The retried section references its packaged SVG definition Blob')
+        const sharedURLs = [second, definitionHref.split('#')[0]]
         retrying.unloadItem(section)
-        check((await fetch(second)).ok, 'The remaining retry caller retains the section')
+        const retained = await Promise.all(sharedURLs.map(url => fetch(url)))
+        check(retained.every(response => response.ok),
+            'The remaining retry caller retains the section and its definition')
         retrying.unloadItem(section)
-        check(!hasNewURLs(), 'The last retry caller releases the complete SVG resource tree')
+        await checkRevoked(sharedURLs, 'The last retry caller revokes the section and its definition')
+        check(newURLs().length === 0, 'The last retry caller leaves no SVG resource publications')
     } finally { retrying.destroy() }
 
     let beginDefinition
@@ -33,18 +52,24 @@ async function checkDefinitionReadOwnership(makeLoader, texts, section, definiti
     const heldDefinition = new Promise(resolve => { finishDefinition = resolve })
     const retiring = makeLoader(async href => {
         if (href !== definitionPath) return texts.get(href)
-        beginDefinition()
+        beginDefinition(newURLs())
         return heldDefinition
     })
     try {
         const pending = retiring.loadItem(section)
-        check(await Promise.race([started.then(() => true), pending.then(() => false)]),
+        const beforeDestroy = await Promise.race([started, pending.then(() => null)])
+        check(beforeDestroy !== null,
             'The section is still loading when it reaches the held SVG definition')
+        check(beforeDestroy.length > 0, 'The held section has already published earlier SVG resources')
         retiring.destroy()
         finishDefinition(texts.get(definitionPath))
-        check(!await pending && !hasNewURLs(),
+        check(!await pending && newURLs().length === 0,
             'A retired section cannot publish its held SVG definition or retain earlier resources')
-    } finally { retiring.destroy() }
+        await checkRevoked(beforeDestroy, 'Destroying a held section revokes its earlier SVG resources')
+    } finally {
+        retiring.destroy()
+        finishDefinition(texts.get(definitionPath))
+    }
 }
 
 // Run in a browser: parsing, XML serialization, blob fetching and image decoding
