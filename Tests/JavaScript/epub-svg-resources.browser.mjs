@@ -2,6 +2,51 @@ import { Loader } from '../../Sources/LakeOfFireReader/Resources/Resources/folia
 
 const check = (condition, message) => { if (!condition) throw new Error(message) }
 
+async function checkDefinitionReadOwnership(makeLoader, texts, section, definitionPath) {
+    const existingURLs = new Set(globalThis.__manabiBlobResourceMap?.keys())
+    const hasNewURLs = () =>
+        [...(globalThis.__manabiBlobResourceMap?.keys() ?? [])].some(url => !existingURLs.has(url))
+    const readFailure = new Error('Controlled SVG definition read failure')
+    let definitionReads = 0
+    const retrying = makeLoader(async href => {
+        if (href === definitionPath && ++definitionReads === 1) throw readFailure
+        return texts.get(href)
+    })
+    try {
+        const [failed] = await Promise.allSettled([retrying.loadItem(section)])
+        check(failed.status === 'rejected' && failed.reason === readFailure,
+            'A failed packaged definition reaches the section caller')
+        check(!hasNewURLs(), 'A failed section releases its previously loaded SVG resources')
+
+        const [first, second] = await Promise.all([retrying.loadItem(section), retrying.loadItem(section)])
+        check(first?.startsWith('blob:') && first === second && definitionReads === 2,
+            'Concurrent retry callers share the section and its retried definition')
+        retrying.unloadItem(section)
+        check((await fetch(second)).ok, 'The remaining retry caller retains the section')
+        retrying.unloadItem(section)
+        check(!hasNewURLs(), 'The last retry caller releases the complete SVG resource tree')
+    } finally { retrying.destroy() }
+
+    let beginDefinition
+    let finishDefinition
+    const started = new Promise(resolve => { beginDefinition = resolve })
+    const heldDefinition = new Promise(resolve => { finishDefinition = resolve })
+    const retiring = makeLoader(async href => {
+        if (href !== definitionPath) return texts.get(href)
+        beginDefinition()
+        return heldDefinition
+    })
+    try {
+        const pending = retiring.loadItem(section)
+        check(await Promise.race([started.then(() => true), pending.then(() => false)]),
+            'The section is still loading when it reaches the held SVG definition')
+        retiring.destroy()
+        finishDefinition(texts.get(definitionPath))
+        check(!await pending && !hasNewURLs(),
+            'A retired section cannot publish its held SVG definition or retain earlier resources')
+    } finally { retiring.destroy() }
+}
+
 // Run in a browser: parsing, XML serialization, blob fetching and image decoding
 // use the real platform. Archive reads and the native URL callback are controlled.
 export async function runSVGResourceReferences() {
@@ -46,16 +91,18 @@ export async function runSVGResourceReferences() {
     const reads = []
     const directReads = []
     const directURL = 'ebook://ebook/processed-section?subpath=OPS%2Fnative.xhtml'
-    const loader = new Loader({
+    const makeLoader = loadText => new Loader({
         resources: { manifest: [...texts.keys()].map(href => ({ href, mediaType: 'image/svg+xml' })) },
-        loadText: async href => { reads.push(href); return texts.get(href) },
+        loadText,
         loadBlob: async () => { throw new Error('Unexpected binary archive read') },
         replaceURL: async href => { directReads.push(href); return directURL },
     })
+    const loader = makeLoader(async href => { reads.push(href); return texts.get(href) })
+    const section = { href: 'OPS/art.svg', mediaType: 'image/svg+xml' }
     try {
         const nativeSection = await loader.loadItem({ href: 'OPS/native.xhtml', mediaType: 'application/xhtml+xml' })
         check(nativeSection === directURL, 'Native XHTML sections take the direct URL path')
-        const url = await loader.loadItem({ href: 'OPS/art.svg', mediaType: 'image/svg+xml' })
+        const url = await loader.loadItem(section)
         check(url?.startsWith('blob:'), 'Native SVG sections materialize through the Loader')
         check(directReads.length === 1 && directReads[0] === 'OPS/native.xhtml',
             'SVG sections and their dependencies bypass the direct XHTML URL callback')
@@ -104,10 +151,11 @@ export async function runSVGResourceReferences() {
         image.src = href('modern')
         await image.decode()
         check(image.naturalWidth === 1 && image.naturalHeight === 1, 'Rewritten image bytes decode')
-        loader.unloadItem({ href: 'OPS/art.svg' })
+        loader.unloadItem(section)
         const retired = await Promise.allSettled([fetch(url), fetch(definitionURLs[0])])
         check(retired.every(result => result.status === 'rejected'),
             'Unloading the section revokes its SVG and shared definition URLs')
+        await checkDefinitionReadOwnership(makeLoader, texts, section, 'OPS/assets/paint and motion.svg')
         return { passed: true, reads }
     } finally { loader.destroy() }
 }
