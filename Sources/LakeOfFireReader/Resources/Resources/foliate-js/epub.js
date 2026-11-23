@@ -25,6 +25,11 @@ const MIME = {
     JS: /\/(x-)?(javascript|ecmascript)/,
 }
 
+const svgResourceElements = new Set([
+    'image', 'use', 'feImage', 'linearGradient', 'radialGradient',
+    'pattern', 'textPath', 'mpath',
+])
+
 // Rendering and detached search/navigation documents must interpret malformed
 // XHTML identically. Preserve SVG/XML parsing rather than treating those as HTML.
 const parseContentDocument = (parser, source, mediaType) => {
@@ -1036,8 +1041,10 @@ export class Loader {
             for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
             // SVG 2 resource links use href; xlink:href is only the legacy form.
             // Navigation anchors and same-document fragment references stay authored.
-            for (const el of doc.querySelectorAll('image[href], use[href], feImage[href]')) {
-                if (el.namespaceURI === NS.SVG) await replace(el, 'href')
+            for (const el of doc.querySelectorAll('[href]')) {
+                if (el.namespaceURI === NS.SVG && svgResourceElements.has(el.localName)) {
+                    await replace(el, 'href')
+                }
             }
             for (const el of Array.from(doc.getElementsByTagName('*'))
                 .filter(el => !el.hasAttribute('href') && el.hasAttributeNS(NS.XLINK, 'href'))) {
