@@ -291,7 +291,11 @@ func applyReaderFontSize(
                     try { console.timeStamp?.(label); } catch (_) {}
                 };
                 mark('start', 'reason=\(reason) size=\(size)');
-                const fontSize = '\(size)px';
+                // Compare with CSSOM's spelling, including fractional sizes.
+                const fontSizeProbe = document.createElement('span').style
+                fontSizeProbe.fontSize = '\(size)px'
+                const fontSize = fontSizeProbe.fontSize
+                if (!fontSize) { return { appliedCount: 0, fontSize } }
                 const applyFontSize = (doc) => {
                     const body = doc?.body;
                     if (!body) { return false; }

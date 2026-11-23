@@ -62,34 +62,37 @@ final class ReaderSettingsSignatureInvalidationTests: XCTestCase {
         let webView = try await makeWebView()
         defer { webView.stopLoading() }
         let evaluator = evaluator(for: webView)
-        try await run("""
-            document.body.style.fontSize = '20px'
-            document.querySelector('iframe').contentDocument.body.style.fontSize = '17px'
-            """, in: webView)
-        try await seedSignatures(in: webView)
+        let variants: [(size: Double, cssSize: String)] = [(20, "20px"), (20.25, "20.25px")]
+        for (size, cssSize) in variants {
+            try await run("""
+                document.body.style.fontSize = '\(cssSize)'
+                document.querySelector('iframe').contentDocument.body.style.fontSize = '17px'
+                """, in: webView)
+            try await seedSignatures(in: webView)
 
-        await applyReaderFontSize(
-            20, readerFontSize: 20, lightModeTheme: .white, darkModeTheme: .black,
-            reason: "test", hasAsyncCaller: true, evaluateJavaScript: evaluator
-        )
-        let frameFontSize = try await webView.evaluateJavaScript(
-            "document.querySelector('iframe').contentDocument.body.style.fontSize"
-        ) as? String
-        let changedFrame = try await signatures(in: webView, childFrame: true)
-        let unchangedHost = try await signatures(in: webView)
-        XCTAssertEqual(frameFontSize, "20px")
-        XCTAssertEqual(changedFrame, cleared)
-        XCTAssertEqual(unchangedHost, Array(cached.prefix(3)) + ["missing"])
+            await applyReaderFontSize(
+                size, readerFontSize: size, lightModeTheme: .white, darkModeTheme: .black,
+                reason: "test", hasAsyncCaller: true, evaluateJavaScript: evaluator
+            )
+            let frameFontSize = try await webView.evaluateJavaScript(
+                "document.querySelector('iframe').contentDocument.body.style.fontSize"
+            ) as? String
+            let changedFrame = try await signatures(in: webView, childFrame: true)
+            let unchangedHost = try await signatures(in: webView)
+            XCTAssertEqual(frameFontSize, cssSize)
+            XCTAssertEqual(changedFrame, cleared)
+            XCTAssertEqual(unchangedHost, Array(cached.prefix(3)) + ["missing"])
 
-        try await seedSignatures(in: webView)
-        await applyReaderFontSize(
-            20, readerFontSize: 20, lightModeTheme: .white, darkModeTheme: .black,
-            reason: "test", hasAsyncCaller: true, evaluateJavaScript: evaluator
-        )
-        let unchangedFrame = try await signatures(in: webView, childFrame: true)
-        let hostAfterRepeat = try await signatures(in: webView)
-        XCTAssertEqual(unchangedFrame, cached)
-        XCTAssertEqual(hostAfterRepeat, cached)
+            try await seedSignatures(in: webView)
+            await applyReaderFontSize(
+                size, readerFontSize: size, lightModeTheme: .white, darkModeTheme: .black,
+                reason: "test", hasAsyncCaller: true, evaluateJavaScript: evaluator
+            )
+            let unchangedFrame = try await signatures(in: webView, childFrame: true)
+            let hostAfterRepeat = try await signatures(in: webView)
+            XCTAssertEqual(unchangedFrame, cached)
+            XCTAssertEqual(hostAfterRepeat, cached)
+        }
     }
 
     @MainActor
