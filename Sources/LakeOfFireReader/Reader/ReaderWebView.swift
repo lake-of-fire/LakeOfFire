@@ -530,6 +530,7 @@ public struct ReaderWebView: View {
             buildMenu: buildMenu,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme,
+            isPreparingReaderCanvas: readerModeViewModel.isReaderModeLoading,
             scriptCaller: scriptCaller,
             userScripts: readerViewModel.allScripts,
             state: $readerViewModel.state,
@@ -566,6 +567,22 @@ public struct ReaderWebView: View {
     }
 }
 
+enum ReaderWebViewAppearancePolicy {
+    static func setting(
+        colorScheme: ColorScheme,
+        pageURL: URL,
+        isPreparingReaderCanvas: Bool,
+        hasReaderRenderReady: Bool
+    ) -> DarkModeSetting {
+        guard isPreparingReaderCanvas
+            || pageURL.absoluteString == "about:blank"
+            || pageURL.isReaderURLLoaderURL
+            || pageURL.isNativeReaderView
+            || hasReaderRenderReady else { return .system }
+        return colorScheme == .dark ? .darkModeOverride : .alwaysLightMode
+    }
+}
+
 fileprivate struct ReaderWebViewInternal: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
@@ -582,6 +599,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var buildMenu: BuildMenuType?
     let lightModeTheme: LightModeTheme
     let darkModeTheme: DarkModeTheme
+    let isPreparingReaderCanvas: Bool
     var scriptCaller: WebViewScriptCaller
     var userScripts: [WebViewUserScript]
     @Binding var state: WebViewState
@@ -657,6 +675,12 @@ fileprivate struct ReaderWebViewInternal: View {
                 trailing: 0
             )
         )
+        let darkModeSetting = ReaderWebViewAppearancePolicy.setting(
+            colorScheme: colorScheme,
+            pageURL: state.pageURL,
+            isPreparingReaderCanvas: isPreparingReaderCanvas,
+            hasReaderRenderReady: state.hasReaderRenderReady
+        )
         WebView(
             config: readerWebViewConfigurationTransform(WebViewConfig(
                 dataDetectorsEnabled: false,
@@ -666,7 +690,8 @@ fileprivate struct ReaderWebViewInternal: View {
                 adjustsScrollViewContentInsetsForSafeArea: false,
                 hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
                 nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
-                userScripts: userScripts)),
+                userScripts: userScripts,
+                darkModeSetting: darkModeSetting)),
             navigator: navigator,
             state: $state,
             scriptCaller: scriptCaller,
