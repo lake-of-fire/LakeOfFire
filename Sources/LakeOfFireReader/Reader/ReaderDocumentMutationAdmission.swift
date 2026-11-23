@@ -31,16 +31,21 @@ enum ReaderDocumentMutationAdmission {
     static func acceptsTopLevelDocument(
         claimedURL: URL?,
         frameMainDocumentURL: URL?,
+        frameRequestURL: URL? = nil,
         currentPageURL: URL,
         requiresMainFrame: Bool,
         isMainFrame: Bool
     ) -> Bool {
+        // WebKit can omit mainDocumentURL on a main-frame navigation. Only that
+        // frame's native request can supply the missing top-level provenance;
+        // neither a child-frame request nor the payload may stand in for it.
+        let topLevelDocumentURL = frameMainDocumentURL ?? (isMainFrame ? frameRequestURL : nil)
         guard !requiresMainFrame || isMainFrame,
               let claimedURL,
-              let frameMainDocumentURL,
+              let topLevelDocumentURL,
               !claimedURL.isNativeReaderView,
-              urlsMatchWithoutHash(claimedURL, frameMainDocumentURL),
-              urlsMatchWithoutHash(frameMainDocumentURL, currentPageURL) else {
+              urlsMatchWithoutHash(claimedURL, topLevelDocumentURL),
+              urlsMatchWithoutHash(topLevelDocumentURL, currentPageURL) else {
             return false
         }
         return true
