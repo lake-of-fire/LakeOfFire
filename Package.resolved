@@ -347,8 +347,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lake-of-fire/swift-opml.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "d13695a939d8edfa7189b26e9c876e0fdd35d6e8"
+        "revision" : "8104789c8dfaaeb8afc4178a4d9c89f4d06210ee"
       }
     },
     {
