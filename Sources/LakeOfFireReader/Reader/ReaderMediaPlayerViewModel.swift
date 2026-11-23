@@ -998,15 +998,25 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @objc nonisolated private func handleAudioSessionRouteChange(_ notification: Notification) {
         let reasonRawValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
         Task { @MainActor [weak self] in
-            guard let self, self.playbackSource == .aiTextToSpeech,
-                  let reasonRawValue,
+            guard let self, let reasonRawValue,
                   AVAudioSession.RouteChangeReason(rawValue: reasonRawValue) == .oldDeviceUnavailable
             else { return }
-            self.pauseAITTS()
-            self.isPlaying = false
+            self.pauseReadAloudForDisconnectedRoute()
         }
     }
 #endif
+
+    func pauseReadAloudForDisconnectedRoute() {
+        // Initial speech preparation can still be collecting text while the
+        // playback source is recorded audio. Retire only active preparation.
+        if isPreparingReadAloud {
+            cancelReadAloudPreparation()
+        }
+        guard playbackSource == .aiTextToSpeech else { return }
+        cancelLookupAITTSSuspension()
+        pauseAITTS()
+        isPlaying = false
+    }
 
     @MainActor
     private func resetPlaybackStateForIncomingContent() {
