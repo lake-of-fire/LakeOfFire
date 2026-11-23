@@ -306,6 +306,17 @@ private struct ReaderContentCellStyleKey: EnvironmentKey {
     static let defaultValue: ReaderContentCellStyle = .plain
 }
 
+private struct ReaderContentRowOwnsAccessibilityLabelKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var readerContentRowOwnsAccessibilityLabel: Bool {
+        get { self[ReaderContentRowOwnsAccessibilityLabelKey.self] }
+        set { self[ReaderContentRowOwnsAccessibilityLabelKey.self] = newValue }
+    }
+}
+
 public extension EnvironmentValues {
     var readerContentCellStyle: ReaderContentCellStyle {
         get { self[ReaderContentCellStyleKey.self] }
@@ -529,6 +540,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.readerContentCellStyle) private var readerContentCellStyle
+    @Environment(\.readerContentRowOwnsAccessibilityLabel) private var readerContentRowOwnsAccessibilityLabel
     @Environment(\.readerContentCellReadingProgressRevision) private var readingProgressRevision
     @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
     @Environment(\.readerContentCellAnnotationStatusUpdates) private var readerContentCellAnnotationStatusUpdates
@@ -828,6 +840,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             HStack(spacing: 6) {
                 if let sourceIconURL = inlineSourceIconURL {
                     ReaderContentSourceIconImage(sourceIconURL: sourceIconURL, iconSize: sourceIconSize)
+                        .accessibilityHidden(true)
                 }
                 Text(sourceTitle)
                     .lineLimit(1)
@@ -949,6 +962,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             .multilineTextAlignment(.leading)
             .environment(\._lineHeightMultiple, 0.875)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
     }
 
     private var titleText: Text {
@@ -964,6 +978,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             .multilineTextAlignment(.leading)
             .environment(\._lineHeightMultiple, 0.875)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
     }
 
     private var showsNewBadge: Bool {
@@ -1094,7 +1109,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(2)
-            .accessibilityHidden(true)
 
             controlsRow
                 .frame(width: buttonSize, height: buttonSize, alignment: .center)
@@ -1157,7 +1171,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                     .frame(height: contentColumnHeight, alignment: .top)
                 }
             }
-            .accessibilityHidden(true)
         }
     }
 

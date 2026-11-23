@@ -905,6 +905,12 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     }
 
     var body: some View {
+        let accessibilityTitle = ReaderContentLoader.normalizedDisplayTitle(
+            content.title,
+            needsClipboardIndicator: content.needsClipboardIndicator
+        )
+        let rowOwnsAccessibilityLabel = !accessibilityTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
         VStack(spacing: 0) {
             if #available(iOS 16.0, *) {
                 rowContent(item: content)
@@ -915,12 +921,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     }
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
-                    .accessibilityLabel(
-                        ReaderContentLoader.normalizedDisplayTitle(
-                            content.title,
-                            needsClipboardIndicator: content.needsClipboardIndicator
-                        )
-                    )
+                    .accessibilityLabel(accessibilityTitle)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityAction {
                         selectContent()
@@ -935,8 +936,17 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 .buttonStyle(.borderless)
                 .tint(.primary)
                 .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
+                .modifier {
+                    if rowOwnsAccessibilityLabel {
+                        $0.accessibilityLabel(accessibilityTitle)
+                    } else {
+                        $0
+                    }
+                }
             }
         }
+        .environment(\.readerContentRowOwnsAccessibilityLabel, rowOwnsAccessibilityLabel)
         .id(content.compoundKey)
 #if os(iOS)
         .deleteDisabled((content as? any DeletableReaderContent) == nil || isDeleteBlockedByStatus)
