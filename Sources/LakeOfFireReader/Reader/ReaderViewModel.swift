@@ -204,10 +204,16 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 })
                 .store(in: &cancellables)
 
-            libraryRealm.objects(UserScript.self)
+            let scriptChanges = libraryRealm.objects(UserScript.self)
                 .collectionPublisher
-                .subscribe(on: readerViewModelQueue)
                 .map { @Sendable _ in }
+            // Allowed domains are separate Realm records, so editing one
+            // does not notify observers of its owning script.
+            let domainChanges = libraryRealm.objects(UserScriptAllowedDomain.self)
+                .collectionPublisher
+                .map { @Sendable _ in }
+            scriptChanges.merge(with: domainChanges)
+                .subscribe(on: readerViewModelQueue)
                 .debounceLeadingTrailing(for: .seconds(1), scheduler: readerViewModelQueue)
                 .receive(on: readerViewModelQueue)
                 .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
