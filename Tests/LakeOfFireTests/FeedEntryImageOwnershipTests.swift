@@ -7,21 +7,22 @@ import XCTest
 @testable import LakeOfFireReader
 
 @MainActor
-private final class FeedEntryImageWriterGate {
+final class FeedEntryImageWriterGate {
     let entered: XCTestExpectation
+    private let pauseAtOpen: Int
     private var admittedOpens = 0
     private var released = false
     private var continuation: CheckedContinuation<Void, Never>?
 
-    init(_ entered: XCTestExpectation) {
+    init(_ entered: XCTestExpectation, pauseAtOpen: Int = 2) {
         self.entered = entered
+        self.pauseAtOpen = pauseAtOpen
     }
 
     func didOpenRealm() async {
         admittedOpens += 1
-        // The read actor first prepares its storage. The second admitted open
-        // is the writer reopen, after the real image extraction has finished.
-        guard admittedOpens == 2 else { return }
+        // Image loads prepare read storage first, then reopen for the writer.
+        guard admittedOpens == pauseAtOpen else { return }
         await withCheckedContinuation { continuation in
             if released {
                 continuation.resume()
@@ -43,6 +44,7 @@ private final class FeedEntryImageWriterGate {
 final class FeedEntryImageOwnershipTests: XCTestCase {
     private let imageURL = URL(string: "https://example.invalid/original.png")!
     private let replacementImageURL = URL(string: "https://example.invalid/replacement.png")!
+    private let legacyImageURL = URL(string: "cached/old.png")!
 
     func testCurrentCellLoadsAndCachesExtractedImageWithoutReplayMutation() async throws {
         let (realm, entry, _) = try await makeFixture()
@@ -62,6 +64,83 @@ final class FeedEntryImageOwnershipTests: XCTestCase {
         let replay = try await frozen.imageURLToDisplay()
         XCTAssertEqual(replay, imageURL)
         await realm.asyncRefresh()
+        XCTAssertEqual(journalGeneration(for: entry, in: realm), generation)
+        XCTAssertEqual(entry.modifiedAt, modifiedAt)
+    }
+
+    func testCurrentCellRepairsRelativeCacheUsingArticleURLAndLaterValidBodyImage() async throws {
+        let articleURL = URL(string: "https://example.invalid/news/daily/article?edition=1")!
+        let expectedImage = URL(string: "https://example.invalid/news/images/body%20art.png?size=2&token=A%2FB")!
+        let body = """
+        <article>
+          <img width="600" height="400">
+          <img width="600" height="400" src="">
+          <img width="600" height="400" src="../images/body%20art.png?size=2&amp;token=A%2FB">
+        </article>
+        """
+        let (realm, entry, _) = try await makeFixture(
+            articleURL: articleURL, body: body, cachedImage: legacyImageURL
+        )
+        let frozen = entry.freeze()
+        let legacyGeneration = try XCTUnwrap(journalGeneration(for: entry, in: realm))
+        let cell = ReaderContentCellViewModel<FeedEntry>()
+
+        try await cell.load(item: frozen, includeSource: true)
+
+        XCTAssertTrue(cell.hasLoadedDisplayState)
+        XCTAssertEqual(cell.imageURL, expectedImage)
+        XCTAssertEqual(frozen.imageUrl, legacyImageURL)
+        await realm.asyncRefresh()
+        XCTAssertEqual(entry.imageUrl, expectedImage)
+        let repairedGeneration = try XCTUnwrap(journalGeneration(for: entry, in: realm))
+        XCTAssertNotEqual(repairedGeneration, legacyGeneration)
+        let modifiedAt = entry.modifiedAt
+
+        let replay = try await frozen.imageURLToDisplay()
+        XCTAssertEqual(replay, expectedImage)
+        await realm.asyncRefresh()
+        XCTAssertEqual(journalGeneration(for: entry, in: realm), repairedGeneration)
+        XCTAssertEqual(entry.modifiedAt, modifiedAt)
+    }
+
+    func testCurrentCellUsesYouTubeThumbnailWhenBodyImagesHaveNoSource() async throws {
+        let body = """
+        <article>
+          <img width="600" height="400">
+          <img width="600" height="400" src="">
+          <iframe src="https://www.youtube.com/embed/imageFixture123"></iframe>
+        </article>
+        """
+        let (realm, entry, _) = try await makeFixture(body: body)
+        let expectedImage = URL(string: "https://img.youtube.com/vi/imageFixture123/0.jpg")
+        let cell = ReaderContentCellViewModel<FeedEntry>()
+
+        try await cell.load(item: entry.freeze(), includeSource: true)
+
+        XCTAssertTrue(cell.hasLoadedDisplayState)
+        XCTAssertEqual(cell.imageURL, expectedImage)
+        await realm.asyncRefresh()
+        XCTAssertEqual(entry.imageUrl, expectedImage)
+        XCTAssertNotNil(journalGeneration(for: entry, in: realm))
+    }
+
+    func testCurrentCellDoesNotUseRelativeCacheWhenBodyHasNoArtwork() async throws {
+        let (realm, entry, _) = try await makeFixture(
+            body: "<article><p>No artwork in the feed body.</p></article>",
+            cachedImage: legacyImageURL
+        )
+        let frozen = entry.freeze()
+        let generation = try XCTUnwrap(journalGeneration(for: entry, in: realm))
+        let modifiedAt = entry.modifiedAt
+        let cell = ReaderContentCellViewModel<FeedEntry>()
+
+        XCTAssertNil(frozen.storedImageURLToDisplay)
+        try await cell.load(item: frozen, includeSource: true)
+
+        XCTAssertTrue(cell.hasLoadedDisplayState)
+        XCTAssertNil(cell.imageURL)
+        await realm.asyncRefresh()
+        XCTAssertEqual(entry.imageUrl, legacyImageURL)
         XCTAssertEqual(journalGeneration(for: entry, in: realm), generation)
         XCTAssertEqual(entry.modifiedAt, modifiedAt)
     }
@@ -137,6 +216,62 @@ final class FeedEntryImageOwnershipTests: XCTestCase {
         XCTAssertEqual(journalGeneration(for: entry, in: realm), generation)
     }
 
+    func testRelativeCacheRepairDoesNotOverwriteNewerUsableArtwork() async throws {
+        let (realm, entry, _) = try await makeFixture(cachedImage: legacyImageURL)
+        let gate = FeedEntryImageWriterGate(expectation(description: "legacy image repair reached its writer"))
+        let task = imageLoad(for: entry.freeze(), gate: gate)
+        await fulfillment(of: [gate.entered], timeout: 3)
+        do {
+            try realm.write {
+                entry.imageUrl = replacementImageURL
+                entry.refreshChangeMetadata(explicitlyModified: true)
+            }
+        } catch {
+            gate.release()
+            _ = await task.result
+            throw error
+        }
+        let generation = journalGeneration(for: entry, in: realm)
+        let modifiedAt = entry.modifiedAt
+        gate.release()
+
+        let result = try await task.value
+        XCTAssertEqual(result, replacementImageURL)
+        await realm.asyncRefresh()
+        XCTAssertEqual(entry.imageUrl, replacementImageURL)
+        XCTAssertNotNil(generation)
+        XCTAssertEqual(journalGeneration(for: entry, in: realm), generation)
+        XCTAssertEqual(entry.modifiedAt, modifiedAt)
+    }
+
+    func testRelativeCacheRepairRejectsAChangedLegacyCacheAtWriterAdmission() async throws {
+        let (realm, entry, _) = try await makeFixture(cachedImage: legacyImageURL)
+        let changedCacheURL = URL(string: "cached/changed.png")!
+        let gate = FeedEntryImageWriterGate(expectation(description: "legacy image repair reached its writer"))
+        let task = imageLoad(for: entry.freeze(), gate: gate)
+        await fulfillment(of: [gate.entered], timeout: 3)
+        do {
+            try realm.write {
+                entry.imageUrl = changedCacheURL
+                entry.refreshChangeMetadata(explicitlyModified: true)
+            }
+        } catch {
+            gate.release()
+            _ = await task.result
+            throw error
+        }
+        let generation = journalGeneration(for: entry, in: realm)
+        let modifiedAt = entry.modifiedAt
+        gate.release()
+
+        try await requireCancellation(of: task)
+        await realm.asyncRefresh()
+        XCTAssertEqual(entry.imageUrl, changedCacheURL)
+        XCTAssertNotNil(generation)
+        XCTAssertEqual(journalGeneration(for: entry, in: realm), generation)
+        XCTAssertEqual(entry.modifiedAt, modifiedAt)
+    }
+
     func testExtractedImageCannotMutateSameRowWithNewerBody() async throws {
         let (realm, entry, _) = try await makeFixture()
         let gate = FeedEntryImageWriterGate(expectation(description: "old body image reached its writer"))
@@ -180,7 +315,9 @@ final class FeedEntryImageOwnershipTests: XCTestCase {
         }
     }
 
-    private func makeFixture() async throws -> (realm: Realm, entry: FeedEntry, feedID: UUID) {
+    private func makeFixture(
+        articleURL: URL? = nil, body: String? = nil, cachedImage: URL? = nil
+    ) async throws -> (realm: Realm, entry: FeedEntry, feedID: UUID) {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [Feed.self, FeedEntry.self, BigSyncPendingMutation.self]
         BigSyncMutationTracking.install(configurations: [configuration], excludedClassNames: [])
@@ -193,18 +330,21 @@ final class FeedEntryImageOwnershipTests: XCTestCase {
         feed.title = "Fixture feed"
         feed.rssUrl = URL(string: "https://example.invalid/feed.xml")!
         feed.extractImageFromContent = true
-        let entry = makeEntry(feedID: feed.id, image: imageURL)
+        let entry = makeEntry(feedID: feed.id, image: imageURL, articleURL: articleURL)
+        if let body { entry.html = body }
+        entry.imageUrl = cachedImage
         try realm.write {
             realm.add(feed)
             realm.add(entry)
+            if cachedImage != nil { entry.refreshChangeMetadata(explicitlyModified: true) }
         }
         return (realm, entry, feed.id)
     }
 
-    private func makeEntry(feedID: UUID, image: URL) -> FeedEntry {
+    private func makeEntry(feedID: UUID, image: URL, articleURL: URL? = nil) -> FeedEntry {
         let entry = FeedEntry()
         entry.feedID = feedID
-        entry.url = URL(string: "https://example.invalid/article")!
+        entry.url = articleURL ?? URL(string: "https://example.invalid/article")!
         entry.title = "Feed article"
         entry.readerContentKind = .contentListing
         entry.updateCompoundKey()

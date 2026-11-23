@@ -1006,23 +1006,25 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         guard let feedID else { return nil }
         return realm.object(ofType: Feed.self, forPrimaryKey: feedID)
     }
+
+    /// Stored relative values do not retain the base they were authored against.
+    public var storedImageURLToDisplay: URL? {
+        Self.usableImageURL(imageUrl)
+    }
     
-    /// The import writer needs the display image without starting a second,
-    /// independently committing feed-cache write.
+    /// Copy the display image without starting a separate feed-cache write.
     @RealmBackgroundActor
     func importImageURLWithoutCaching() -> URL? {
-        if let imageUrl { return imageUrl }
+        if let image = storedImageURLToDisplay { return image }
         guard extractImageFromContent, let html else { return nil }
-        return Self.imageURLExtractedFromContent(htmlContent: html)
+        return Self.imageURLExtractedFromContent(htmlContent: html, articleURL: url)
     }
 
     @MainActor
     public func imageURLToDisplay() async throws -> URL? {
         try Task.checkCancellation()
         guard !isInvalidated, !isDeleted else { throw CancellationError() }
-        if let imageUrl {
-            return imageUrl
-        }
+        if let image = storedImageURLToDisplay { return image }
         guard let reference = ReaderContentLoader.ContentReference(content: self) else { return nil }
         let configuration = reference.realmConfiguration
         let storage = reference.storageAdmission
@@ -1036,7 +1038,8 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         }
         let requireRow: @Sendable (Realm) throws -> FeedEntry = { realm in
             guard let entry = realm.object(ofType: FeedEntry.self, forPrimaryKey: key),
-                  !entry.isInvalidated, !entry.isDeleted, entry.id == rowID, entry.url == sourceURL else {
+                  !entry.isInvalidated, !entry.isDeleted, entry.id == rowID,
+                  entry.url.absoluteString.utf8.elementsEqual(sourceURL.absoluteString.utf8) else {
                 throw CancellationError()
             }
             return entry
@@ -1052,10 +1055,13 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
             try Task.checkCancellation()
             try validateStorage()
             let entry = try requireRow(realm)
-            if let image = entry.imageUrl { return image }
+            if let image = entry.storedImageURLToDisplay { return image }
+            let previousImage = entry.imageUrl.map { Data($0.absoluteString.utf8) }
+            let sourceFeedID = entry.feedID
             let sourceContent = entry.content
-            guard entry.extractImageFromContent, let html = entry.html,
-                  let image = Self.imageURLExtractedFromContent(htmlContent: html) else { return nil }
+            guard entry.extractImageFromContent,
+                  let html = Self.contentToHTML(content: sourceContent),
+                  let image = Self.imageURLExtractedFromContent(htmlContent: html, articleURL: sourceURL) else { return nil }
 
             return try await { @RealmBackgroundActor in
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(
@@ -1065,10 +1071,11 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
                     try Task.checkCancellation()
                     try validateStorage()
                     let entry = try requireRow(realm)
-                    // A feed refresh or another image load may have filled the
-                    // cache while this task waited for the writer.
-                    if let image = entry.imageUrl { return image }
-                    guard entry.extractImageFromContent, entry.content == sourceContent else {
+                    // Another writer's usable artwork takes precedence.
+                    if let image = entry.storedImageURLToDisplay { return image }
+                    guard entry.imageUrl.map({ Data($0.absoluteString.utf8) }) == previousImage,
+                          entry.feedID == sourceFeedID, entry.extractImageFromContent,
+                          entry.content == sourceContent else {
                         throw CancellationError()
                     }
                     entry.imageUrl = image
@@ -1117,65 +1124,47 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
 }
 
 fileprivate extension FeedEntry {
-    static func imageURLExtractedFromContent(htmlContent: String) -> URL? {
+    static func usableImageURL(_ url: URL?) -> URL? {
+        guard let absoluteURL = url?.absoluteURL, let scheme = absoluteURL.scheme?.lowercased() else { return nil }
+        if scheme == "http" || scheme == "https" {
+            guard absoluteURL.host?.isEmpty == false else { return nil }
+        }
+        return absoluteURL
+    }
+
+    static func imageURLExtractedFromContent(htmlContent: String, articleURL: URL) -> URL? {
         guard let doc = try? SwiftSoup.parse(htmlContent) else { return nil }
-        doc.outputSettings().prettyPrint(pretty: false)
+        let articleBase = usableImageURL(articleURL)
         do {
             let threshold: Float = 0.3
-            
-            let imageElements: [Element] = try Array(doc.getElementsByTag("img"))
-            let filteredImageElements: [Element] = imageElements.filter({ (imageTag: Element) -> Bool in
-                if let src: String = try? imageTag.attr("src"), src.contains("doubleclick.net") {
-                    return false
-                }
-                
-                do {
-                    let height: Float? = try Float(imageTag.attr("height")),
-                        width: Float? = try Float(imageTag.attr("width"))
-                    if let width: Float = width, let height: Float = height {
-                        return Float(height / width) > threshold
-                    } else {
-                        return (height ?? 1.0) / (width ?? 1.0) > threshold
-                    }
-                } catch {
-                    return true
-                }
-            })
-            let imageElement: Element? = filteredImageElements.first
-            var imageUrlOptional: String? = try imageElement?.attr("src")
-            
-            // Match images without width or height specified if we can't find an ideal image before.
-            if imageUrlOptional == nil {
-                imageUrlOptional = try doc.getElementsByTag("img").filter({ imageTag -> Bool in
-                    if let src = try? imageTag.attr("src"), src.contains("doubleclick.net") {
-                        return false
-                    }
-                    
-                    do {
-                        let height = try Float(imageTag.attr("height")),
-                            width = try Float(imageTag.attr("width"))
-                        return height != nil || width != nil
-                    } catch {
-                        return true
-                    }
-                }).first?.attr("src")
+            var fallback: URL?
+            for imageTag in try doc.getElementsByTag("img") {
+                let src = try imageTag.attr("src").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !src.isEmpty, !src.contains("doubleclick.net"),
+                      let reference = URL(string: src) else { continue }
+                let image = reference.scheme == nil
+                    ? articleBase.flatMap { URL(string: src, relativeTo: $0) }
+                    : reference
+                guard let imageURL = usableImageURL(image) else { continue }
+
+                let height = try Float(imageTag.attr("height"))
+                let width = try Float(imageTag.attr("width"))
+                if (height ?? 1) / (width ?? 1) > threshold { return imageURL }
+                if fallback == nil && (height != nil || width != nil) { fallback = imageURL }
             }
-            
+            if let fallback { return fallback }
+
             // Match YouTube links for thumbnails.
-            if imageUrlOptional == nil {
-                imageUrlOptional = try doc.getElementsByTag("iframe").compactMap({ iframeTag -> String? in
-                    if let src = try? iframeTag.attr("src"),
-                       src.hasPrefix("https://www.youtube.com"),
-                       let components = URLComponents(string: src),
-                       let youtubeId = components.percentEncodedPath.split(separator: "/").last {
-                        return "https://img.youtube.com/vi/\(youtubeId)/0.jpg"
-                    }
-                    return nil
-                }).first
-            }
-            if let imageUrl = imageUrlOptional {
-                return URL(string: imageUrl)
-            }
+            let youtubeThumbnail = try doc.getElementsByTag("iframe").compactMap { iframeTag -> String? in
+                if let src = try? iframeTag.attr("src"),
+                   src.hasPrefix("https://www.youtube.com"),
+                   let components = URLComponents(string: src),
+                   let youtubeId = components.percentEncodedPath.split(separator: "/").last {
+                    return "https://img.youtube.com/vi/\(youtubeId)/0.jpg"
+                }
+                return nil
+            }.first
+            return youtubeThumbnail.flatMap { URL(string: $0) }
         } catch {
             debugPrint("Error extracting image URL from content", error)
         }
