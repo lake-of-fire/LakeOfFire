@@ -2,7 +2,7 @@ import XCTest
 import Combine
 import BigSyncKit
 import RealmSwift
-import RealmSwiftGaps
+@testable import RealmSwiftGaps
 @testable import LakeOfFireContent
 import LakeOfFireCore
 @testable import LakeOfFireReader
@@ -995,7 +995,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
     func testOwnedHTTPSImportUsesHTTPFeedWithoutWritingLazyImageCache() async throws {
         try await withSnippetRealm { configuration in
             let storage = ReaderContentLoader.ImportStorage.capture()
-            let url = URL(string: "https://example.com/feed-import")!
+            let url = URL(string: "https://example.com/archive/daily/feed-import")!
             try await { @RealmBackgroundActor in
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
                 let feed = Feed()
@@ -1004,24 +1004,170 @@ final class ReaderSnippetTitleTests: XCTestCase {
                 let entry = FeedEntry()
                 entry.compoundKey = "http-feed-import"
                 entry.feedID = feed.id
-                entry.url = URL(string: "http://example.com/feed-import")!
+                entry.url = URL(string: "http://example.com/archive/daily/feed-import")!
                 entry.title = "HTTPS fallback title"
-                entry.html = "<html><body><img src='https://example.com/photo.jpg'><p>Full feed body.</p></body></html>"
-                try realm.write { realm.add(feed); realm.add(entry) }
-                let beforeImage = entry.imageUrl
+                entry.imageUrl = URL(string: "cached/legacy-image.jpg")!
+                entry.html = """
+                <html><body>
+                  <img width="600" height="400">
+                  <img width="600" height="400" src="../images/photo%20wide.jpg?token=A%2FB">
+                  <p>Full feed body.</p>
+                </body></html>
+                """
+                try realm.write {
+                    realm.add(feed)
+                    realm.add(entry)
+                    entry.refreshChangeMetadata(explicitlyModified: true)
+                }
+                let beforeImage = try XCTUnwrap(entry.imageUrl)
                 let beforeModified = entry.modifiedAt
                 let feedRecordName = FeedEntry.className() + "." + entry.compoundKey
-                let beforeGeneration = realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: feedRecordName)?.generation
+                let beforeGeneration = try XCTUnwrap(
+                    realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: feedRecordName)?.generation
+                )
                 let reference = try await ReaderContentLoader.importContent(.url(url), storage: storage, permitsCommit: { true })
                 let history = try XCTUnwrap(realm.object(ofType: HistoryRecord.self, forPrimaryKey: try XCTUnwrap(reference).contentKey))
                 XCTAssertEqual(history.url, url)
                 XCTAssertEqual(history.title, entry.title)
                 XCTAssertEqual(history.content, entry.content)
-                XCTAssertEqual(history.imageUrl, URL(string: "https://example.com/photo.jpg"))
+                XCTAssertEqual(
+                    history.imageUrl,
+                    URL(string: "http://example.com/archive/images/photo%20wide.jpg?token=A%2FB")
+                )
                 XCTAssertEqual(entry.imageUrl, beforeImage)
                 XCTAssertEqual(entry.modifiedAt, beforeModified)
                 XCTAssertEqual(realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: feedRecordName)?.generation, beforeGeneration)
             }()
+        }
+    }
+
+    @MainActor
+    func testFeedVisitAndBookmarkCopyRelativeArtworkWithoutRepairingFeedCache() async throws {
+        try await withSnippetRealm { configuration in
+            let realm = try await Realm(configuration: configuration)
+            let articleURL = URL(string: "https://example.com/news/edition/feed-entry")!
+            let legacyImage = URL(string: "cached/old-artwork.jpg")!
+            let expectedImage = URL(string: "https://example.com/news/media/artwork%20wide.jpg")!
+            let feed = Feed()
+            feed.extractImageFromContent = true
+            feed.rssContainsFullContent = true
+            let entry = FeedEntry()
+            entry.url = articleURL
+            entry.title = "Visit and bookmark artwork"
+            entry.feedID = feed.id
+            entry.updateCompoundKey()
+            entry.imageUrl = legacyImage
+            entry.html = """
+            <article>
+              <img width="600" height="400" src="">
+              <img width="600" height="400" src="../media/artwork%20wide.jpg">
+              <p>Full feed body.</p>
+            </article>
+            """
+            try await realm.asyncWrite {
+                realm.add(feed)
+                realm.add(entry)
+                entry.refreshChangeMetadata(explicitlyModified: true)
+            }
+            let feedRecordName = FeedEntry.className() + "." + entry.compoundKey
+            let generation = try XCTUnwrap(
+                realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: feedRecordName)?.generation
+            )
+            let modifiedAt = entry.modifiedAt
+
+            try await ReaderContentLoader.recordHistoryVisit(for: entry)
+            await realm.asyncRefresh()
+            let history = try XCTUnwrap(HistoryRecord.openedRecords(matching: articleURL, in: realm).first)
+            XCTAssertEqual(history.imageUrl, expectedImage)
+            XCTAssertEqual(history.title, entry.title)
+
+            try await entry.addBookmark(realmConfiguration: configuration)
+            await realm.asyncRefresh()
+            let bookmark = try XCTUnwrap(realm.objects(Bookmark.self).where { !$0.isDeleted }.first)
+            XCTAssertEqual(bookmark.url, articleURL)
+            XCTAssertEqual(bookmark.imageUrl, expectedImage)
+            XCTAssertEqual(history.imageUrl, expectedImage)
+            XCTAssertEqual(entry.imageUrl, legacyImage)
+            XCTAssertEqual(entry.modifiedAt, modifiedAt)
+            XCTAssertEqual(realm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: feedRecordName)?.generation,
+                           generation)
+        }
+    }
+
+    @MainActor
+    func testHeldFeedBookmarkCopiesCurrentBodyAndArtworkWithoutMutatingSource() async throws {
+        try await withSnippetRealm { sourceConfiguration in
+            let bookmarkConfiguration = self.makeRealmConfiguration()
+            let sourceRealm = try await Realm(configuration: sourceConfiguration)
+            let articleURL = URL(string: "https://example.com/news/edition/feed-entry")!
+            let legacyImage = URL(string: "cached/old-artwork.jpg")!
+            let expectedImage = URL(string: "https://example.com/news/media/current%20art.jpg")!
+            let feed = Feed()
+            feed.extractImageFromContent = true
+            feed.rssContainsFullContent = true
+            let entry = FeedEntry()
+            entry.url = articleURL
+            entry.title = "Held feed bookmark"
+            entry.feedID = feed.id
+            entry.updateCompoundKey()
+            entry.imageUrl = legacyImage
+            entry.html = "<article><img src='../media/old.jpg'><p>Original feed body.</p></article>"
+            try await sourceRealm.asyncWrite {
+                sourceRealm.add(feed)
+                sourceRealm.add(entry)
+                entry.refreshChangeMetadata(explicitlyModified: true)
+            }
+            let recordName = FeedEntry.className() + "." + entry.compoundKey
+            let oldGeneration = try XCTUnwrap(
+                sourceRealm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation
+            )
+            let oldBody = try XCTUnwrap(entry.content)
+            let gate = FeedEntryImageWriterGate(
+                self.expectation(description: "bookmark captured its initial source before accessing the writer"),
+                pauseAtOpen: 1
+            )
+            let action = Task { @MainActor in
+                try await RealmStorageAdmissionObservation.$didOpenRealm.withValue({
+                    await gate.didOpenRealm()
+                }) {
+                    try await entry.addBookmark(realmConfiguration: bookmarkConfiguration)
+                }
+            }
+            await self.fulfillment(of: [gate.entered], timeout: 3)
+            do {
+                try await sourceRealm.asyncWrite {
+                    entry.html = "<article><img src='../media/current%20art.jpg'><p>Current full feed body.</p></article>"
+                    entry.refreshChangeMetadata(explicitlyModified: true)
+                }
+            } catch {
+                gate.release()
+                _ = await action.result
+                throw error
+            }
+            let currentBody = entry.content
+            let sourceGeneration = sourceRealm.object(ofType: BigSyncPendingMutation.self,
+                                                       forPrimaryKey: recordName)?.generation
+            let modifiedAt = entry.modifiedAt
+            gate.release()
+            try await action.value
+
+            let bookmarkRealm = try await Realm(configuration: bookmarkConfiguration)
+            let bookmark = try XCTUnwrap(bookmarkRealm.objects(Bookmark.self).where { !$0.isDeleted }.first)
+            XCTAssertEqual(bookmark.url, articleURL)
+            XCTAssertNotNil(currentBody)
+            XCTAssertNotEqual(currentBody, oldBody)
+            XCTAssertEqual(bookmark.content, currentBody)
+            XCTAssertEqual(bookmark.imageUrl, expectedImage)
+            try await sourceRealm.asyncRefresh()
+            XCTAssertEqual(entry.content, currentBody)
+            XCTAssertEqual(entry.imageUrl, legacyImage)
+            XCTAssertEqual(entry.modifiedAt, modifiedAt)
+            XCTAssertNotNil(sourceGeneration)
+            XCTAssertNotEqual(sourceGeneration, oldGeneration)
+            XCTAssertEqual(
+                sourceRealm.object(ofType: BigSyncPendingMutation.self, forPrimaryKey: recordName)?.generation,
+                sourceGeneration
+            )
         }
     }
 

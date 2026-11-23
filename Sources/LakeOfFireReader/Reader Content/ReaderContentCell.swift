@@ -662,7 +662,9 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     }
 
     private var displayImageURL: URL? {
-        viewModel.imageURL ?? item.imageUrl
+        if let imageURL = viewModel.imageURL { return imageURL }
+        if let feed = item as? FeedEntry { return feed.storedImageURLToDisplay }
+        return item.imageUrl
     }
 
     private var resolvedSourceIconURL: URL? {
