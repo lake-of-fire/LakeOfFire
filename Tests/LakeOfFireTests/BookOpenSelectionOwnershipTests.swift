@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import LakeOfFireReader
 
@@ -26,6 +27,156 @@ private actor BookOpenSelectionGate {
 }
 
 final class BookOpenSelectionOwnershipTests: XCTestCase {
+    @MainActor
+    func testLocalBookSelectionRevokesEditorOpenBeforeForwarding() async throws {
+        let viewModel = BookLibraryViewModel()
+        let gate = BookOpenSelectionGate()
+        var events: [String] = []
+        let editor = try XCTUnwrap(viewModel.startOpenSelection { selection in
+            do {
+                try await viewModel.open(
+                    selection: selection,
+                    stages: .init(
+                        resolveDownloadable: { true },
+                        existsLocally: { true },
+                        importContent: { _ in
+                            await gate.suspendIgnoringCancellation()
+                            events.append("editor-import-finished")
+                            return true
+                        },
+                        loadContent: {
+                            events.append("editor-load")
+                            return true
+                        },
+                        navigate: { _ in events.append("editor-navigate") },
+                        publishNavigation: { events.append("editor-publish") }
+                    )
+                )
+            } catch {
+                XCTFail("unexpected Editor open error: \(error)")
+            }
+        })
+        await gate.waitUntilSuspended()
+
+        var selectedKey: String?
+        let selection = viewModel.localContentSelectionBinding(Binding(
+            get: { selectedKey },
+            set: { key in
+                XCTAssertTrue(editor.isCancelled)
+                selectedKey = key
+                events.append("local-selection")
+            }
+        ))
+        selection.wrappedValue = "local-book"
+        await gate.release()
+        await editor.value
+
+        XCTAssertEqual(selection.wrappedValue, "local-book")
+        XCTAssertEqual(events, ["local-selection", "editor-import-finished"])
+    }
+
+    @MainActor
+    func testReselectingLocalBookSuppressesLateEditorError() async throws {
+        let viewModel = BookLibraryViewModel()
+        let gate = BookOpenSelectionGate()
+        let failure = NSError(
+            domain: "BookOpenSelectionOwnershipTests",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Could not open Editor’s Pick"]
+        )
+        let editor = try XCTUnwrap(viewModel.startOpenSelection { selection in
+            do {
+                try await viewModel.open(
+                    selection: selection,
+                    stages: .init(
+                        resolveDownloadable: { true },
+                        existsLocally: { true },
+                        importContent: { _ in
+                            await gate.suspendIgnoringCancellation()
+                            throw failure
+                        },
+                        loadContent: {
+                            XCTFail("failed import must stop the open")
+                            return false
+                        },
+                        navigate: { _ in XCTFail("failed import must not navigate") },
+                        publishNavigation: { XCTFail("failed import must not publish") }
+                    )
+                )
+            } catch {
+                viewModel.publishOpenError(error, selection: selection)
+            }
+        })
+        await gate.waitUntilSuspended()
+
+        var selectedKey: String? = "local-book"
+        var forwardedKeys: [String?] = []
+        let selection = viewModel.localContentSelectionBinding(Binding(
+            get: { selectedKey },
+            set: { key in
+                selectedKey = key
+                forwardedKeys.append(key)
+            }
+        ))
+        selection.wrappedValue = "local-book"
+        await gate.release()
+        await editor.value
+
+        XCTAssertTrue(editor.isCancelled)
+        XCTAssertEqual(forwardedKeys, ["local-book"])
+        XCTAssertNil(viewModel.errorMessage)
+
+        let retry = try XCTUnwrap(viewModel.startOpenSelection { selection in
+            viewModel.publishOpenError(failure, selection: selection)
+        })
+        await retry.value
+        XCTAssertEqual(viewModel.errorMessage, failure.localizedDescription)
+    }
+
+    @MainActor
+    func testClearingLocalBookSelectionKeepsCurrentEditorOpen() async throws {
+        let viewModel = BookLibraryViewModel()
+        let gate = BookOpenSelectionGate()
+        var events: [String] = []
+        let editor = try XCTUnwrap(viewModel.startOpenSelection { selection in
+            do {
+                try await viewModel.open(
+                    selection: selection,
+                    stages: .init(
+                        resolveDownloadable: { true },
+                        existsLocally: { true },
+                        importContent: { _ in
+                            await gate.suspendIgnoringCancellation()
+                            return true
+                        },
+                        loadContent: { true },
+                        navigate: { claim in
+                            XCTAssertTrue(claim.isCurrent())
+                            events.append("editor-navigate")
+                        },
+                        publishNavigation: { events.append("editor-publish") }
+                    )
+                )
+            } catch {
+                XCTFail("unexpected Editor open error: \(error)")
+            }
+        })
+        await gate.waitUntilSuspended()
+
+        var selectedKey: String? = "local-book"
+        let selection = viewModel.localContentSelectionBinding(Binding(
+            get: { selectedKey },
+            set: { selectedKey = $0 }
+        ))
+        selection.wrappedValue = nil
+        await gate.release()
+        await editor.value
+
+        XCTAssertNil(selection.wrappedValue)
+        XCTAssertFalse(editor.isCancelled)
+        XCTAssertEqual(events, ["editor-navigate", "editor-publish"])
+    }
+
     @MainActor
     func testProductionOpenPipelineRejectsCancellationIgnoringOlderSelection()
     async throws {
