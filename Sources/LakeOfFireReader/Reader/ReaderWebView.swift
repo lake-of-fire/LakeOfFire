@@ -128,10 +128,24 @@ final class ReaderWebViewHandler {
     }
 
     func handleNavigationCommitted(state: WebViewState, selectionIntent: WebViewURLTransitionIntent? = nil,
-                                   urlChangeContext: URLChangeContext? = nil) async throws {
+                                   urlChangeContext: URLChangeContext? = nil,
+                                   sourceNavigationProgressID: UUID? = nil) async throws {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
-        try Task.checkCancellation()
+        var progressSourceTransferred = false
+        defer {
+            if let sourceNavigationProgressID, !progressSourceTransferred {
+                navigator.retireReaderModeProgressSource(sourceNavigationProgressID)
+            }
+        }
+        let requireCurrentCommit = { @MainActor in
+            try Task.checkCancellation()
+            if let sourceNavigationProgressID,
+               !self.navigator.canContinueReaderModeNavigation(from: sourceNavigationProgressID) {
+                throw CancellationError()
+            }
+        }
+        try requireCurrentCommit()
         if let urlChangeContext { try requireCurrentURLChange(urlChangeContext) }
         // The owned blank stage replaces the physical renderer, but does not
         // select content or consume the final article's playback admission.
@@ -160,11 +174,11 @@ final class ReaderWebViewHandler {
             readerContent.isRenderingReaderHTML = false
         }
         do {
-            try Task.checkCancellation()
+            try requireCurrentCommit()
             ReaderSnippetFinalDocumentDiagnostics.record("content-load-start", contentURL: state.pageURL)
             try await readerContent.load(url: state.pageURL, consuming: selectionIntent)
             ReaderSnippetFinalDocumentDiagnostics.record("content-load-returned", contentURL: state.pageURL)
-            try Task.checkCancellation()
+            try requireCurrentCommit()
             guard readerContent.pageURL.matchesReaderURL(state.pageURL),
                   navigationBinding != nil || !scriptCaller.canEvaluateJavaScript,
                   scriptCaller.currentJavaScriptBindingToken == navigationBinding else {
@@ -197,7 +211,7 @@ final class ReaderWebViewHandler {
                 content: content,
                 newState: state
             )
-            try Task.checkCancellation()
+            try requireCurrentCommit()
             guard ownsLoadedSelection() else { throw CancellationError() }
             if let urlChangeContext {
                 try requireCurrentURLChange(urlChangeContext)
@@ -208,7 +222,9 @@ final class ReaderWebViewHandler {
             } else {
                 try await readerModeViewModel.onNavigationCommitted(
                     readerContent: readerContent, newState: state,
-                    scriptCaller: scriptCaller, navigator: navigator
+                    scriptCaller: scriptCaller, navigator: navigator,
+                    sourceNavigationProgressID: sourceNavigationProgressID,
+                    onProgressSourceTransferred: { progressSourceTransferred = true }
                 )
             }
             try Task.checkCancellation()
@@ -292,13 +308,31 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationCommitted(state: WebViewState) {
+        // Snapshot the native loader owner before queuing any content lookup or
+        // reader-view-model callback. A same-URL retry receives a new ID.
+        let sourceNavigationProgressID = state.pageURL.isReaderURLLoaderURL
+            ? navigator.captureReaderModeProgressSource(
+                progressID: state.committedNavigationProgressID,
+                forCommittedURL: state.pageURL
+            )
+            : nil
+        if state.pageURL.isReaderURLLoaderURL,
+           state.committedNavigationProgressID != nil,
+           sourceNavigationProgressID == nil {
+            return
+        }
         readerModeViewModel.bindManagedFontsToPreparedReaderDocument(
             pageURL: state.pageURL, scriptCaller: scriptCaller, navigator: navigator
         )
         readerContent.withdrawSelectionIntent()
         navigationTaskManager.startOnNavigationCommitted {
             do {
-                try await self.handleNavigationCommitted(state: state)
+                try await self.handleNavigationCommitted(
+                    state: state,
+                    sourceNavigationProgressID: sourceNavigationProgressID
+                )
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 if !Task.isCancelled { self.readerContent.withdrawSelectionIntent() }
                 throw error
@@ -427,6 +461,7 @@ public struct ReaderWebView: View {
     let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
+    let shouldSuppressNativeDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
@@ -502,6 +537,7 @@ public struct ReaderWebView: View {
         onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
+        shouldSuppressNativeDownwardNavigationHide: (@MainActor @Sendable () -> Bool)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil,
@@ -523,6 +559,7 @@ public struct ReaderWebView: View {
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.onScrollBottomStateChanged = onScrollBottomStateChanged
+        self.shouldSuppressNativeDownwardNavigationHide = shouldSuppressNativeDownwardNavigationHide
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
@@ -554,6 +591,7 @@ public struct ReaderWebView: View {
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
             onScrollBottomStateChanged: onScrollBottomStateChanged,
+            shouldSuppressNativeDownwardNavigationHide: shouldSuppressNativeDownwardNavigationHide,
             buildMenu: buildMenu,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme,
@@ -615,6 +653,7 @@ fileprivate struct ReaderWebViewInternal: View {
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
+    let shouldSuppressNativeDownwardNavigationHide: (@MainActor @Sendable () -> Bool)?
     var buildMenu: BuildMenuType?
     let lightModeTheme: LightModeTheme
     let darkModeTheme: DarkModeTheme
@@ -735,6 +774,7 @@ fileprivate struct ReaderWebViewInternal: View {
                 callbackRelay.handler?.onURLChanged(state: state)
             },
             onScrollBottomStateChanged: onScrollBottomStateChanged,
+            shouldSuppressNativeDownwardNavigationHide: shouldSuppressNativeDownwardNavigationHide,
             buildMenu: { builder in
                 buildMenu?(builder)
             },

@@ -50,12 +50,14 @@ public struct ReaderNavigationVisibilityChange: Sendable {
     public let reason: String?
     public let source: String?
     public let direction: String?
+    public let inputType: String?
 
-    public init(shouldHide: Bool, reason: String?, source: String?, direction: String?) {
+    public init(shouldHide: Bool, reason: String?, source: String?, direction: String?, inputType: String? = nil) {
         self.shouldHide = shouldHide
         self.reason = reason
         self.source = source
         self.direction = direction
+        self.inputType = inputType
     }
 }
 public typealias ReaderNavigationVisibilityWillChangeHandler = @MainActor @Sendable (_ change: ReaderNavigationVisibilityChange) -> Void
@@ -593,13 +595,14 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
                 let reason = payload["reason"] as? String
+                let inputType = payload["inputType"] as? String
                 if source == "nonEBookDocumentScroll" {
                     let request = message.frameInfo.request
                     guard message.frameInfo.isMainFrame,
                           let binding = message.javaScriptBindingToken,
                           scriptCaller.currentJavaScriptBindingToken == binding,
-                          reason == "documentScrollBottom" || reason == "documentScrollUp"
-                            || reason == "documentScrollUpFromObservedBottom",
+                          reason == "documentScrollBottom" || reason == "documentScrollDown" || reason == "documentScrollUp"
+                            || reason == "documentScrollUpFromObservedBottom" || reason == "documentTouchScrollSettled",
                           let messageURL = request.url ?? request.mainDocumentURL,
                           urlsMatchWithoutHash(messageURL, readerContent.pageURL)
                             || urlsMatchWithoutHash(messageURL, readerContent.cachedContentURL)
@@ -610,11 +613,12 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                         shouldHide: shouldHide,
                         reason: reason,
                         source: source,
-                        direction: direction
+                        direction: direction,
+                        inputType: inputType
                     )
                     if let navigationVisibilityWillChangeHandler {
                         navigationVisibilityWillChangeHandler(change)
-                    } else if reason != "documentScrollUp" {
+                    } else if reason != "documentScrollUp", reason != "documentTouchScrollSettled" {
                         // Standalone Reader hosts still receive the ordinary
                         // reveal at arrival and at an unclaimed upward crossing.
                         setHideNavigationDueToScroll(

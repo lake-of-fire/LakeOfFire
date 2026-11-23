@@ -5,12 +5,20 @@ import WebKit
 struct ReaderUnhandledTapUserScript {
     let userScript: WebViewUserScript
     
-    init() {
+    init(observesTouchScrollEnd: Bool? = nil) {
 #if os(iOS)
         let requiresUserScrollIntent = true
+        let supportsTouchScrollEnd: Bool
+        if #available(iOS 26.2, *) {
+            supportsTouchScrollEnd = true
+        } else {
+            supportsTouchScrollEnd = false
+        }
 #else
         let requiresUserScrollIntent = false
+        let supportsTouchScrollEnd = false
 #endif
+        let observesTouchScrollEnd = observesTouchScrollEnd ?? supportsTouchScrollEnd
         let contents = """
 (function() {
     const handlerName = 'swiftUIWebViewUnhandledTap';
@@ -176,6 +184,10 @@ struct ReaderUnhandledTapUserScript {
     const scrollInputEvents = ['touchmove', 'wheel', 'keydown'];
     const SCROLL_THRESHOLD = 24;
     const USER_SCROLL_INTENT_LIFETIME_MS = 1500;
+    let lastTrustedScrollInputType = null;
+    let lastPostWasTouchDownwardHide = false;
+    const observesTouchScrollEnd = \(observesTouchScrollEnd ? "true" : "false") && window === window.top;
+    let pendingTouchDownwardHide = false;
     let bottomRevealAwaitingDeparture = false;
     let observedBottomDeparture = false;
     function documentScrollHeight() {
@@ -205,6 +217,17 @@ struct ReaderUnhandledTapUserScript {
     function enableScrollNavigation(event) {
         if (!isScrollInput(event)) return;
         lastTrustedScrollInputAt.value = Date.now();
+        lastTrustedScrollInputType = event.type === 'touchmove' ? 'touch'
+            : event.type === 'wheel' ? 'wheel' : 'keyboard';
+        if (lastTrustedScrollInputType !== 'touch') {
+            pendingTouchDownwardHide = false;
+        }
+        if (lastPostWasTouchDownwardHide && lastTrustedScrollInputType !== 'touch') {
+            // A native host may ignore the touch hint and keep its sheet open.
+            // A following wheel or key scroll gets its own visibility decision.
+            lastPostedScrollHidden.value = null;
+            lastPostWasTouchDownwardHide = false;
+        }
         if (!scrollNavigationEnabled) {
             scrollNavigationEnabled = true;
             lastScrollPosition.x = window.scrollX || 0;
@@ -221,17 +244,23 @@ struct ReaderUnhandledTapUserScript {
         const observedDeparture = reason === 'documentScrollUpFromObservedBottom';
         const bottomDeparture = observedDeparture
             || (reason === 'documentScrollUp' && bottomRevealAwaitingDeparture);
+        const touchDrivenDownwardHide = hidden && reason === 'documentScrollDown'
+            && requiresUserScrollIntent && lastTrustedScrollInputType === 'touch'
+            && lastPostedScrollHidden.value !== hidden;
         const visibilityHandler = window.webkit.messageHandlers.ebookNavigationVisibility;
-        if (window === window.top && visibilityHandler && (bottomArrival || bottomDeparture)) {
+        if (window === window.top && visibilityHandler
+            && (bottomArrival || bottomDeparture || touchDrivenDownwardHide)) {
             try {
                 visibilityHandler.postMessage({
                     hideNavigationDueToScroll: hidden,
                     reason,
                     source: 'nonEBookDocumentScroll',
-                    direction: bottomDeparture ? 'backward' : 'forward'
+                    direction: bottomDeparture ? 'backward' : 'forward',
+                    inputType: touchDrivenDownwardHide ? 'touch' : null
                 });
                 bottomRevealAwaitingDeparture = bottomArrival;
                 lastPostedScrollHidden.value = hidden;
+                lastPostWasTouchDownwardHide = touchDrivenDownwardHide;
                 return;
             } catch (_error) {}
         }
@@ -239,6 +268,7 @@ struct ReaderUnhandledTapUserScript {
             return;
         }
         lastPostedScrollHidden.value = hidden;
+        lastPostWasTouchDownwardHide = false;
         try {
             window.webkit.messageHandlers[handlerName].postMessage({
                 frame: window === window.top ? 'top' : 'child',
@@ -247,7 +277,8 @@ struct ReaderUnhandledTapUserScript {
                 clientX: null,
                 clientY: null,
                 hideNavigationDueToScroll: hidden,
-                reason: observedDeparture ? 'documentScrollUp' : reason
+                reason: observedDeparture ? 'documentScrollUp' : reason,
+                inputType: lastTrustedScrollInputType
             });
         } catch (_error) {}
     }
@@ -270,6 +301,7 @@ struct ReaderUnhandledTapUserScript {
         lastViewportHeight = viewportHeight;
         lastDocumentScrollHeight = scrollHeight;
         if (rangeChanged) {
+            pendingTouchDownwardHide = false;
             observedBottomDeparture = false;
             accumulatedScroll.value = 0;
             return;
@@ -293,6 +325,7 @@ struct ReaderUnhandledTapUserScript {
             && currentY < bottomThreshold && dy < -0.5;
         if (maximumY > 0 && previousY < bottomThreshold
             && currentY >= bottomThreshold && dy > 0) {
+            pendingTouchDownwardHide = false;
             observedBottomDeparture = false;
             postHideNavigationForScroll(false, 'documentScrollBottom');
             accumulatedScroll.value = 0;
@@ -301,6 +334,7 @@ struct ReaderUnhandledTapUserScript {
         if (bottomRevealAwaitingDeparture && dy < -0.5) {
             accumulatedScroll.value += dy;
             if (crossedOutOfBottom || accumulatedScroll.value < -SCROLL_THRESHOLD) {
+                pendingTouchDownwardHide = false;
                 postHideNavigationForScroll(false, 'documentScrollUp');
                 accumulatedScroll.value = 0;
             }
@@ -322,15 +356,45 @@ struct ReaderUnhandledTapUserScript {
             // change, even when a layout resize rebased the scroll range.
             bottomRevealAwaitingDeparture = false;
             observedBottomDeparture = false;
+            if (observesTouchScrollEnd && lastTrustedScrollInputType === 'touch') {
+                pendingTouchDownwardHide = true;
+            }
+            // Hosts that do not opt in still use the ordinary live hide hint.
             postHideNavigationForScroll(true, 'documentScrollDown');
             accumulatedScroll.value = 0;
         } else if (accumulatedScroll.value < -SCROLL_THRESHOLD) {
+            pendingTouchDownwardHide = false;
             const reason = observedBottomDeparture
                 ? 'documentScrollUpFromObservedBottom' : 'documentScrollUp';
             observedBottomDeparture = false;
             postHideNavigationForScroll(false, reason);
             accumulatedScroll.value = 0;
         }
+    }
+
+    function resetPendingTouchHide(event) {
+        if (event.isTrusted) {
+            pendingTouchDownwardHide = false;
+        }
+    }
+
+    function handleDocumentScrollEnd(event) {
+        if (event.target !== document || !event.isTrusted || !pendingTouchDownwardHide) return;
+        pendingTouchDownwardHide = false;
+        const maximumY = maximumScrollY();
+        if (maximumY <= 2 || (window.scrollY || 0) >= maximumY - 2) return;
+        window.webkit.messageHandlers.ebookNavigationVisibility?.postMessage({
+            hideNavigationDueToScroll: true,
+            reason: 'documentTouchScrollSettled',
+            source: 'nonEBookDocumentScroll',
+            direction: 'forward',
+            inputType: 'touch'
+        });
+    }
+
+    if (observesTouchScrollEnd) {
+        window.addEventListener('touchstart', resetPendingTouchHide, { passive: true });
+        window.addEventListener('scrollend', handleDocumentScrollEnd, { capture: true, passive: true });
     }
 
     window.addEventListener('pointerdown', handlePointerDown, { capture: true, passive: true });
