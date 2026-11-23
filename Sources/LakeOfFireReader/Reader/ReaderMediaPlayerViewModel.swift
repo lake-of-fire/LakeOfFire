@@ -768,7 +768,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    private func stopAITTSPlayback(clearQueue: Bool) {
+    private func stopAITTSPlayback(clearQueue: Bool, resetCurrentSentenceProgress: Bool = true) {
         shouldResumeAITTSAfterAudioInterruption = false
         stopAITTSSynthesizerForQueueSwap()
         deactivateReadAloudAudioSession()
@@ -789,7 +789,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             hasPreparedAITTS = false
             ttsPreparedEbookSectionIndex = nil
             didPublishCompletionForCurrentQueue = false
-        } else {
+        } else if resetCurrentSentenceProgress {
             ttsCurrentCharacterRange = nil
             updateAITTSProgress()
         }
@@ -1014,8 +1014,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         }
         guard playbackSource == .aiTextToSpeech else { return }
         cancelLookupAITTSSuspension()
-        pauseAITTS()
-        isPlaying = false
+        // A pending completion must not advance the chapter after route loss.
+        ttsPlaybackCompletedQueueGeneration = nil
+        stopAITTSPlayback(clearQueue: false, resetCurrentSentenceProgress: false)
     }
 
     @MainActor
