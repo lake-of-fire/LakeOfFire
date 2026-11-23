@@ -362,18 +362,23 @@ public class ReaderViewModel: NSObject, ObservableObject {
             guard let content = try await contentRef.resolveOnMainActor() else { continue }
             let shouldStripClipboardIndicator = content.isFromClipboard || content.url.isSnippetURL
             let finalTitle = newTitle.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
-            let existingTitle = content.title
-                .replacingOccurrences(of: String("\u{fffc}"), with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !finalTitle.isEmpty, existingTitle != finalTitle || content.author != author ?? "" {
+            let metadataChanged: @Sendable (String, String) -> Bool = { storedTitle, storedAuthor in
+                let existingTitle = storedTitle
+                    .replacingOccurrences(of: String("\u{fffc}"), with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return existingTitle != finalTitle || (author.map { storedAuthor != $0 } ?? false)
+            }
+            if !finalTitle.isEmpty, metadataChanged(content.title, content.author) {
                 if let expectedDocumentURL,
                    !urlsMatchWithoutHash(expectedDocumentURL, state.pageURL) {
                     return
                 }
                 try await content.asyncWrite { _, content in
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, metadataChanged(content.title, content.author) else { return }
                     content.title = finalTitle
-                    content.author = author ?? ""
+                    if let author {
+                        content.author = author
+                    }
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
                 try await refreshTitleInWebView(content: content)

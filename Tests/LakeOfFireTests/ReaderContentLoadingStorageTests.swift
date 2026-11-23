@@ -4,6 +4,7 @@ import XCTest
 import RealmSwift
 @testable import RealmSwiftGaps
 @testable import LakeOfFireContent
+@testable import LakeOfFireReader
 
 private actor ReaderContentLoadingDiscoveryGate {
     private var arrivals = 0
@@ -64,6 +65,69 @@ final class ReaderContentLoadingStorageTests: XCTestCase {
             try assertPendingMutation(for: record, in: realm)
         }
         return record
+    }
+
+    @MainActor
+    func testPageTitleUpdatePreservesAuthorUnlessExplicitlySupplied() async throws {
+        let configuration = makeConfiguration()
+        let libraryConfiguration = makeConfiguration(objectTypes: [
+            LibraryConfiguration.self, FeedCategory.self, UserScript.self, UserScriptAllowedDomain.self
+        ])
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: libraryConfiguration)
+        }
+
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let url = URL(string: "https://example.com/page-title-metadata")!
+        let record = try managedReaderRecord(in: realm, url: url, title: "Original title")
+        try realm.write {
+            record.author = "Original author"
+            record.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let model = ReaderViewModel(realmConfiguration: libraryConfiguration, systemScripts: [])
+        var state = model.state
+        state.pageURL = url
+        model.state = state
+
+        let originalGeneration = try XCTUnwrap(pendingMutation(for: record, in: realm)).generation
+        try await model.pageMetadataUpdated(title: "Updated title")
+        await realm.asyncRefresh()
+        XCTAssertEqual(record.title, "Updated title")
+        XCTAssertEqual(record.author, "Original author")
+        let titleGeneration = try XCTUnwrap(pendingMutation(for: record, in: realm)).generation
+        XCTAssertNotEqual(titleGeneration, originalGeneration)
+
+        try await model.pageMetadataUpdated(title: "Updated title")
+        await realm.asyncRefresh()
+        XCTAssertEqual(record.author, "Original author")
+        XCTAssertEqual(pendingMutation(for: record, in: realm)?.generation, titleGeneration)
+
+        try await model.pageMetadataUpdated(
+            title: "Updated title", author: "New author", expectedDocumentURL: url
+        )
+        await realm.asyncRefresh()
+        XCTAssertEqual(record.author, "New author")
+        let authorGeneration = try XCTUnwrap(pendingMutation(for: record, in: realm)).generation
+        XCTAssertNotEqual(authorGeneration, titleGeneration)
+
+        try await model.pageMetadataUpdated(title: "Updated title", author: "", expectedDocumentURL: url)
+        await realm.asyncRefresh()
+        XCTAssertEqual(record.title, "Updated title")
+        XCTAssertEqual(record.author, "")
+        let clearedAuthorGeneration = try XCTUnwrap(pendingMutation(for: record, in: realm)).generation
+        XCTAssertNotEqual(clearedAuthorGeneration, authorGeneration)
     }
 
     @MainActor
