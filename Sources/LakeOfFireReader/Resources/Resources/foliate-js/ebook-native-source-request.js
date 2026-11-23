@@ -17,6 +17,16 @@ export const makeNativeEbookSource = (url, packageSessionID = null) => {
         packageSessionID: normalizeEbookPackageSessionID(packageSessionID) })
 }
 
+export const committedNativeEbookSection = (source, sections, primaryContent, doc) => {
+    if (source?.kind !== 'native' || source.packageSessionID == null
+        || !doc || primaryContent?.doc !== doc || !Number.isInteger(primaryContent.index)) return null
+    // A primary SVG can have a blob URL. The spine's id is the literal archive
+    // path, independent of the renderer URL or author-provided markup.
+    const sectionHref = sections?.[primaryContent.index]?.id
+    if (typeof sectionHref !== 'string' || sectionHref.length === 0) return null
+    return { sourceURL: source.url, sectionHref, packageSessionID: source.packageSessionID }
+}
+
 export const nativeEbookRequest = (route, sourceURL, { subpath = null, packageSessionID = null } = {}) => {
     if (route !== 'entries' && route !== 'entry') throw new TypeError('Invalid native EPUB route')
     const source = makeNativeEbookSource(sourceURL, packageSessionID)
