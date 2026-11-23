@@ -128,9 +128,23 @@ final class ReaderWebViewHandler {
     }
 
     func handleNavigationCommitted(state: WebViewState, selectionIntent: WebViewURLTransitionIntent? = nil,
-                                   urlChangeContext: URLChangeContext? = nil) async throws {
+                                   urlChangeContext: URLChangeContext? = nil,
+                                   sourceNavigationProgressID: UUID? = nil) async throws {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
+        let capturedSourceNavigationProgressID = sourceNavigationProgressID
+            ?? (state.pageURL.isReaderURLLoaderURL
+                ? navigator.captureReaderModeProgressSource(
+                    progressID: state.committedNavigationProgressID,
+                    forCommittedURL: state.pageURL
+                )
+                : nil)
+        var progressSourceTransferred = false
+        defer {
+            if let capturedSourceNavigationProgressID, !progressSourceTransferred {
+                navigator.retireReaderModeProgressSource(capturedSourceNavigationProgressID)
+            }
+        }
         try Task.checkCancellation()
         if let urlChangeContext { try requireCurrentURLChange(urlChangeContext) }
         // The owned blank stage replaces the physical renderer, but does not
@@ -208,7 +222,9 @@ final class ReaderWebViewHandler {
             } else {
                 try await readerModeViewModel.onNavigationCommitted(
                     readerContent: readerContent, newState: state,
-                    scriptCaller: scriptCaller, navigator: navigator
+                    scriptCaller: scriptCaller, navigator: navigator,
+                    sourceNavigationProgressID: capturedSourceNavigationProgressID,
+                    onProgressSourceTransferred: { progressSourceTransferred = true }
                 )
             }
             try Task.checkCancellation()
@@ -292,13 +308,24 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationCommitted(state: WebViewState) {
+        // Snapshot the native loader owner before queuing any content lookup or
+        // reader-view-model callback. A same-URL retry receives a new ID.
+        let sourceNavigationProgressID = state.pageURL.isReaderURLLoaderURL
+            ? navigator.captureReaderModeProgressSource(
+                progressID: state.committedNavigationProgressID,
+                forCommittedURL: state.pageURL
+            )
+            : nil
         readerModeViewModel.bindManagedFontsToPreparedReaderDocument(
             pageURL: state.pageURL, scriptCaller: scriptCaller, navigator: navigator
         )
         readerContent.withdrawSelectionIntent()
         navigationTaskManager.startOnNavigationCommitted {
             do {
-                try await self.handleNavigationCommitted(state: state)
+                try await self.handleNavigationCommitted(
+                    state: state,
+                    sourceNavigationProgressID: sourceNavigationProgressID
+                )
             } catch {
                 if !Task.isCancelled { self.readerContent.withdrawSelectionIntent() }
                 throw error

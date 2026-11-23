@@ -1769,6 +1769,7 @@ public class ReaderModeViewModel: ObservableObject {
         let generation: UUID
         let accountSession: AccountSessionSnapshot?
         let accountBoundaryID: AccountSessionBoundaryID?
+        let sourceNavigationProgressID: UUID?
         var contentIsCurrent: (@MainActor () -> Bool)? = nil
     }
 
@@ -2809,6 +2810,9 @@ public class ReaderModeViewModel: ObservableObject {
         guard !render.task.isCancelled, render.originatingContentIsCurrent(),
               render.hasDispatchedHTML || render.documentBindingIsCurrent() else {
             activeRendersByURL.removeValue(forKey: key)
+            if let sourceID = render.sourceNavigationProgressID {
+                navigator?.retireReaderModeProgressSource(sourceID)
+            }
             render.task.cancel()
             return false
         }
@@ -2822,6 +2826,9 @@ public class ReaderModeViewModel: ObservableObject {
     private func retireRender(forKey key: String, ifOwnedBy generation: UUID? = nil) {
         if let generation, activeRendersByURL[key]?.generation != generation { return }
         let retired = activeRendersByURL.removeValue(forKey: key)
+        if let sourceID = retired?.sourceNavigationProgressID {
+            navigator?.retireReaderModeProgressSource(sourceID)
+        }
         if let retired, completedRenderOwner?.generation == retired.generation {
             completedRenderOwner = nil
         }
@@ -2908,15 +2915,13 @@ public class ReaderModeViewModel: ObservableObject {
     private func cancelActiveRender(for url: URL) {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let key = canonicalRenderKey(canonicalURL)
-        let render = activeRendersByURL.removeValue(forKey: key)
-        render?.task.cancel()
+        retireRender(forKey: key)
     }
 
     private func cancelOtherActiveRenders(except keyToKeep: String?) {
         let staleKeys = activeRendersByURL.keys.filter { $0 != keyToKeep }
         for staleKey in staleKeys {
-            let render = activeRendersByURL.removeValue(forKey: staleKey)
-            render?.task.cancel()
+            retireRender(forKey: staleKey)
         }
     }
 
@@ -2928,6 +2933,7 @@ public class ReaderModeViewModel: ObservableObject {
         documentBindingIsCurrent: @escaping @MainActor () -> Bool,
         scriptCaller: WebViewScriptCaller,
         processingAccount: ReaderModeProcessingAccount?,
+        sourceNavigationProgressID: UUID? = nil,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
     ) -> Bool {
         guard originatingContentIsCurrent(), documentBindingIsCurrent() else { return false }
@@ -2970,7 +2976,8 @@ public class ReaderModeViewModel: ObservableObject {
             documentBindingToken: scriptCaller.currentJavaScriptBindingToken,
             preparationFailureRevision: preparationFailureRevision,
             accountSession: processingAccount?.snapshot,
-            accountBoundaryID: processingAccount?.access.boundaryID
+            accountBoundaryID: processingAccount?.access.boundaryID,
+            sourceNavigationProgressID: sourceNavigationProgressID
         )
         return true
     }
@@ -3105,7 +3112,8 @@ public class ReaderModeViewModel: ObservableObject {
         readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator,
-        preparedSnippetSnapshot: ReaderContentRenderSnapshot? = nil
+        preparedSnippetSnapshot: ReaderContentRenderSnapshot? = nil,
+        sourceNavigationProgressID: UUID? = nil
     ) {
         let contentURL = readerContent.pageURL
         let cachedReadabilityContent = readabilityContent
@@ -3139,7 +3147,8 @@ public class ReaderModeViewModel: ObservableObject {
             // Dispatched HTML retains its existing completed-document handoff.
             documentBindingIsCurrent: { scriptCaller.currentJavaScriptBindingToken == renderBinding },
             scriptCaller: scriptCaller,
-            processingAccount: processingAccount
+            processingAccount: processingAccount,
+            sourceNavigationProgressID: sourceNavigationProgressID
         ) { [weak self] generation in
             guard let self else { return }
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
@@ -3164,7 +3173,8 @@ public class ReaderModeViewModel: ObservableObject {
                     prefetchedContent: routeDecision.prefetchedContent,
                     prefetchedLocalHTML: routeDecision.prefetchedLocalHTML,
                     selectionIsCurrent: selectionIsCurrent,
-                    originatingContentIsCurrent: originatingContentIsCurrent
+                    originatingContentIsCurrent: originatingContentIsCurrent,
+                    sourceNavigationProgressID: sourceNavigationProgressID
                 )
             case .capturedReadability:
                 guard let cachedReadabilityContent else {
@@ -3227,7 +3237,8 @@ public class ReaderModeViewModel: ObservableObject {
                         renderGeneration: generation,
                         renderBinding: renderBinding,
                         selectionIsCurrent: selectionIsCurrent,
-                        originatingContentIsCurrent: originatingContentIsCurrent
+                        originatingContentIsCurrent: originatingContentIsCurrent,
+                        sourceNavigationProgressID: sourceNavigationProgressID
                     )
                 } catch is CancellationError {
                     await self.cancelReaderModeLoad(
@@ -3288,7 +3299,8 @@ public class ReaderModeViewModel: ObservableObject {
         prefetchedContent: (any ReaderContentProtocol)? = nil,
         prefetchedLocalHTML: String? = nil,
         selectionIsCurrent: @escaping @Sendable () -> Bool,
-        originatingContentIsCurrent: @escaping @MainActor () -> Bool
+        originatingContentIsCurrent: @escaping @MainActor () -> Bool,
+        sourceNavigationProgressID: UUID? = nil
     ) async {
         let contentURL = renderURL
         guard originatingContentIsCurrent(),
@@ -3415,7 +3427,8 @@ public class ReaderModeViewModel: ObservableObject {
                     renderGeneration: renderGeneration,
                     renderBinding: renderBinding,
                     selectionIsCurrent: selectionIsCurrent,
-                    originatingContentIsCurrent: originatingContentIsCurrent
+                    originatingContentIsCurrent: originatingContentIsCurrent,
+                    sourceNavigationProgressID: sourceNavigationProgressID
                 )
                 return
             }
@@ -3424,20 +3437,36 @@ public class ReaderModeViewModel: ObservableObject {
             let directHTML = prepareHTMLForDirectLoad(html)
             guard ownsContent() else { return }
             let displayURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
-            recordOwnedHTMLDispatch(for: contentURL, generation: renderGeneration) { [weak self, weak readerContent] in
-                guard let self, let readerContent else { return false }
-                return !content.isInvalidated
-                    && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
-                    && self.readerModeContentIsCurrent(content, readerContent: readerContent)
-            }
             if let htmlData = directHTML.data(using: .utf8) {
-                navigator.load(
+                let issued = navigator.load(
                     htmlData,
                     mimeType: "text/html",
                     characterEncodingName: "UTF-8",
-                    baseURL: displayURL
+                    baseURL: displayURL,
+                    progressSourceID: sourceNavigationProgressID
                 )
+                guard issued else {
+                    cancelReaderModeLoad(
+                        for: contentURL,
+                        ifOwnedBy: renderGeneration,
+                        readerContent: readerContent,
+                        originatingContentIsCurrent: originatingContentIsCurrent
+                    )
+                    return
+                }
+                recordOwnedHTMLDispatch(for: contentURL, generation: renderGeneration) { [weak self, weak readerContent] in
+                    guard let self, let readerContent else { return false }
+                    return !content.isInvalidated
+                        && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
+                        && self.readerModeContentIsCurrent(content, readerContent: readerContent)
+                }
             } else {
+                recordOwnedHTMLDispatch(for: contentURL, generation: renderGeneration) { [weak self, weak readerContent] in
+                    guard let self, let readerContent else { return false }
+                    return !content.isInvalidated
+                        && urlsMatchWithoutHashForHotfix(contentURL, readerContent.pageURL)
+                        && self.readerModeContentIsCurrent(content, readerContent: readerContent)
+                }
                 navigator.loadHTML(directHTML, baseURL: displayURL)
             }
         } catch is CancellationError {
@@ -3467,7 +3496,8 @@ public class ReaderModeViewModel: ObservableObject {
         renderGeneration: UUID,
         renderBinding: WebViewScriptCaller.JavaScriptBindingToken?,
         selectionIsCurrent: @escaping @Sendable () -> Bool,
-        originatingContentIsCurrent: @escaping @MainActor () -> Bool
+        originatingContentIsCurrent: @escaping @MainActor () -> Bool,
+        sourceNavigationProgressID: UUID? = nil
     ) async throws {
         let requestedURL = renderURL
         guard let active = activeRendersByURL[canonicalRenderKey(requestedURL)],
@@ -3978,6 +4008,20 @@ public class ReaderModeViewModel: ObservableObject {
                         retireRender(forKey: canonicalRenderKey(requestedURL), ifOwnedBy: renderGeneration)
                         return
                     }
+                    let issuedLoad = navigator.load(
+                        transformedHTMLData,
+                        mimeType: "text/html",
+                        characterEncodingName: "UTF-8",
+                        baseURL: displayURL,
+                        progressSourceID: sourceNavigationProgressID
+                    )
+                    guard issuedLoad,
+                          let issued = navigator.issuedDataNavigationIdentity else {
+                        clearSyntheticReaderLoaderExpectation(ifOwnedBy: expectationReceipt)
+                        cancelReaderModeLoad(for: requestedURL, ifOwnedBy: renderGeneration,
+                            readerContent: readerContent, originatingContentIsCurrent: originatingContentIsCurrent)
+                        return
+                    }
                     recordOwnedHTMLDispatch(for: requestedURL, generation: renderGeneration) { [weak self, weak readerContent] in
                         guard let self, let readerContent else { return false }
                         return !content.isInvalidated
@@ -3985,17 +4029,6 @@ public class ReaderModeViewModel: ObservableObject {
                             && self.readerModeContentIsCurrent(content, readerContent: readerContent)
                     }
                     ReaderSnippetFinalDocumentDiagnostics.record("html-dispatch", contentURL: requestedURL, generation: renderGeneration)
-                    navigator.load(
-                        transformedHTMLData,
-                        mimeType: "text/html",
-                        characterEncodingName: "UTF-8",
-                        baseURL: displayURL
-                    )
-                    guard let issued = navigator.issuedDataNavigationIdentity else {
-                        cancelReaderModeLoad(for: requestedURL, ifOwnedBy: renderGeneration,
-                            readerContent: readerContent, originatingContentIsCurrent: originatingContentIsCurrent)
-                        return
-                    }
                     expectedSyntheticReaderNavigation = PreparedReaderNavigation(
                         navigator: navigator, intent: issued, url: displayURL
                     )
@@ -4100,11 +4133,15 @@ public class ReaderModeViewModel: ObservableObject {
         readerContent: ReaderContent,
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller,
-        navigator: WebViewNavigator
+        navigator: WebViewNavigator,
+        sourceNavigationProgressID: UUID? = nil,
+        onProgressSourceTransferred: @MainActor () -> Void = {}
     ) async throws {
         try await handleNavigationCommitted(readerContent: readerContent, newState: newState,
                                             scriptCaller: scriptCaller, navigator: navigator,
-                                            isSameDocumentNavigation: false)
+                                            isSameDocumentNavigation: false,
+                                            sourceNavigationProgressID: sourceNavigationProgressID,
+                                            onProgressSourceTransferred: onProgressSourceTransferred)
     }
 
     @MainActor
@@ -4116,7 +4153,9 @@ public class ReaderModeViewModel: ObservableObject {
     ) async throws {
         try await handleNavigationCommitted(readerContent: readerContent, newState: newState,
                                             scriptCaller: scriptCaller, navigator: navigator,
-                                            isSameDocumentNavigation: true)
+                                            isSameDocumentNavigation: true,
+                                            sourceNavigationProgressID: nil,
+                                            onProgressSourceTransferred: {})
     }
 
     @MainActor
@@ -4125,7 +4164,9 @@ public class ReaderModeViewModel: ObservableObject {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator,
-        isSameDocumentNavigation: Bool
+        isSameDocumentNavigation: Bool,
+        sourceNavigationProgressID: UUID?,
+        onProgressSourceTransferred: @MainActor () -> Void
     ) async throws {
         ReaderSnippetFinalDocumentDiagnostics.record("commit-start", contentURL: newState.pageURL)
         // A cancelled or retired callback has no authority to clear the
@@ -4300,8 +4341,14 @@ public class ReaderModeViewModel: ObservableObject {
                     readerContent: readerContent,
                     scriptCaller: scriptCaller,
                     navigator: navigator,
-                    preparedSnippetSnapshot: preparedSnippetSnapshot
+                    preparedSnippetSnapshot: preparedSnippetSnapshot,
+                    sourceNavigationProgressID: sourceNavigationProgressID
                 )
+                if let sourceNavigationProgressID,
+                   activeRendersByURL[canonicalRenderKey(committedURL)]?.sourceNavigationProgressID
+                    == sourceNavigationProgressID {
+                    onProgressSourceTransferred()
+                }
             } else {
                 navigator.load(URLRequest(url: committedURL))
             }
