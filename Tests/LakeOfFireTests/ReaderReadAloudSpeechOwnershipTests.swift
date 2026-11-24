@@ -6,6 +6,50 @@ import XCTest
 @MainActor
 final class ReaderReadAloudSpeechOwnershipTests: XCTestCase {
 
+    func testAudioInterruptionRetiresPreparationBeforeReadAloudSourceSwitch() throws {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        XCTAssertEqual(viewModel.playbackSource, .recordedAudio)
+        let retiredPreparation = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+
+        viewModel.beginReadAloudAudioInterruption()
+
+        XCTAssertFalse(viewModel.isPreparingReadAloud)
+        XCTAssertFalse(viewModel.isCurrentReadAloudPreparation(retiredPreparation))
+        XCTAssertNil(viewModel.readAloudErrorMessage)
+        viewModel.endReadAloudAudioInterruption(permitsResume: true)
+        XCTAssertEqual(viewModel.playbackSource, .recordedAudio)
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertTrue(synthesizer.utterances.isEmpty)
+
+        let successor = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+        viewModel.failReadAloudPreparation(retiredPreparation, message: "Retired preparation failed")
+        XCTAssertTrue(viewModel.isCurrentReadAloudPreparation(successor))
+        XCTAssertNil(viewModel.readAloudErrorMessage)
+        viewModel.completeReadAloudPreparation(retiredPreparation)
+        XCTAssertTrue(viewModel.isCurrentReadAloudPreparation(successor))
+
+        viewModel.completeReadAloudPreparation(successor)
+        XCTAssertFalse(viewModel.isPreparingReadAloud)
+    }
+
+    func testAudioInterruptionPreservesExistingReadAloudPreparationFailure() throws {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        let preparation = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+        let message = "Prepared text unavailable"
+        viewModel.failReadAloudPreparation(preparation, message: message)
+
+        viewModel.beginReadAloudAudioInterruption()
+        viewModel.endReadAloudAudioInterruption(permitsResume: false)
+
+        XCTAssertEqual(viewModel.readAloudErrorMessage, message)
+        XCTAssertFalse(viewModel.isPreparingReadAloud)
+        XCTAssertFalse(viewModel.isPlaying)
+    }
+
     func testAudioInterruptionResumesCurrentVisibleQueueOnlyOnce() {
         let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
         let lease = SpeechOwnershipTestAudioSessionLease()
@@ -791,6 +835,181 @@ final class ReaderReadAloudSpeechOwnershipTests: XCTestCase {
             XCTAssertEqual(firstLease.releaseCount, 1)
             XCTAssertEqual(resumedLease.releaseCount, 1)
         }
+    }
+
+    func testRouteDisconnectionRetiresPendingSpeechWithoutChangingRecordedPlayback() throws {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        viewModel.isMediaPlayerPresented = true
+        viewModel.isPlaying = true
+        viewModel.recordLookupRecordedAudioSuspension(wasPlaying: true)
+        let queueGeneration = viewModel.ttsQueueGeneration
+        let preparation = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+
+        viewModel.pauseReadAloudForDisconnectedRoute()
+
+        XCTAssertFalse(viewModel.isCurrentReadAloudPreparation(preparation))
+        XCTAssertEqual(viewModel.readAloudPreparationState, .idle)
+        XCTAssertEqual(viewModel.playbackSource, .recordedAudio)
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertTrue(viewModel.isMediaPlayerPresented)
+        XCTAssertTrue(viewModel.consumeLookupRecordedAudioResumeRequest())
+        XCTAssertEqual(viewModel.ttsQueueGeneration, queueGeneration)
+        XCTAssertFalse(viewModel.hasPreparedAITTS)
+        XCTAssertTrue(synthesizer.utterances.isEmpty)
+        XCTAssertEqual(lease.releaseCount, 0)
+
+        let replacement = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+        viewModel.completeReadAloudPreparation(preparation)
+        viewModel.failReadAloudPreparation(preparation, message: "Retired preparation")
+        XCTAssertTrue(viewModel.isCurrentReadAloudPreparation(replacement))
+        XCTAssertNil(viewModel.readAloudErrorMessage)
+    }
+
+    func testRouteDisconnectionStopsSpeechAndPreservesPreparationFailure() throws {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+        let preparation = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+        viewModel.failReadAloudPreparation(preparation, message: "Preparation failed")
+
+        viewModel.pauseReadAloudForDisconnectedRoute()
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertFalse(synthesizer.isSpeaking)
+        XCTAssertFalse(synthesizer.isPaused)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+        XCTAssertEqual(lease.releaseCount, 1)
+        XCTAssertEqual(viewModel.readAloudErrorMessage, "Preparation failed")
+    }
+
+    func testRouteDisconnectionRevokesSpeechResumeAfterLookupDismissal() {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+        let queueGeneration = viewModel.ttsQueueGeneration
+        viewModel.recordLookupAITTSSuspension(wasPlaying: viewModel.isPlaying)
+        viewModel.seekAITTS(toSentenceIdentifier: "admission-1", shouldPlay: false)
+        XCTAssertTrue(viewModel.shouldResumeAITTSAfterLookupDismissal)
+
+        viewModel.pauseReadAloudForDisconnectedRoute()
+
+        XCTAssertFalse(viewModel.consumeLookupAITTSResumeRequest())
+        XCTAssertFalse(viewModel.isAITTSSuspendedForLookup)
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertFalse(synthesizer.isSpeaking)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+        XCTAssertEqual(viewModel.ttsQueueGeneration, queueGeneration)
+    }
+
+    func testRouteDisconnectionRevokesSpeechResumeAfterInterruption() {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+        viewModel.beginReadAloudAudioInterruption()
+        XCTAssertTrue(synthesizer.isPaused)
+        let utteranceCount = synthesizer.utterances.count
+
+        viewModel.pauseReadAloudForDisconnectedRoute()
+        viewModel.endReadAloudAudioInterruption(permitsResume: true)
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+        XCTAssertEqual(synthesizer.continueCount, 0)
+        XCTAssertEqual(synthesizer.utterances.count, utteranceCount)
+        XCTAssertEqual(lease.releaseCount, 1)
+    }
+
+    func testRouteDisconnectionRetiresNativeCallbacksAndRetainsCurrentSentenceProgress() throws {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let firstLease = SpeechOwnershipTestAudioSessionLease()
+        let replayLease = SpeechOwnershipTestAudioSessionLease()
+        var acquisitions = 0
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: {
+                acquisitions += 1
+                return acquisitions == 1 ? firstLease : replayLease
+            })
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+        let terminal = try XCTUnwrap(synthesizer.utterances.last)
+        let callbackSource = AVSpeechSynthesizer()
+        viewModel.speechSynthesizer(callbackSource,
+            willSpeakRangeOfSpeechString: NSRange(location: 0, length: 1), utterance: terminal)
+        let progress = viewModel.ttsProgressValue
+        XCTAssertGreaterThan(progress, 1)
+        XCTAssertLessThan(progress, viewModel.ttsProgressUpperBound)
+        let queue = viewModel.ttsQueueGeneration
+        let completion = viewModel.ttsPlaybackCompletionGeneration
+        let utteranceCount = synthesizer.utterances.count
+        var stopCallbacks = 0
+        synthesizer.onStop = { [weak viewModel] in
+            stopCallbacks += 1
+            viewModel?.speechSynthesizer(callbackSource, didFinish: terminal)
+        }
+
+        viewModel.pauseReadAloudForDisconnectedRoute()
+        viewModel.speechSynthesizer(callbackSource, didStart: terminal)
+        viewModel.speechSynthesizer(callbackSource,
+            willSpeakRangeOfSpeechString: NSRange(location: 1, length: 1), utterance: terminal)
+        viewModel.speechSynthesizer(callbackSource, didFinish: terminal)
+
+        XCTAssertEqual(stopCallbacks, 1)
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+        XCTAssertEqual(viewModel.ttsProgressValue, progress)
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "admission-2")
+        XCTAssertEqual(viewModel.ttsQueueGeneration, queue)
+        XCTAssertEqual(viewModel.ttsPlaybackCompletionGeneration, completion)
+        XCTAssertNil(viewModel.ttsPlaybackCompletedQueueGeneration)
+        XCTAssertEqual(synthesizer.utterances.count, utteranceCount)
+        XCTAssertEqual(firstLease.releaseCount, 1)
+
+        viewModel.playAITTS()
+
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertEqual(acquisitions, 2)
+        XCTAssertEqual(synthesizer.utterances.count, utteranceCount + 1)
+        let replay = try XCTUnwrap(synthesizer.utterances.last)
+        XCTAssertFalse(replay === terminal)
+        XCTAssertEqual(replay.speechString, terminal.speechString)
+    }
+
+    func testRouteDisconnectionWithdrawsDeferredCompletionAndPreservesReplayFromBeginning() throws {
+        let synthesizer = SpeechOwnershipTestSpeechSynthesizer()
+        let lease = SpeechOwnershipTestAudioSessionLease()
+        let viewModel = makeModel(synthesizer: synthesizer, lease: lease)
+        defer { viewModel.clearAITTSPlaybackQueue() }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: true))
+        let terminal = try XCTUnwrap(synthesizer.utterances.last)
+        let queue = viewModel.ttsQueueGeneration
+        viewModel.speechSynthesizer(AVSpeechSynthesizer(), didFinish: terminal)
+        XCTAssertEqual(viewModel.ttsPlaybackCompletedQueueGeneration, queue)
+        let completion = viewModel.ttsPlaybackCompletionGeneration
+        let utteranceCount = synthesizer.utterances.count
+
+        viewModel.pauseReadAloudForDisconnectedRoute()
+
+        XCTAssertNil(viewModel.ttsPlaybackCompletedQueueGeneration)
+        XCTAssertEqual(viewModel.ttsPlaybackCompletionGeneration, completion)
+        XCTAssertEqual(viewModel.ttsQueueGeneration, queue)
+        XCTAssertEqual(viewModel.ttsProgressValue, viewModel.ttsProgressUpperBound)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+        XCTAssertFalse(viewModel.isPlaying)
+
+        viewModel.playAITTS()
+
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "admission-1")
+        XCTAssertEqual(synthesizer.utterances.dropFirst(utteranceCount).map(\.speechString), utterances.map(\.text))
     }
 
     private func makeModel(
