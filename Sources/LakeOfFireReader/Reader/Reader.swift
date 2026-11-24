@@ -181,6 +181,10 @@ func applyAdaptiveReaderWidth(
                 let changed = false;
                 if (style && style.getPropertyValue('--mnb-reader-max-width-override') !== value) {
                     style.setProperty('--mnb-reader-max-width-override', value);
+                    delete document.body.dataset.mnbMessageHandlerSettingsApplicationSignature
+                    delete document.body.dataset.mnbMessageHandlerSettingsSignature
+                    delete document.body.dataset.mnbReaderFontSizeSignature
+                    delete globalThis.__manabiReaderFontSizeSyncSignature
                     changed = true;
                 }
                 mark('finish', `reason=\(reason) maxWidth=\(maxWidthOverride) changed=${changed}`);
@@ -287,12 +291,22 @@ func applyReaderFontSize(
                     try { console.timeStamp?.(label); } catch (_) {}
                 };
                 mark('start', 'reason=\(reason) size=\(size)');
-                const fontSize = '\(size)px';
+                // Compare with CSSOM's spelling, including fractional sizes.
+                const fontSizeProbe = document.createElement('span').style
+                fontSizeProbe.fontSize = '\(size)px'
+                const fontSize = fontSizeProbe.fontSize
+                if (!fontSize) { return { appliedCount: 0, fontSize } }
                 const applyFontSize = (doc) => {
                     const body = doc?.body;
                     if (!body) { return false; }
                     if (body.style.fontSize === fontSize) { return false; }
                     body.style.fontSize = fontSize;
+                    delete body.dataset.mnbMessageHandlerSettingsApplicationSignature
+                    delete body.dataset.mnbMessageHandlerSettingsSignature
+                    delete body.dataset.mnbReaderFontSizeSignature
+                    if (doc.defaultView) {
+                        delete doc.defaultView.__manabiReaderFontSizeSyncSignature
+                    }
                     return true;
                 };
                 globalThis.manabiReaderFontSizeCSS = fontSize;
@@ -309,6 +323,10 @@ func applyReaderFontSize(
                     } catch (_) {}
                     for (const doc of docs) {
                         if (applyFontSize(doc)) { appliedCount += 1; }
+                    }
+                    if (appliedCount > 0) {
+                        // A forwarded change also makes the host's aggregate font cache stale.
+                        delete globalThis.__manabiReaderFontSizeSyncSignature
                     }
                     return { reason, appliedCount, fontSize };
                 };
@@ -382,6 +400,10 @@ public enum ReaderThemeJavaScript {
                 if (ownsDocumentAppearance && body.style?.getPropertyValue?.('color-scheme') !== __colorScheme) {
                     body.style?.setProperty?.('color-scheme', __colorScheme);
                     changed = true;
+                }
+                if (changed) {
+                    delete body.dataset.mnbMessageHandlerSettingsApplicationSignature
+                    delete body.dataset.mnbMessageHandlerSettingsSignature
                 }
                 return changed;
             };
