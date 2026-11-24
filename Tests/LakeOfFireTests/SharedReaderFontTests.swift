@@ -57,26 +57,25 @@ final class SharedReaderFontTests: XCTestCase {
         XCTAssertFalse(sharedReaderFontUsesLocalScheme(for: URL(string: "https://example.com/article")!))
     }
 
-    func testPlaceholderLoaderSkipsFontWaitButOwnedSyntheticDocumentKeepsSetup() {
+    func testReaderLoaderSkipsFontWaitAndRenderedDocumentsKeepSetup() {
         let loaderURL = URL(
             string: "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.com%2Farticle"
         )!
         XCTAssertFalse(
             ReaderModeViewModel.shouldInjectSharedFontForCommittedNavigation(at: loaderURL),
-            "An unowned placeholder loader must not wait for optional font delivery"
-        )
-        XCTAssertTrue(
-            ReaderModeViewModel.shouldInjectSharedFontForCommittedNavigation(
-                at: loaderURL,
-                ownsSyntheticReaderDocument: true
-            ),
-            "A loader commit explicitly owned by the prepared synthetic document retains font setup"
+            "The loader shell has no article to receive font setup"
         )
         XCTAssertTrue(
             ReaderModeViewModel.shouldInjectSharedFontForCommittedNavigation(
                 at: URL(string: "https://example.com/article")!
             ),
             "The rendered destination keeps its normal font setup"
+        )
+        XCTAssertTrue(
+            ReaderModeViewModel.shouldInjectSharedFontForCommittedNavigation(
+                at: URL(string: "reader-file://file/article.html")!
+            ),
+            "The rendered local document keeps its local-scheme font setup"
         )
     }
 

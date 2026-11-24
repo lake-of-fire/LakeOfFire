@@ -4243,12 +4243,7 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
 
-        let ownsSyntheticReaderDocument = expectedSyntheticReaderNavigation != nil
-            && expectsSyntheticReaderLoaderCommit(for: newState.pageURL)
-        if Self.shouldInjectSharedFontForCommittedNavigation(
-            at: newState.pageURL,
-            ownsSyntheticReaderDocument: ownsSyntheticReaderDocument
-        ) {
+        if Self.shouldInjectSharedFontForCommittedNavigation(at: newState.pageURL) {
             ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
             await injectSharedFontIfNeeded(
                 scriptCaller: scriptCaller,
@@ -4371,10 +4366,11 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     nonisolated static func shouldInjectSharedFontForCommittedNavigation(
-        at pageURL: URL,
-        ownsSyntheticReaderDocument: Bool = false
+        at pageURL: URL
     ) -> Bool {
-        !pageURL.isReaderURLLoaderURL || ownsSyntheticReaderDocument
+        // This synthetic shell only exists to hand off saved content; the
+        // final document gets its own navigation commit and font setup.
+        !pageURL.isReaderURLLoaderURL
     }
     
     @MainActor
