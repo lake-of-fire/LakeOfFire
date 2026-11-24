@@ -311,7 +311,9 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
         automaticReadabilityTask?.cancel()
         automaticReadabilityTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            let delayNanoseconds: UInt64 = reason == "mutation" ? 3_000_000_000 : 100_000_000
+            // The injected script already debounces DOM mutations for 3 seconds.
+            // Keep only a short native coalescing window after that debounce.
+            let delayNanoseconds: UInt64 = 100_000_000
             do {
                 try await Task.sleep(nanoseconds: delayNanoseconds)
             } catch {
