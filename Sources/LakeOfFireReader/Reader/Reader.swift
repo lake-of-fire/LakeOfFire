@@ -74,7 +74,7 @@ private struct ReaderStatusBarFadeOverlay: ViewModifier {
     }
 }
 
-private func readerThemeBackgroundColor(
+func readerThemeBackgroundColor(
     colorScheme: ColorScheme,
     lightModeTheme: LightModeTheme,
     darkModeTheme: DarkModeTheme

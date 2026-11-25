@@ -701,6 +701,60 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertFalse(fixture.readerModeViewModel.isReaderModeLoadPending(for: url))
     }
 
+    func testReaderCanvasUsesEffectiveAppearanceAtEachEntryPoint() throws {
+        let site = try XCTUnwrap(URL(string: "https://example.com/article"))
+        let blank = try XCTUnwrap(URL(string: "about:blank"))
+        let loader = try XCTUnwrap(URL(string: "internal://local/load/reader?reader-url=https%3A%2F%2Fexample.com%2Farticle"))
+        let transcriptKey = String(repeating: "a", count: 64)
+        let nativeReader = try XCTUnwrap(URL(string: "transcript://local/page/\(transcriptKey)"))
+        let cases: [(name: String, url: URL, preparing: Bool, ready: Bool)] = [
+            ("preparing Reader mode", site, true, false),
+            ("blank canvas", blank, false, false),
+            ("Reader loader", loader, false, false),
+            ("native Reader route", nativeReader, false, false),
+            ("render-ready Reader mode", site, false, true),
+        ]
+
+        for scenario in cases {
+            XCTAssertEqual(
+                ReaderWebViewAppearancePolicy.setting(
+                    colorScheme: .dark,
+                    pageURL: scenario.url,
+                    isPreparingReaderCanvas: scenario.preparing,
+                    hasReaderRenderReady: scenario.ready
+                ),
+                .darkModeOverride,
+                scenario.name
+            )
+            XCTAssertEqual(
+                ReaderWebViewAppearancePolicy.setting(
+                    colorScheme: .light,
+                    pageURL: scenario.url,
+                    isPreparingReaderCanvas: scenario.preparing,
+                    hasReaderRenderReady: scenario.ready
+                ),
+                .alwaysLightMode,
+                scenario.name
+            )
+        }
+    }
+
+    func testOrdinaryWebsiteRetainsSystemAppearanceInBothReaderColorSchemes() throws {
+        let site = try XCTUnwrap(URL(string: "https://example.com/article"))
+
+        for colorScheme in [ColorScheme.light, .dark] {
+            XCTAssertEqual(
+                ReaderWebViewAppearancePolicy.setting(
+                    colorScheme: colorScheme,
+                    pageURL: site,
+                    isPreparingReaderCanvas: false,
+                    hasReaderRenderReady: false
+                ),
+                .system
+            )
+        }
+    }
+
     func testIPadReaderModeDoesNotUseSplitViewLeadingSafeAreaAsWebKitInset() {
         let resolved = ReaderWebViewObscuredInsetResolver.resolve(
             obscuredInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),
