@@ -301,6 +301,90 @@ final class LibraryFeedEditingContinuationTests: XCTestCase {
         ), generations)
     }
 
+    func testInvalidTypedAndPastedURLsKeepTheSavedFeedAndFetchMetadata() async throws {
+        let realm = try await Realm(configuration: configuration(), actor: MainActor.shared)
+        let feed = try installFeed(in: realm)
+        let originalURL = feed.rssUrl
+        let modifiedAt = Date(timeIntervalSince1970: 100)
+        let refreshedAt = Date(timeIntervalSince1970: 200)
+        try realm.write {
+            feed.lastFetchedRSSURL = originalURL
+            feed.lastFetchedETag = "\"original\""
+            feed.lastFetchedModifiedAt = modifiedAt
+            feed.lastRefreshedEntriesAt = refreshedAt
+        }
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false, observesFormInput: true)
+
+        let relative = "example.com/feed.xml"
+        model.feedURL = relative
+        try await model.finishEditing().value
+        XCTAssertTrue(model.hasInvalidFeedURL)
+        XCTAssertEqual(model.feedURL, relative)
+        realm.refresh()
+        XCTAssertEqual(feed.rssUrl, originalURL)
+
+        try await model.pasteRSSURL(strings: ["https://invalid%20host.example/feed.xml"]).value
+        XCTAssertTrue(model.hasInvalidFeedURL)
+        let malformedPaste = "http://[invalid"
+        try await model.pasteRSSURL(strings: [malformedPaste]).value
+        try await model.pasteRSSURL(strings: ["  "]).value
+        XCTAssertTrue(model.hasInvalidFeedURL)
+        XCTAssertEqual(model.feedURL, malformedPaste)
+        realm.refresh()
+        XCTAssertEqual(feed.rssUrl, originalURL)
+        XCTAssertEqual(feed.lastFetchedRSSURL, originalURL)
+        XCTAssertEqual(feed.lastFetchedETag, "\"original\"")
+        XCTAssertEqual(feed.lastFetchedModifiedAt, modifiedAt)
+        XCTAssertEqual(feed.lastRefreshedEntriesAt, refreshedAt)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+
+        let validURL = "http://xn--r8jz45g.xn--zckzah/%E9%85%8D%E4%BF%A1.xml?source=a%2Fb"
+        try await model.pasteRSSURL(strings: ["  \(validURL)  "]).value
+        XCTAssertFalse(model.hasInvalidFeedURL)
+        realm.refresh()
+        XCTAssertEqual(feed.rssUrl.absoluteString, validURL)
+        XCTAssertNil(feed.lastFetchedETag)
+        XCTAssertFalse(realm.objects(BigSyncPendingMutation.self).isEmpty)
+
+        model.feedURL = ""
+        try await model.finishEditing().value
+        XCTAssertFalse(model.hasInvalidFeedURL)
+        realm.refresh()
+        XCTAssertEqual(feed.rssUrl.absoluteString, "about:blank")
+    }
+
+    func testInvalidNewerURLDraftPreventsAnOlderPendingWrite() async throws {
+        let realm = try await Realm(configuration: configuration(), actor: MainActor.shared)
+        let feed = try installFeed(in: realm)
+        let originalURL = feed.rssUrl
+        let started = expectation(description: "Older paste reached the write boundary")
+        let gate = LibraryFeedContinuationGate()
+        let attempts = LibraryFeedWriteAttempts()
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false, observesFormInput: true, beforeFieldWrite: {
+            if await attempts.record() == 1 {
+                await gate.wait(onFirstWait: { started.fulfill() })
+            }
+        })
+        let older = model.pasteRSSURL(strings: ["https://example.com/previous-draft.xml"])
+        addTeardownBlock {
+            await gate.release()
+            _ = await older.result
+            _ = await model.finishEditing().result
+        }
+        await fulfillment(of: [started], timeout: 5)
+
+        model.feedURL = "https://"
+        let finish = model.finishEditing()
+        await gate.release()
+        try await finish.value
+
+        realm.refresh()
+        XCTAssertEqual(feed.rssUrl, originalURL)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+        XCTAssertEqual(model.feedURL, "https://")
+        XCTAssertTrue(model.hasInvalidFeedURL)
+    }
+
     func testPasteCompletionPreservesNewerInputReturningToTheSameURL() async throws {
         let realm = try await Realm(configuration: configuration(), actor: MainActor.shared)
         let feed = try installFeed(in: realm)

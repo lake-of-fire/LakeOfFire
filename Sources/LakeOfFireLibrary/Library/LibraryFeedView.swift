@@ -22,6 +22,16 @@ import LakeImage
 // than Feed's separately declared UUID id or a frozen wrapper's memory address.
 private func libraryFeedRowKey<T: ObjectKeyIdentifiable>(_ object: T) -> UInt64 { object.id }
 
+private func libraryFeedRSSURL(from input: String) -> URL? {
+    if input.isEmpty { return URL(string: "about:blank") }
+    let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let components = URLComponents(string: trimmed),
+          let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
+          let host = components.host, !host.isEmpty,
+          host.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else { return nil }
+    return components.url
+}
+
 struct LibraryFeedPresentationIdentity: Hashable {
     let storage: LibraryRecordPresentationIdentity
     let feedRowKey: UInt64
@@ -344,8 +354,14 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     }
     @Published var feedEnabled = false
     @Published var feedURL = "" {
-        didSet { metadataAdmission.update(field: .url, value: feedURL, isUserEdit: !isRefreshing) }
+        didSet {
+            metadataAdmission.update(field: .url, value: feedURL, isUserEdit: !isRefreshing)
+            if !isRefreshing { hasInvalidFeedURLDraft = hasInvalidFeedURL }
+        }
     }
+
+    var hasInvalidFeedURL: Bool { libraryFeedRSSURL(from: feedURL) == nil }
+
     @Published var feedIconURL = "" {
         didSet { metadataAdmission.update(field: .iconURL, value: feedIconURL, isUserEdit: !isRefreshing) }
     }
@@ -360,6 +376,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     var isEditing = false
     var hasInitializedValues = false
     private var isRefreshing = false
+    private var hasInvalidFeedURLDraft = false
     private var pendingFieldCommands: [LibraryFeedEditorField: LibraryFeedFieldCommand] = [:]
     private var activeWrites: [UInt64: LibraryFeedActiveWrite] = [:]
     private let beforeFieldWrite: (@RealmBackgroundActor @Sendable () async throws -> Void)?
@@ -505,7 +522,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         observeBuffered($feedURL, field: .url) { value, feed in
-            guard let url = URL(string: value.isEmpty ? "about:blank" : value),
+            guard let url = libraryFeedRSSURL(from: value),
                   feed.rssUrl != url else { return false }
             feed.rssUrl = url
             return true
@@ -714,7 +731,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         if (field == nil || field == .title), pendingFieldCommands[.title] == nil { feedTitle = feed.title }
         if (field == nil || field == .description), pendingFieldCommands[.description] == nil { feedDescription = feed.markdownDescription ?? "" }
         if (field == nil || field == .enabled), pendingFieldCommands[.enabled] == nil { feedEnabled = !(feed.isArchived || feed.isDeleted) }
-        if (field == nil || field == .url), pendingFieldCommands[.url] == nil { feedURL = feed.rssUrl.absoluteString == "about:blank" ? "" : feed.rssUrl.absoluteString }
+        if (field == nil || field == .url), pendingFieldCommands[.url] == nil, !hasInvalidFeedURLDraft {
+            feedURL = feed.rssUrl.absoluteString == "about:blank" ? "" : feed.rssUrl.absoluteString
+        }
         if (field == nil || field == .iconURL), pendingFieldCommands[.iconURL] == nil { feedIconURL = feed.iconUrl.absoluteString == "about:blank" ? "" : feed.iconUrl.absoluteString }
         if (field == nil || field == .readerMode), pendingFieldCommands[.readerMode] == nil { feedIsReaderModeByDefault = feed.isReaderModeByDefault }
         if (field == nil || field == .headerImage), pendingFieldCommands[.headerImage] == nil { feedInjectEntryImageIntoHeader = feed.injectEntryImageIntoHeader }
@@ -964,15 +983,18 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
 
     @discardableResult
     func pasteRSSURL(strings: [String]) -> Task<Void, Error> {
-        let url = URL(string: strings.first ?? "") ?? URL(string: "about:blank")!
+        guard let draft = strings.first?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty else {
+            return Task<Void, Error> {}
+        }
         // Capture one URL intent through the publisher, then join or flush it.
-        feedURL = url.absoluteString
+        feedURL = draft
         if observesFormInput, let command = pendingFieldCommands[.url] {
             return submit(command)
         }
         // Preserve the observer-disabled model API used by direct writer callers.
+        let url = libraryFeedRSSURL(from: draft)
         return writeFeedAsync(field: .url) { feed in
-            guard feed.rssUrl != url else { return false }
+            guard let url, feed.rssUrl != url else { return false }
             feed.rssUrl = url
             return true
         }
@@ -1054,6 +1076,11 @@ struct LibraryFeedFormSections: View {
                         viewModel.pasteRSSURL(strings: strings)
                     }
                 }
+            }
+            if viewModel.hasInvalidFeedURL {
+                Text("Enter a complete feed URL starting with https:// or http://.")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
             }
             TextField("Icon URL", text: $viewModel.feedIconURL, prompt: Text("Enter website icon URL"), axis: .vertical)
                 .focused($focusedField, equals: .iconURL)
