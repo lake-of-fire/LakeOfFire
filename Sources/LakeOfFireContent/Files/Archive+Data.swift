@@ -19,7 +19,7 @@ public extension Archive {
         var data = Data()
         var actualSize: Int64 = 0
         do {
-            _ = try self.extract(entry) { chunk in
+            let checksum = try self.extract(entry) { chunk in
                 try Task.checkCancellation()
                 let chunkSize = Int64(chunk.count)
                 let (newSize, overflow) = actualSize.addingReportingOverflow(chunkSize)
@@ -33,6 +33,8 @@ public extension Archive {
                 actualSize = newSize
                 data.append(chunk)
             }
+            guard checksum == entry.checksum,
+                  actualSize == Int64(entry.uncompressedSize) else { return nil }
             return data
         } catch {
             return nil
@@ -190,7 +192,10 @@ public struct ReaderPackageEntrySource: Sendable {
             } catch {
                 throw ReaderPackageEntrySourceError.packageCorrupt
             }
+            // Keep the first lookup match, but require its exact spelling.
+            // ZIPFoundation's String lookup can match a canonically equivalent name.
             guard let entry = archive[subpath],
+                  entry.path.utf8.elementsEqual(subpath.utf8),
                   entry.type == .file else {
                 throw ReaderPackageEntrySourceError.entryNotFound
             }
@@ -205,7 +210,7 @@ public struct ReaderPackageEntrySource: Sendable {
             var data = Data()
             var actualSize: Int64 = 0
             do {
-                try archive.extract(entry) { chunk in
+                let checksum = try archive.extract(entry) { chunk in
                     try Task.checkCancellation()
                     let chunkSize = Int64(chunk.count)
                     let (newSize, overflow) = actualSize.addingReportingOverflow(chunkSize)
@@ -218,6 +223,9 @@ public struct ReaderPackageEntrySource: Sendable {
                     }
                     actualSize = newSize
                     data.append(chunk)
+                }
+                guard checksum == entry.checksum, actualSize == advertisedSize else {
+                    throw ReaderPackageEntrySourceError.packageCorrupt
                 }
             } catch is CancellationError {
                 throw CancellationError()
