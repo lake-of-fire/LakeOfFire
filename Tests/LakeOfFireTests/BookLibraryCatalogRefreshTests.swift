@@ -1,5 +1,101 @@
+import Foundation
 import XCTest
 @testable import LakeOfFireReader
+
+final class BookLibraryPublicationYearTests: XCTestCase {
+    @MainActor
+    func testCatalogKeepsCivilYearAndParsedInstantInFeedOrder() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BookPublicationDateURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let titles = ["Date only", "West offset", "East offset", "Missing date", "Invalid date"]
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        let instants: [Date?] = [
+            utc.date(from: DateComponents(year: 2024, month: 1, day: 1)),
+            utc.date(from: DateComponents(year: 2025, month: 1, day: 1, hour: 7, minute: 30)),
+            utc.date(from: DateComponents(year: 2024, month: 12, day: 31, hour: 16, minute: 30)),
+            nil,
+            nil,
+        ]
+
+        for document in ["catalog.json", "catalog.atom"] {
+            let url = URL(string: "https://opds-publication-year.example/\(document)")!
+            let (publications, error) = await BookLibraryViewModel.fetchPublications(from: url, session: session)
+            XCTAssertNil(error, document)
+            XCTAssertEqual(publications.map(\.title), titles, document)
+            XCTAssertEqual(publications.map(\.publicationDate), instants, document)
+            XCTAssertEqual(publications.map(\.publicationCivilYear), [2024, 2024, 2025, nil, nil], document)
+            XCTAssertEqual(publications.map(\.publicationYearText), ["2024", "2024", "2025", nil, nil], document)
+        }
+    }
+
+    func testExistingPublicationInitializersKeepTheirDatePresentation() {
+        let date = Date(timeIntervalSince1970: 1_735_716_600)
+        let publication = Publication(title: "Legacy", publicationDate: date)
+        let expected = Calendar.current.dateComponents([.year], from: date).year.map { String($0) }
+
+        XCTAssertNil(publication.publicationCivilYear)
+        XCTAssertEqual(publication.publicationYearText, expected)
+        XCTAssertNil(Publication(title: "Undated").publicationYearText)
+    }
+}
+
+private final class BookPublicationDateURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "opds-publication-year.example"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        let isAtom = url.pathExtension == "atom"
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                      headerFields: ["Content-Type": isAtom ? "application/atom+xml" : "application/opds+json"])!
+        let data = Data((isAtom ? Self.atomCatalog : Self.jsonCatalog).utf8)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static let jsonCatalog = #"""
+    {
+      "metadata": {"title": "Catalog"},
+      "links": [{"rel": "self", "href": "catalog.json"}],
+      "publications": [
+        {"metadata": {"title": "Date only", "published": "2024-01-01"},
+         "links": [{"rel": "http://opds-spec.org/acquisition", "href": "date.epub"}]},
+        {"metadata": {"title": "West offset", "published": "2024-12-31T23:30:00-08:00"},
+         "links": [{"rel": "http://opds-spec.org/acquisition", "href": "west.epub"}]},
+        {"metadata": {"title": "East offset", "published": "2025-01-01T00:30:00+08:00"},
+         "links": [{"rel": "http://opds-spec.org/acquisition", "href": "east.epub"}]},
+        {"metadata": {"title": "Missing date"},
+         "links": [{"rel": "http://opds-spec.org/acquisition", "href": "missing.epub"}]},
+        {"metadata": {"title": "Invalid date", "published": "not-a-date"},
+         "links": [{"rel": "http://opds-spec.org/acquisition", "href": "invalid.epub"}]}
+      ]
+    }
+    """#
+
+    private static let atomCatalog = #"""
+    <feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/">
+      <title>Catalog</title>
+      <entry><title>Date only</title><dc:issued>2024-01-01</dc:issued>
+        <link rel="http://opds-spec.org/acquisition" href="date.epub"/></entry>
+      <entry><title>West offset</title><published>2024-12-31T23:30:00-08:00</published>
+        <link rel="http://opds-spec.org/acquisition" href="west.epub"/></entry>
+      <entry><title>East offset</title><published>2025-01-01T00:30:00+08:00</published>
+        <link rel="http://opds-spec.org/acquisition" href="east.epub"/></entry>
+      <entry><title>Missing date</title><link rel="http://opds-spec.org/acquisition" href="missing.epub"/></entry>
+      <entry><title>Invalid date</title><published>not-a-date</published>
+        <link rel="http://opds-spec.org/acquisition" href="invalid.epub"/></entry>
+    </feed>
+    """#
+}
 
 /// Own every caller and continuation so a failed setup cannot strand teardown.
 /// This drives BookLibraryViewModel, not a replacement ownership state machine.

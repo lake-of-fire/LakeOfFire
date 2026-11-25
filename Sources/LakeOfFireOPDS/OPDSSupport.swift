@@ -18,6 +18,16 @@ extension String {
         }
         return DateFormatter.iso8601Formatter(for: value).date(from: value)
     }
+
+    var opdsPublicationDate: (date: Date, civilYear: Int?)? {
+        guard let date = dateFromISO8601 else { return nil }
+        let digits = prefix(4)
+        let remainder = dropFirst(4)
+        guard digits.utf8.count == 4, digits.utf8.allSatisfy({ (48...57).contains($0) }),
+              remainder.isEmpty || remainder.first == "-" else { return (date, nil) }
+        // Keep the year as written before the parsed instant shifts time zones.
+        return (date, Int(digits))
+    }
 }
 
 private extension DateFormatter {
