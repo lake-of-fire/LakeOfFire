@@ -232,6 +232,7 @@ let package = Package(
                 "LakeOfFireReader",
                 "LakeOfFireWeb",
                 "LakeOfFireOPDS",
+                "LakeOfFire",
                 .product(name: "SwiftReadability", package: "swift-readability"),
                 .product(name: "ZIPFoundation", package: "ZipFoundation"),
             ],
