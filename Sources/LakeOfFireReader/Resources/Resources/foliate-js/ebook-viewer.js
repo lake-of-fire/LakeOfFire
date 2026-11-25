@@ -13,6 +13,11 @@ import { visibleMarkReadSidecarSelection, visibleMarkReadSegmentIsRead } from '.
 import { forwardCustomReaderFontStyleToDocuments } from './ebook-font-forwarding.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
+    ebookPageImageReadiness,
+    sameEbookPageImageRequest,
+    waitForEbookPageImage,
+} from './ebook-page-image-readiness.js'
+import {
     createNativeMarkReadRequestCoordinator,
     presentNativeMarkReadPending,
     nativeMarkReadCommandMessage,
@@ -1359,21 +1364,28 @@ const visibleRenderableContentStateForDocument = (doc, visibleSegmentsResult = n
     }
     const body = doc?.body ?? null;
     let hasVisibleSingleMedia = false;
+    let pageImage = null
     if (body?.classList?.contains?.('reader-is-single-media-element-without-text') === true) {
         const media = body.querySelector?.('img, svg, image, picture, video, object') ?? null;
-        const rect = media?.getBoundingClientRect?.() ?? null;
-        const style = media && doc?.defaultView?.getComputedStyle
-            ? doc.defaultView.getComputedStyle(media)
-            : null;
+        pageImage = ebookPageImageReadiness(media)
+        const visibleMedia = pageImage?.image ?? media
+        const rect = visibleMedia?.getBoundingClientRect?.() ?? null
+        const hasVisibleStyle = element => {
+            const style = element && doc.defaultView?.getComputedStyle?.(element)
+            return style?.display !== 'none'
+                && style?.visibility !== 'hidden'
+                && Number.parseFloat(style?.opacity || '1') > 0.01
+        }
         hasVisibleSingleMedia = !!rect
+            && (!pageImage || pageImage.state === 'ready')
             && rect.width > 1
             && rect.height > 1
-            && style?.display !== 'none'
-            && style?.visibility !== 'hidden'
-            && Number.parseFloat(style?.opacity || '1') > 0.01;
+            && hasVisibleStyle(visibleMedia)
+            && (visibleMedia === media || hasVisibleStyle(media))
     }
     return {
         ...textState,
+        pageImage,
         hasVisibleSingleMedia,
         hasRenderableContent: textState.hasVisibleJapaneseText === true || hasVisibleSingleMedia,
     };
@@ -1542,7 +1554,8 @@ const classifySingleMediaDocumentForInitialLayout = (doc, _reason = 'unknown') =
         };
     }
     const mediaSelector = 'img, svg, image, picture, video, object';
-    const mediaElements = Array.from(body.querySelectorAll?.(mediaSelector) ?? []);
+    const mediaElements = Array.from(body.querySelectorAll?.(mediaSelector) ?? [])
+        .filter(element => !(element.localName === 'img' && element.parentElement?.localName === 'picture'))
     const textLength = body.textContent?.trim?.().length ?? 0;
     if (textLength > 0 || mediaElements.length !== 1) {
         return {
@@ -5488,6 +5501,7 @@ class Reader {
     #lifecycleGeneration = 0;
     #initialDisplayGeneration = 0;
     #didDisplaySequence = 0;
+    #didDisplayImageWait = null
     #listenerCleanups = new Set();
     #globalBindingCleanups = new Set();
     #documentScopes = new Map();
@@ -5724,6 +5738,7 @@ class Reader {
     close(reason = 'unspecified') {
         if (this.#closed) return false;
         this.#closed = true;
+        this.#didDisplayImageWait?.abort()
         this.#retireMarkReadAdvance();
         // Dispose transport while the original generation still identifies
         // the current chapter. The coordinator compares exact ownership and
@@ -9231,6 +9246,7 @@ class Reader {
     }
     async open(file, options = {}) {
         if (this.#closed) throw readerOpenSupersededError()
+        this.#didDisplayImageWait?.abort()
         this.#retireMarkReadAdvance();
         const lifecycleGeneration = ++this.#lifecycleGeneration
         this.#confirmedTurnAwaitingChapter = null;
@@ -11022,7 +11038,9 @@ class Reader {
         if (!document.body?.classList?.contains?.('loading')) {
             return { cleared: false, reason: 'not-loading' };
         }
-        const content = getPrimaryRendererContent(this.view?.renderer);
+        const lifecycleGeneration = this.#lifecycleGeneration
+        const renderer = this.view?.renderer
+        const content = getPrimaryRendererContent(renderer)
         const doc = content?.doc ?? content?.document ?? null;
         if (!isDocumentLike(doc)) {
             return { cleared: false, reason: 'missing-document' };
@@ -11054,10 +11072,23 @@ class Reader {
         }
         const collectionGeneration = this.visiblePageCollectionGeneration;
         await this.#waitForAnimationFrames(1);
-        const currentContent = getPrimaryRendererContent(this.view?.renderer);
+        const currentContent = getPrimaryRendererContent(renderer)
         const currentDoc = currentContent?.doc ?? currentContent?.document ?? null;
-        if (currentDoc !== doc || collectionGeneration !== this.visiblePageCollectionGeneration) {
+        if (
+            !this.#isRendererLifecycleCurrent(lifecycleGeneration, renderer)
+            || currentDoc !== doc
+            || collectionGeneration !== this.visiblePageCollectionGeneration
+        ) {
             return { cleared: false, reason: 'stale-visible-content' };
+        }
+        if (visibleContentState.pageImage) {
+            const paintedContent = visibleRenderableContentStateForDocument(doc, visibleSegmentsResult)
+            if (
+                !paintedContent.hasVisibleSingleMedia
+                || !sameEbookPageImageRequest(visibleContentState.pageImage, paintedContent.pageImage)
+            ) {
+                return { cleared: false, reason: 'stale-visible-content' };
+            }
         }
         if (!document.body?.classList?.contains?.('loading')) {
             return { cleared: false, reason: 'already-cleared' };
@@ -11111,6 +11142,7 @@ class Reader {
         // Retire an outstanding display before the replacement iframe commits.
         // Document identity alone remains unchanged during that navigation gap.
         this.#didDisplaySequence += 1;
+        this.#didDisplayImageWait?.abort()
         this.#clearVisiblePageReadChrome('goTo');
         this.#invalidateVisiblePageSegmentSnapshot('renderer.goTo');
         requestLookupCloseForPageMotion('renderer.goTo', {
@@ -11120,6 +11152,7 @@ class Reader {
     }
     async #onDidDisplay({}) {
         if (this.#closed) return;
+        this.#didDisplayImageWait?.abort()
         const lifecycleGeneration = this.#lifecycleGeneration;
         const renderer = this.view?.renderer ?? null;
         // Font/layout refreshes retire geometry, not the physical display. Its
@@ -11211,12 +11244,35 @@ class Reader {
         };
         sampleCurrentDisplay();
         if (!isCurrentDidDisplay()) return;
+        let imageWaitTimedOut = false
         // Keep the loading cover up through the first paint opportunity after the
         // final paginator settle. Large books can spend another frame (or several
         // blocked frames) applying the column geometry; clearing synchronously here
         // exposes that work as a blank page even though the pre-paint geometry probe
         // already found content.
-        if (didDisplayVisibleContentState?.hasRenderableContent === true) {
+        while (isCurrentDidDisplay()) {
+            const pageImage = didDisplayVisibleContentState?.pageImage
+            if (
+                pageImage?.state === 'pending'
+                && document.body?.classList?.contains?.('loading')
+            ) {
+                const wait = new AbortController()
+                this.#didDisplayImageWait = wait
+                const outcome = await waitForEbookPageImage(pageImage.image, wait.signal)
+                if (this.#didDisplayImageWait === wait) this.#didDisplayImageWait = null
+                if (outcome === 'cancelled' || !isCurrentDidDisplay()) return
+                sampleCurrentDisplay();
+                const currentImage = didDisplayVisibleContentState?.pageImage
+                if (
+                    outcome === 'timeout' && currentImage?.state === 'pending'
+                    && sameEbookPageImageRequest(pageImage, currentImage)
+                ) {
+                    imageWaitTimedOut = true
+                    break;
+                }
+                continue;
+            }
+            if (didDisplayVisibleContentState?.hasRenderableContent !== true) break
             const loadingPaintWaitStartedAt = performanceNowMs();
             const markLoadingPaintBoundary = (phase) => {
                 const loadingIndicator = document.getElementById('loading-indicator');
@@ -11246,18 +11302,33 @@ class Reader {
             // already found visible content. One animation-frame boundary is the
             // first opportunity for that final geometry to paint; a second frame
             // repeats the same full-document layout on large vertical sections.
-            if (sampledGeometryGeneration !== this.visiblePageCollectionGeneration) {
+            if (pageImage || sampledGeometryGeneration !== this.visiblePageCollectionGeneration) {
                 sampleCurrentDisplay();
             }
             if (!isCurrentDidDisplay()) return;
+            if (pageImage && (
+                didDisplayVisibleContentState?.pageImage?.state === 'pending'
+                || (didDisplayVisibleContentState?.hasRenderableContent
+                    && !sameEbookPageImageRequest(pageImage, didDisplayVisibleContentState.pageImage))
+            )) continue
             markLoadingPaintBoundary('after-frame-1-before-clear');
             if (didDisplayVisibleContentState?.hasRenderableContent === true) {
                 this.setLoadingIndicator(false, 'didDisplay', { paintCommitted: true });
                 markReaderRenderReady('didDisplay.loading-cleared');
                 markLoadingPaintBoundary('after-clear');
             }
+            break;
         }
         if (!isCurrentDidDisplay()) return;
+        const imageFailureReason = imageWaitTimedOut
+            ? 'didDisplay.image-timeout'
+            : didDisplayVisibleContentState?.pageImage?.state === 'failed'
+                ? 'didDisplay.image-failed'
+                : null;
+        if (imageFailureReason && document.body?.classList?.contains?.('loading')) {
+            this.setLoadingIndicator(false, imageFailureReason, { terminal: true })
+            if (!isCurrentDidDisplay()) return;
+        }
         this.hasReachedLoadingDidDisplayBoundary = true;
         try {
             const doc = getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
@@ -11276,7 +11347,7 @@ class Reader {
             this.#resolveInitialDisplaySettled('didDisplay.loading-cleared');
             this.#resolveDisplaySettledWaiters('didDisplay.loading-cleared');
         } else {
-            this.#resolveDisplaySettledWaiters('didDisplay.no-visible-text');
+            this.#resolveDisplaySettledWaiters(imageFailureReason ?? 'didDisplay.no-visible-text')
         }
         if (!isCurrentDidDisplay()) return;
         if (hasRenderableContent) {

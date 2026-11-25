@@ -7,6 +7,7 @@ import { bookScopeKey } from '../../Sources/LakeOfFireReader/Resources/Resources
 import { applyBookReadingProjection } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/book-reading-projection.js'
 import { createNativeMarkReadRequestCoordinator, refreshCommittedVisibleMarkReadState, committedVisibleMarkReadStateIsPresented, captureVisibleMarkReadNavigation } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
 import { refreshNativeMarkReadBookStateForRecovery } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/native-mark-read-request.js'
+import { ebookPageImageReadiness, sameEbookPageImageRequest, waitForEbookPageImage } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-page-image-readiness.js'
 
 // Evaluate the complete shipping Reader class. Only the module/startup adapter
 // and DOM/native collaborators are replaced; no command or render method is
@@ -126,6 +127,7 @@ function fixture({ realCoordinator = false, onControl } = {}) {
         testNativeBookReadProjection(state, details = { passChanged: false }) { return this.#applyNativeBookReadProjection(state, details) }
         testSuccessfulPublication() { return this.#successfulBookReadPublication }
         testInvalidateBookPublication() { this.#successfulBookReadPublication = null }
+        testDidDisplay() { return this.#onDidDisplay({}) }
     }; Reader`, context)
     const reader = new Reader()
     context.reader = reader
@@ -156,6 +158,261 @@ function fixture({ realCoordinator = false, onControl } = {}) {
     return { reader, Reader, packets, requests, controls, attributes, seedPage, installPage, visibleRange,
         context, doc, timers, moves, lifecycle, retireNavigation }
 }
+
+class PageImage extends EventTarget {
+    localName = 'img'
+    complete = false
+    naturalWidth = 0
+    src = 'ebook://fixture/cover.png'
+    currentSrc = ''
+    listeners = new Map()
+
+    addEventListener(type, listener) {
+        this.listeners.set(type, listener)
+        super.addEventListener(type, listener)
+    }
+
+    removeEventListener(type, listener) {
+        this.listeners.delete(type)
+        super.removeEventListener(type, listener)
+    }
+
+    getBoundingClientRect() { return { width: 300, height: 500 } }
+
+    settle(type = 'load') {
+        this.currentSrc = this.src
+        this.complete = true
+        this.naturalWidth = type === 'load' ? 300 : 0
+        this.dispatchEvent(new Event(type))
+    }
+}
+
+const nextDisplayTask = () => new Promise(resolve => setImmediate(resolve))
+
+function imageDisplayFixture(t, { responsive = false } = {}) {
+    const f = fixture()
+    t.after(() => f.reader.close('fixture-cleanup'))
+    const classes = () => {
+        const values = new Set()
+        return {
+            add: value => values.add(value),
+            remove: value => values.delete(value),
+            contains: value => values.has(value),
+            toggle: (value, enabled) => enabled ? values.add(value) : values.delete(value),
+        }
+    }
+    const frames = [], ready = [], readinessMethods = [
+        ['const visibleJapaneseTextStateForVisibleSegmentsResult', 'const getVisibleJapaneseTextStateForRenderer'],
+        ['const classifySingleMediaDocumentForInitialLayout', 'const ignoreNextIncomingHideNavigation'],
+    ]
+    Object.assign(f.context, {
+        AbortController,
+        ebookPageImageReadiness,
+        sameEbookPageImageRequest,
+        waitForEbookPageImage,
+        MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE: false,
+        MANABI_ENABLE_DID_DISPLAY_POST_FRAME_SETTLE: false,
+        MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES: true,
+        activeRendererContentsForLookup: renderer => renderer.getContents(),
+        renderableContentProbeResultForDocument: () => ({ visibleSegments: [] }),
+        requestAnimationFrame: callback => frames.push(callback),
+        safeRound: value => value,
+        markReaderRenderReady: reason => ready.push(reason),
+    })
+    for (const [start, end] of readinessMethods) {
+        vm.runInContext(source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start))), f.context)
+    }
+    f.context.document.body.classList = classes()
+    f.reader.setLoadingIndicator(true, 'reader.open')
+    let media
+    f.doc.body = {
+        dataset: {}, classList: classes(), textContent: '',
+        querySelector: () => media,
+        querySelectorAll: selector => selector === '*' ? [] : [media, ...(media.children ?? [])],
+    }
+    f.doc.defaultView.getComputedStyle = element => element?.style ?? { opacity: '1' }
+    const setImage = (image, wrap = false) => {
+        media = image
+        if (wrap) {
+            media = {
+                localName: 'picture', children: [image], querySelector: () => image,
+                getBoundingClientRect: () => ({ width: 0, height: 0 }),
+                style: { display: 'contents', opacity: '1' },
+            }
+            image.parentElement = media
+        }
+        delete f.doc.body.dataset.mnbSingleMediaInitialLayoutChecked
+        vm.runInContext('classifySingleMediaDocumentForInitialLayout(reader.view.renderer.getContents()[0].doc)', f.context)
+    }
+    const image = new PageImage()
+    setImage(image, responsive)
+    f.installPage('picture-display')
+    f.reader.visiblePageSegmentSnapshot.result.nativeLookupTargetCount = 1
+    const loading = () => f.context.document.body.classList.contains('loading')
+    return { ...f, image, setImage, frames, loading, ready }
+}
+
+for (const responsive of [false, true]) {
+    test(`a pending ${responsive ? 'picture' : 'image'} retains the EPUB cover through load and paint`, async t => {
+        const f = imageDisplayFixture(t, { responsive })
+        const display = f.reader.testDidDisplay()
+        await nextDisplayTask()
+        assert.equal(f.loading(), true)
+        assert.equal(f.frames.length, 0)
+        assert.equal(f.image.listeners.size, 2)
+        assert.equal(f.reader.settleInitialDisplayFromVisibleContent('fixture').settled, false)
+        const relocation = await f.reader.clearLoadingForRelocatedVisibleContent('fixture', { visibleSegments: [] })
+        assert.equal(relocation.cleared, false)
+
+        f.image.settle()
+        await nextDisplayTask()
+        assert.equal(f.image.listeners.size, 0)
+        assert.equal(f.loading(), true)
+        assert.deepEqual(f.ready, [])
+        assert.equal(f.frames.length, 1)
+        f.frames.shift()()
+        await display
+        assert.equal(f.loading(), false)
+        assert.deepEqual(f.ready, ['didDisplay.loading-cleared'])
+    })
+}
+
+test('a visible picture wrapper cannot make its hidden image render-ready', async t => {
+    const f = imageDisplayFixture(t, { responsive: true })
+    f.image.parentElement.getBoundingClientRect = () => ({ width: 300, height: 500 })
+    f.image.parentElement.style = { opacity: '1' }
+    f.image.style = { display: 'none', opacity: '1' }
+    f.image.settle()
+    const display = f.reader.testDidDisplay()
+    await nextDisplayTask()
+    assert.equal(f.frames.length, 0)
+    await display
+    assert.equal(f.loading(), true)
+    assert.deepEqual(f.ready, [])
+})
+
+test('a relocated image awaiting paint cannot release the replacement book cover', async t => {
+    const f = imageDisplayFixture(t)
+    f.image.settle()
+    const relocated = f.reader.clearLoadingForRelocatedVisibleContent('fixture', { visibleSegments: [] })
+    assert.equal(f.frames.length, 1)
+    let rejectView
+    f.context.installReaderPresentationState = () => {}
+    f.context.getView = () => new Promise((_resolve, reject) => { rejectView = reject })
+    const replacementFailure = new Error('end replacement fixture')
+    const opening = assert.rejects(f.reader.open('replacement.epub'), error => error === replacementFailure)
+    assert.equal(typeof rejectView, 'function')
+    f.frames.shift()()
+    const result = await relocated
+    rejectView(replacementFailure)
+    await opening
+    assert.equal(result.cleared, false)
+    assert.equal(result.reason, 'stale-visible-content')
+    assert.equal(f.loading(), true)
+    assert.deepEqual(f.ready, [])
+})
+
+test('a failed image releases the EPUB cover without reporting render readiness', async t => {
+    const f = imageDisplayFixture(t)
+    const display = f.reader.testDidDisplay()
+    await nextDisplayTask()
+    f.image.settle('error')
+    await display
+    assert.equal(f.image.listeners.size, 0)
+    assert.equal(f.loading(), false)
+    assert.equal(f.frames.length, 0)
+    assert.deepEqual(f.ready, [])
+})
+
+test('an unchanged pending image releases the EPUB cover at timeout without reporting render readiness', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const f = imageDisplayFixture(t)
+    const display = f.reader.testDidDisplay()
+    await nextDisplayTask()
+    t.mock.timers.tick(1500)
+    await display
+    assert.equal(f.image.listeners.size, 0)
+    assert.equal(f.loading(), false)
+    assert.equal(f.frames.length, 0)
+    assert.deepEqual(f.ready, [])
+})
+
+test('a timeout for the previous image source cannot release the current source cover', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const f = imageDisplayFixture(t)
+    const display = f.reader.testDidDisplay()
+    await nextDisplayTask()
+    f.image.src = 'ebook://fixture/replacement.png'
+    t.mock.timers.tick(1500)
+    await nextDisplayTask()
+    assert.equal(f.loading(), true)
+    assert.equal(f.image.listeners.size, 2)
+    assert.deepEqual(f.ready, [])
+    f.image.settle()
+    await nextDisplayTask()
+    f.frames.shift()()
+    await display
+    assert.equal(f.loading(), false)
+})
+
+test('a successor display retires old listeners and a stale image event cannot release its cover', async t => {
+    const f = imageDisplayFixture(t)
+    const previous = f.reader.testDidDisplay()
+    await nextDisplayTask()
+    assert.equal(f.image.listeners.size, 2)
+
+    const image = new PageImage()
+    f.setImage(image)
+    const current = f.reader.testDidDisplay()
+    await previous
+    await nextDisplayTask()
+    assert.equal(f.image.listeners.size, 0)
+    f.image.settle('error')
+    assert.equal(f.loading(), true)
+    assert.equal(image.listeners.size, 2)
+    image.settle()
+    await nextDisplayTask()
+    f.frames.shift()()
+    await current
+    assert.equal(f.loading(), false)
+    assert.deepEqual(f.ready, ['didDisplay.loading-cleared'])
+})
+
+test('closing Reader promptly retires the pending image wait', async t => {
+    const f = imageDisplayFixture(t)
+    const display = f.reader.testDidDisplay()
+    await nextDisplayTask()
+    assert.equal(f.image.listeners.size, 2)
+    assert.equal(f.reader.close('fixture-reader-close'), true)
+    assert.equal(f.image.listeners.size, 0)
+    f.image.settle()
+    await display
+    assert.equal(f.frames.length, 0)
+    assert.deepEqual(f.ready, [])
+})
+
+test('an already loaded image must still belong to the painted request', async t => {
+    const f = imageDisplayFixture(t)
+    f.image.settle()
+    const display = f.reader.testDidDisplay()
+    await nextDisplayTask()
+    assert.equal(f.image.listeners.size, 0)
+    assert.equal(f.frames.length, 1)
+    f.image.src = 'ebook://fixture/new-cover.png'
+    f.image.complete = false
+    f.frames.shift()()
+    await nextDisplayTask()
+    assert.equal(f.loading(), true)
+    assert.deepEqual(f.ready, [])
+    f.image.dispatchEvent(new Event('load'))
+    assert.equal(f.image.listeners.size, 2)
+    f.image.settle()
+    await nextDisplayTask()
+    f.frames.shift()()
+    await display
+    assert.equal(f.loading(), false)
+    assert.deepEqual(f.ready, ['didDisplay.loading-cleared'])
+})
 
 function bookRuntimeFixture(f) {
     class Element extends EventTarget {
