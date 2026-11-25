@@ -12,6 +12,7 @@ private final class TestURLSchemeTask: NSObject, WKURLSchemeTask {
     private(set) var data = [Data]()
     private(set) var finishCount = 0
     private(set) var failures = [any Swift.Error]()
+    var onResponse: ((TestURLSchemeTask) -> Void)?
     var onTerminal: (() -> Void)?
 
     init(request: URLRequest) {
@@ -20,6 +21,7 @@ private final class TestURLSchemeTask: NSObject, WKURLSchemeTask {
 
     func didReceive(_ response: URLResponse) {
         responses.append(response)
+        onResponse?(self)
     }
 
     func didReceive(_ data: Data) {
@@ -259,6 +261,72 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
             XCTAssertEqual(task.responses.first?.textEncodingName, expectedEncoding, path)
             XCTAssertEqual(task.data.first, data, path)
         }
+    }
+
+    @MainActor
+    func testEbookHandlerDoesNotServeViewerShellForMissingBundledAsset() async throws {
+        let handler = EbookURLSchemeHandler()
+        handler.readerFileManager = ReaderFileManager()
+        let webView = WKWebView()
+
+        func load(_ path: String) async throws -> (response: HTTPURLResponse, data: [Data]) {
+            let url = try XCTUnwrap(URL(string: "ebook://ebook\(path)"))
+            let task = TestURLSchemeTask(request: URLRequest(url: url))
+            let terminal = expectation(description: "Ebook response for \(path)")
+            task.onTerminal = { terminal.fulfill() }
+
+            handler.webView(webView, start: task)
+            await fulfillment(of: [terminal], timeout: 5)
+
+            XCTAssertTrue(task.failures.isEmpty, path)
+            XCTAssertEqual(task.finishCount, 1, path)
+            XCTAssertEqual(task.responses.count, 1, path)
+            let response = try XCTUnwrap(task.responses.first as? HTTPURLResponse, path)
+            XCTAssertEqual(response.url, url, path)
+            return (response, task.data)
+        }
+
+        let missing = try await load("/load/viewer-assets/foliate-js/missing-manabi-test-module.js")
+        XCTAssertEqual(missing.response.statusCode, 404)
+        XCTAssertEqual(missing.response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertTrue(missing.data.isEmpty)
+
+        let bundled = try await load("/load/viewer-assets/foliate-js/progress.js")
+        XCTAssertEqual(bundled.response.statusCode, 200)
+        XCTAssertNotEqual(bundled.response.mimeType, "text/html")
+        let module = try XCTUnwrap(bundled.data.first)
+        XCTAssertTrue(String(decoding: module, as: UTF8.self).contains("export class SectionProgress"))
+
+        let book = try await load("/load/local/Books/example.epub")
+        XCTAssertEqual(book.response.statusCode, 200)
+        XCTAssertEqual(book.response.mimeType, "text/html")
+        let shell = try XCTUnwrap(book.data.first)
+        XCTAssertTrue(String(decoding: shell, as: UTF8.self).contains("/load/viewer-assets/foliate-js/ebook-viewer.js"))
+    }
+
+    @MainActor
+    func testEbookHandlerStopsMissingViewerAssetAfterResponse() async throws {
+        let handler = EbookURLSchemeHandler()
+        handler.readerFileManager = ReaderFileManager()
+        let webView = WKWebView()
+        let url = try XCTUnwrap(URL(
+            string: "ebook://ebook/load/viewer-assets/foliate-js/missing-manabi-test-module.js"
+        ))
+        let task = TestURLSchemeTask(request: URLRequest(url: url))
+        let received = expectation(description: "Missing viewer asset response")
+        task.onResponse = { task in
+            handler.webView(webView, stop: task)
+            received.fulfill()
+        }
+
+        handler.webView(webView, start: task)
+        await fulfillment(of: [received], timeout: 5)
+
+        XCTAssertEqual(task.responses.count, 1)
+        XCTAssertEqual((task.responses.first as? HTTPURLResponse)?.statusCode, 404)
+        XCTAssertTrue(task.data.isEmpty)
+        XCTAssertEqual(task.finishCount, 0)
+        XCTAssertTrue(task.failures.isEmpty)
     }
 
     @MainActor
