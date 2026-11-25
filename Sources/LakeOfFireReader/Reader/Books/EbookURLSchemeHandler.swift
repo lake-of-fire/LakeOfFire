@@ -1247,6 +1247,20 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             data: data
                         )
                     }()
+                } else if url.path.hasPrefix(Self.viewerAssetPathPrefix) {
+                    let response = HTTPURLResponse(
+                        url: url,
+                        statusCode: 404,
+                        httpVersion: nil,
+                        headerFields: ["Cache-Control": "no-store"]
+                    )!
+                    await { @MainActor in
+                        self.finishActiveTask(
+                            urlSchemeTask,
+                            requiring: packageRead,
+                            response: response
+                        )
+                    }()
                 } else if let viewerHtmlPath = Self.viewerHTMLPath() {
                     // File viewer bundle file.
                         do {
@@ -1293,11 +1307,13 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         )
     }
     
+    private static let viewerAssetPathPrefix = "/load/viewer-assets/"
+
     nonisolated private static func bundleURLFromWebURL(_ url: URL) -> URL? {
-        guard url.path.hasPrefix("/load/viewer-assets/") else { return nil }
+        guard url.path.hasPrefix(viewerAssetPathPrefix) else { return nil }
         let assetName = url.deletingPathExtension().lastPathComponent
         let assetExtension = url.lakePathExtension
-        let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
+        let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix(viewerAssetPathPrefix)
         let resolvedURL = [
             assetDirectory,
             "Resources/\(assetDirectory)",
