@@ -1098,6 +1098,25 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     let onContentSelectedSynchronously: ((C) -> Void)?
     let onContentAppear: ((C) -> Void)?
     let scrollTargetID: String?
+    private var ownedScrollTarget: (
+        id: UUID, isCurrent: @MainActor () -> Bool, didScroll: @MainActor (String) -> Void
+    )?
+
+    private struct LoadIdentity: Equatable {
+        let request: ReaderContentListLoadRequest<C>
+        let scrollOwnerID: UUID?
+    }
+
+    // Renew the owner's load and scroll work without resetting the list view.
+    package func onOwnedScrollTarget(
+        id: UUID,
+        isCurrent: @escaping @MainActor () -> Bool,
+        didScroll: @escaping @MainActor (String) -> Void
+    ) -> Self {
+        var list = self
+        list.ownedScrollTarget = (id, isCurrent, didScroll)
+        return list
+    }
 
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
 #if DEBUG
@@ -1353,6 +1372,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @MainActor
     private func scrollToTarget(with proxy: ScrollViewProxy, requestID: UUID) async {
         guard !Task.isCancelled, currentLoadRequestID == requestID,
+              ownedScrollTarget?.isCurrent() != false,
               let targetID = normalizedScrollTargetID,
               viewModel.filteredContentIDs.contains(targetID) else { return }
         let anchorID = readerContentListSeparatedRowScrollAnchorID(targetID)
@@ -1361,6 +1381,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             isCurrent: {
                 currentLoadRequestID == requestID
                     && pendingScrollTargetID == targetID
+                    && ownedScrollTarget?.isCurrent() != false
                     && viewModel.filteredContentIDs.contains(targetID)
             },
             scroll: {
@@ -1368,6 +1389,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 withAnimation(.easeInOut(duration: 0.25)) {
                     proxy.scrollTo(anchorID, anchor: .center)
                 }
+                ownedScrollTarget?.didScroll(targetID)
             }
         )
     }
@@ -1482,7 +1504,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     entrySelection = nil
                 }
             }
-            .task(id: request) { @MainActor in
+            .task(id: LoadIdentity(request: request, scrollOwnerID: ownedScrollTarget?.id)) { @MainActor in
                 guard !Task.isCancelled else { return }
                 let requestID = UUID()
                 currentLoadRequestID = requestID

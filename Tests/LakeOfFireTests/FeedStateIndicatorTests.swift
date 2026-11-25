@@ -2,7 +2,95 @@ import XCTest
 import RealmSwift
 import Combine
 @testable import LakeOfFireContent
+@testable import LakeOfFireLibrary
 @testable import LakeOfFireReader
+
+final class FeedInitialEntryNavigationTests: XCTestCase {
+    private let feedID = UUID()
+
+    func testWaitsForLoadedTargetAndSelectsItOnlyOnce() {
+        var navigation = FeedInitialEntryNavigation()
+        let mount = navigation.mount(.init(feedID: feedID, entryID: "initial"))
+
+        XCTAssertEqual(navigation.scrollEntryID(for: mount), "initial")
+        XCTAssertNil(navigation.takeSelection(forLoadedEntry: "other", mount: mount))
+        XCTAssertEqual(navigation.takeSelection(forLoadedEntry: "initial", mount: mount), "initial")
+
+        XCTAssertTrue(navigation.admitListSelection("other", mount: mount))
+        XCTAssertTrue(navigation.admitListSelection(nil, mount: mount))
+        XCTAssertNil(navigation.scrollEntryID(for: mount))
+        XCTAssertNil(navigation.takeSelection(forLoadedEntry: "initial", mount: mount))
+    }
+
+    func testAnotherSelectionBeforeTargetArrivesSupersedesIt() {
+        var navigation = FeedInitialEntryNavigation()
+        let mount = navigation.mount(.init(feedID: feedID, entryID: "initial"))
+
+        XCTAssertTrue(navigation.admitListSelection("other", mount: mount))
+        XCTAssertTrue(navigation.admitListSelection(nil, mount: mount))
+
+        XCTAssertNil(navigation.scrollEntryID(for: mount))
+        XCTAssertNil(navigation.takeSelection(forLoadedEntry: "initial", mount: mount))
+    }
+
+    func testCurrentNilSelectionDoesNotConsumeAnUnseenTarget() {
+        var navigation = FeedInitialEntryNavigation()
+        let mount = navigation.mount(.init(feedID: feedID, entryID: "initial"))
+
+        XCTAssertTrue(navigation.admitListSelection(nil, mount: mount))
+        XCTAssertEqual(navigation.takeSelection(forLoadedEntry: "initial", mount: mount), "initial")
+    }
+
+    func testReplacingTargetOrFeedAdmitsNewNavigation() {
+        var navigation = FeedInitialEntryNavigation()
+        let first = navigation.mount(.init(feedID: feedID, entryID: "initial"))
+        XCTAssertEqual(navigation.takeSelection(forLoadedEntry: "initial", mount: first), "initial")
+
+        let next = navigation.mount(.init(feedID: feedID, entryID: "next"))
+        XCTAssertEqual(navigation.takeSelection(forLoadedEntry: "next", mount: next), "next")
+
+        let otherFeed = navigation.mount(.init(feedID: UUID(), entryID: "next"))
+        XCTAssertEqual(navigation.takeSelection(forLoadedEntry: "next", mount: otherFeed), "next")
+    }
+
+    func testRetiredMountCannotReadOrWriteSuccessorSelectionOrConsumeItsTarget() {
+        var navigation = FeedInitialEntryNavigation()
+        let noTarget = navigation.mount(.init(feedID: feedID, entryID: nil))
+        let first = navigation.mount(.init(feedID: feedID, entryID: "initial"))
+        let next = navigation.mount(.init(feedID: feedID, entryID: "next"))
+
+        XCTAssertFalse(navigation.admitListSelection(nil, mount: noTarget))
+        XCTAssertFalse(navigation.isCurrent(first))
+        XCTAssertFalse(navigation.admitListSelection(nil, mount: first))
+        XCTAssertFalse(navigation.admitListSelection("initial", mount: first))
+        XCTAssertNil(navigation.scrollEntryID(for: first))
+        XCTAssertNil(navigation.takeSelection(forLoadedEntry: "initial", mount: first))
+
+        navigation.unmount(first)
+        XCTAssertTrue(navigation.isCurrent(next))
+        XCTAssertEqual(navigation.takeSelection(forLoadedEntry: "next", mount: next), "next")
+    }
+
+    func testRemountOfSameTargetCannotReuseOldAuthority() {
+        let target = FeedInitialEntryNavigation.Target(feedID: feedID, entryID: "initial")
+        var navigation = FeedInitialEntryNavigation()
+        let first = navigation.mount(target)
+        navigation.unmount(first)
+        XCTAssertFalse(navigation.isCurrent(first))
+
+        let interveningMount = navigation.mount(.init(feedID: feedID, entryID: "other"))
+        let remount = navigation.mount(target)
+        XCTAssertFalse(navigation.isCurrent(first))
+        XCTAssertFalse(navigation.admitListSelection(nil, mount: first))
+        XCTAssertNil(navigation.takeSelection(forLoadedEntry: "initial", mount: first))
+        navigation.unmount(interveningMount)
+        XCTAssertEqual(navigation.takeSelection(forLoadedEntry: "initial", mount: remount), "initial")
+
+        navigation.unmount(remount)
+        let subsequentMount = navigation.mount(target)
+        XCTAssertNil(navigation.takeSelection(forLoadedEntry: "initial", mount: subsequentMount))
+    }
+}
 
 final class FeedStateIndicatorTests: XCTestCase {
     private func makeConfiguration(identifier: String = UUID().uuidString) -> Realm.Configuration {
