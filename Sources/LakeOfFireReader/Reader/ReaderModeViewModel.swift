@@ -2002,6 +2002,12 @@ public class ReaderModeViewModel: ObservableObject {
         }
         let fontValues = readerFontCSSValues(horizontalFamily: readerFontFamilyName)
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
+            let routedFontFamilies = sharedReaderFontAsset.map { asset in
+                Dictionary(uniqueKeysWithValues: asset.supportedFamilyNames.compactMap { family -> (String, String)? in
+                    let routedFamily = asset.cssFontFaceFamilyName(for: family)
+                    return routedFamily == family ? nil : (family, routedFamily)
+                })
+            } ?? [:]
             let js = """
             (function() {
                 const postLog = (_message) => {};
@@ -2064,12 +2070,17 @@ public class ReaderModeViewModel: ObservableObject {
                         setFontPendingState(false);
                     }, 4000);
                 };
-                const waitForFontReady = async (desiredFamily) => {
+                const waitForFontReady = async (desiredFamily, style) => {
                     const fontSet = document.fonts;
                     if (!fontSet) return;
                     if (desiredFamily && typeof fontSet.load === 'function') {
                         try {
-                            await fontSet.load("1em '" + desiredFamily + "'");
+                            const routedFamily = style?.tagName === 'LINK' ? routedFontFamilies[desiredFamily] : null
+                            if (routedFamily) {
+                                await fontSet.load('1em ' + JSON.stringify(routedFamily), '日本語')
+                            } else {
+                                await fontSet.load("1em '" + desiredFamily + "'")
+                            }
                         } catch (_) {}
                     }
                     if (typeof fontSet.ready === 'object' && fontSet.ready && typeof fontSet.ready.then === 'function') {
@@ -2108,7 +2119,7 @@ public class ReaderModeViewModel: ObservableObject {
                         || 'YuKyokasho');
                     setFontPendingState(true);
                     scheduleGateTimeout();
-                    ensureReaderFontStyle(desiredFamily);
+                    const style = ensureReaderFontStyle(desiredFamily)
                     try { globalThis.manabiForwardReaderFontToEbookDocuments?.('readerMode-local-scheme-inject'); } catch (_) {}
                     try { window.parent?.manabiForwardReaderFontToEbookDocuments?.('readerMode-local-scheme-inject-child'); } catch (_) {}
                     if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
@@ -2118,7 +2129,7 @@ public class ReaderModeViewModel: ObservableObject {
                         document.documentElement?.dataset?.mnbInjectedFontFamily
                         || desiredFamily
                         || null;
-                    await waitForFontReady(resolvedFamily);
+                    await waitForFontReady(resolvedFamily, style)
                     if (gateTimeout) {
                         clearTimeout(gateTimeout);
                         gateTimeout = null;
@@ -2142,6 +2153,7 @@ public class ReaderModeViewModel: ObservableObject {
                     "stylesheetURLTemplate": stylesheetURLTemplate,
                     "horizontalFontFamily": fontValues.horizontalFamily,
                     "verticalFontFamily": fontValues.verticalFamily,
+                    "routedFontFamilies": routedFontFamilies,
                 ],
                 duplicateInMultiTargetFrames: true,
                 scriptCaller: scriptCaller,
