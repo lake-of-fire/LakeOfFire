@@ -697,6 +697,28 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertTrue(fixture.readerModeViewModel.isReaderModeLoadPending(for: url))
     }
 
+    func testReentrantCommittedDocumentInvalidationRetiresDeferredFailure() async {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let taskManager = fixture.taskManager
+        var deferredFailure: Task<Void, Error>?
+        var failureEvents = 0
+        fixture.handler.onNavigationFailed = { _ in
+            failureEvents += 1
+        }
+        fixture.handler.onPreservedCommittedDocument = { [weak handler = fixture.handler] state in
+            deferredFailure = taskManager.onNavigationFailedTask
+            handler?.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+        }
+
+        fixture.handler.onNavigationFailed(state: .empty, disposition: .preservedCommittedDocument)
+
+        XCTAssertNotNil(deferredFailure)
+        XCTAssertNil(taskManager.onNavigationFailedTask)
+        _ = await deferredFailure?.result
+        _ = await taskManager.onNavigationFailedTask?.result
+        XCTAssertEqual(failureEvents, 0)
+    }
+
     func testWebContentProcessTerminationReleasesOwnedReaderRender() {
         let fixture = makeReaderWebViewHandlerFixture()
         var preservedDocumentEvents = 0

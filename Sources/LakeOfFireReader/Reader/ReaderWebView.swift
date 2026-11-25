@@ -314,11 +314,7 @@ final class ReaderWebViewHandler {
         disposition: WebViewNavigationFailureDisposition
     ) {
         let preservesCommittedDocument = disposition == .preservedCommittedDocument
-        if preservesCommittedDocument {
-            // The committed document did not change, so consumers can resume
-            // work retired at the start of provisional navigation.
-            onPreservedCommittedDocument?(state)
-        } else {
+        if !preservesCommittedDocument {
             readerContent.withdrawSelectionIntent()
             // Settle the admitted failure before a later same-URL preparation
             // can begin. Deferred public observers do not own render cleanup.
@@ -331,6 +327,11 @@ final class ReaderWebViewHandler {
             preservingCommittedDocument: preservesCommittedDocument
         ) { @MainActor in
             self.onNavigationFailed?(state)
+        }
+        if preservesCommittedDocument {
+            // Admit the deferred failure before invoking a synchronous observer,
+            // so a reentrant document invalidation can retire that failure.
+            onPreservedCommittedDocument?(state)
         }
     }
 
