@@ -3890,27 +3890,32 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
 
-        ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
-        await injectSharedFontIfNeeded(
-            scriptCaller: scriptCaller,
-            pageURL: committedURL,
-            requiring: navigationBindingToken
-        )
-        try requireCurrentDocument()
-        ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
-        if !scriptCaller.hasAsyncCaller {
-        } else {
-            do {
-                _ = try await evaluateReaderDocumentJavaScript(
-                    "window.paginationTrackingBookKey = bookKey;",
-                    arguments: ["bookKey": newState.pageURL.absoluteString],
-                    duplicateInMultiTargetFrames: true,
-                    scriptCaller: scriptCaller,
-                    requiring: navigationBindingToken
-                )
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
+        // An empty loader can continue immediately to the prepared document,
+        // which owns its own font and pagination setup.
+        let isEmptyReaderLoader = newState.pageURL.isReaderURLLoaderURL
+            && (expectedSyntheticReaderNavigation == nil || !expectsSyntheticReaderLoaderCommit(for: newState.pageURL))
+        if !isEmptyReaderLoader {
+            ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
+            await injectSharedFontIfNeeded(
+                scriptCaller: scriptCaller,
+                pageURL: committedURL,
+                requiring: navigationBindingToken
+            )
+            try requireCurrentDocument()
+            ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
+            if scriptCaller.hasAsyncCaller {
+                do {
+                    _ = try await evaluateReaderDocumentJavaScript(
+                        "window.paginationTrackingBookKey = bookKey;",
+                        arguments: ["bookKey": newState.pageURL.absoluteString],
+                        duplicateInMultiTargetFrames: true,
+                        scriptCaller: scriptCaller,
+                        requiring: navigationBindingToken
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                }
             }
         }
         try requireCurrentDocument()

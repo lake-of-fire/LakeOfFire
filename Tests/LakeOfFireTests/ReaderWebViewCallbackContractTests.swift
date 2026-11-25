@@ -7,6 +7,7 @@ import UIKit
 import SwiftUI
 import Combine
 import RealmSwift
+import RealmSwiftGaps
 @testable import SwiftUIWebView
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
@@ -1070,8 +1071,18 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         }
         reader.pageURL = url
         reader.content = row
+        var stylesheetURLTemplates: [String] = []
+        var paginationKeys: [String] = []
         caller.installBinding(
-            ownedBy: UUID(), asyncCaller: { _, _, _, _ in .init(nil) },
+            ownedBy: UUID(), asyncCaller: { _, arguments, _, _ in
+                if let stylesheetURLTemplate = arguments?["stylesheetURLTemplate"] as? String {
+                    stylesheetURLTemplates.append(stylesheetURLTemplate)
+                }
+                if let bookKey = arguments?["bookKey"] as? String {
+                    paginationKeys.append(bookKey)
+                }
+                return .init(nil)
+            },
             unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
         )
         let binding = try XCTUnwrap(caller.currentJavaScriptBindingToken)
@@ -1155,6 +1166,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             return
         }
 
+        stylesheetURLTemplates.removeAll()
+        paginationKeys.removeAll()
         let beforeMode = ReaderCallbackGate()
         let afterMode = ReaderCallbackGate()
         let commitEntered = expectation(description: "physical commit suspended before mode initialization")
@@ -1189,6 +1202,8 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
 
         await beforeMode.release()
         await fulfillment(of: [expectationConsumed], timeout: 5)
+        XCTAssertEqual(stylesheetURLTemplates, ["internal://local/manabi-fonts.css?family=__MANABI_FONT_FAMILY__"])
+        XCTAssertEqual(paginationKeys, [url.absoluteString])
         // The finish task is now waiting on semantic commit after its synthetic
         // expectation was consumed. A deferred execution-time check is too late.
         fixture.handler.onURLChanged(state: state)
@@ -1242,6 +1257,126 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             "Completed preparation cannot exempt a later same-URL selection")
     }
 
+
+    func testEmptyReaderLoaderCommitContinuesWithoutFontOrPaginationSetup() async throws {
+        let url = URL(string: "https://example.invalid/empty-reader-loader")!
+        let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+
+        for pageURL in [loaderURL, url] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let mode = fixture.readerModeViewModel
+            let caller = fixture.handler.scriptCaller
+            let navigator = fixture.handler.navigator
+            let (realm, row) = try cachedHistoryRecord(url: url)
+            fixture.readerContent.content = row
+            fixture.readerContent.pageURL = pageURL
+            var fontRequests = 0
+            var paginationKeys: [String] = []
+            mode.sharedFontCSSBase64Provider = {
+                fontRequests += 1
+                return nil
+            }
+            caller.installBinding(
+                ownedBy: UUID(), asyncCaller: { _, arguments, _, _ in
+                    if let bookKey = arguments?["bookKey"] as? String {
+                        paginationKeys.append(bookKey)
+                    }
+                    return .init(nil)
+                },
+                unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+            )
+            var state = WebViewState.empty
+            state.pageURL = pageURL
+
+            try await mode.onNavigationCommitted(
+                readerContent: fixture.readerContent, newState: state,
+                scriptCaller: caller, navigator: navigator
+            )
+
+            if pageURL == loaderURL {
+                XCTAssertEqual(fontRequests, 0)
+                XCTAssertTrue(paginationKeys.isEmpty)
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, url.absoluteString)
+            } else {
+                XCTAssertEqual(fontRequests, 1)
+                XCTAssertEqual(paginationKeys, [url.absoluteString])
+                XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, "nil")
+            }
+            withExtendedLifetime(realm) {}
+        }
+    }
+
+    func testCachedArticleLoaderDispatchesPreparedHTMLWithoutAwaitingFontProvider() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let mode = fixture.readerModeViewModel
+        let navigator = fixture.handler.navigator
+        let url = URL(string: "https://example.invalid/cached-reader-loader")!
+        let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+        var configuration = Realm.Configuration(
+            inMemoryIdentifier: UUID().uuidString,
+            objectTypes: [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self]
+        )
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistory = ReaderContentLoader.historyRealmConfiguration
+        let previousFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmark
+            ReaderContentLoader.historyRealmConfiguration = previousHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = previousFeed
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        let realm = try Realm(configuration: configuration, queue: nil)
+        let row = HistoryRecord()
+        let html = "<html><body class='readability-mode'><div id='reader-content'><p>Prepared cached article.</p></div></body></html>"
+        try realm.write {
+            row.url = url
+            row.updateCompoundKey()
+            row.title = "Cached article"
+            row.rssContainsFullContent = true
+            row.isReaderModeByDefault = true
+            row.isReaderModeAvailable = false
+            row.isReaderModeOfferHidden = false
+            row.html = html
+            realm.add(row)
+        }
+        fixture.readerContent.content = row
+        fixture.readerContent.pageURL = url
+        mode.readerLocalHTMLLoader = { _ in html }
+        mode.readerPublicationDateLoader = { _ in nil }
+        let completed = expectation(description: "Reader finished dispatching the cached article")
+        let fontGate = ReaderCallbackGate()
+        var fontRequests = 0
+        mode.sharedFontCSSBase64Provider = {
+            fontRequests += 1
+            await fontGate.wait()
+            return nil
+        }
+        var state = WebViewState.empty
+        state.pageURL = loaderURL
+        let commit = Task { @MainActor in
+            try await mode.onNavigationCommitted(
+                readerContent: fixture.readerContent, newState: state,
+                scriptCaller: fixture.handler.scriptCaller, navigator: navigator
+            )
+            await mode.waitForReaderModeRender(for: url)
+            completed.fulfill()
+        }
+        let storage = configuration
+        addTeardownBlock { @MainActor in
+            await fontGate.release()
+            _ = try? await commit.value
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: storage)
+        }
+        await fulfillment(of: [completed], timeout: 5)
+        XCTAssertEqual(fontRequests, 0)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+        await fontGate.release()
+        try await commit.value
+        withExtendedLifetime(realm) {}
+    }
 
     func testSharedFontInjectionRejectsMountedCallerWithoutDocumentIdentity() async throws {
         let viewModel = ReaderModeViewModel()
