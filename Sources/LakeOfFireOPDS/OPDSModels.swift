@@ -91,6 +91,7 @@ public struct Metadata: Hashable {
     public let subtitle: String?
     public let modified: Date?
     public let published: Date?
+    public let publicationCivilYear: Int?
     public let languages: [String]
     public let subjects: [Subject]
     public let authors: [Contributor]
@@ -107,13 +108,15 @@ public struct Metadata: Hashable {
         subjects: [Subject] = [],
         authors: [Contributor] = [],
         publishers: [Contributor] = [],
-        description: String? = nil
+        description: String? = nil,
+        publicationCivilYear: Int? = nil
     ) {
         self.identifier = identifier
         self.title = title
         self.subtitle = subtitle
         self.modified = modified
         self.published = published
+        self.publicationCivilYear = publicationCivilYear
         self.languages = languages
         self.subjects = subjects
         self.authors = authors
@@ -125,18 +128,20 @@ public struct Metadata: Hashable {
         guard let title = json["title"] as? String else {
             throw OPDS2ParserError.missingTitle
         }
+        let published = (json["published"] as? String)?.opdsPublicationDate
 
         self.init(
             identifier: json["identifier"] as? String,
             title: title,
             subtitle: json["subtitle"] as? String,
             modified: (json["modified"] as? String)?.dateFromISO8601,
-            published: (json["published"] as? String)?.dateFromISO8601,
+            published: published?.date,
             languages: String.array(from: json["language"]),
             subjects: try Subject.array(from: json["subject"], normalizeHREF: normalizeHREF),
             authors: try Contributor.array(from: json["author"], normalizeHREF: normalizeHREF),
             publishers: try Contributor.array(from: json["publisher"], normalizeHREF: normalizeHREF),
-            description: json["description"] as? String
+            description: json["description"] as? String,
+            publicationCivilYear: published?.civilYear
         )
     }
 }

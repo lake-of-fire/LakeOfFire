@@ -536,7 +536,8 @@ public class BookLibraryViewModel: ObservableObject {
                 publicationDate: publication.metadata.published,
                 coverURL: coverURL,
                 downloadURL: acquisitionLink?.url(relativeTo: url),
-                summary: publication.metadata.description ?? publication.metadata.subtitle
+                summary: publication.metadata.description ?? publication.metadata.subtitle,
+                publicationCivilYear: publication.metadata.publicationCivilYear
             )
         }
     }
@@ -769,4 +770,11 @@ public struct Publication: Identifiable, Hashable {
     public var downloadURL: URL?
     public var summary: String?
     public var hasContentAudio = false
+    public var publicationCivilYear: Int? = nil
+
+    var publicationYearText: String? {
+        guard let publicationDate else { return nil }
+        if let publicationCivilYear { return String(publicationCivilYear) }
+        return Calendar.current.dateComponents([.year], from: publicationDate).year.map { String($0) }
+    }
 }

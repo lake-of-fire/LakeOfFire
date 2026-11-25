@@ -126,7 +126,7 @@ fileprivate struct StaticBookListRow: View {
             imageURL: publication.coverURL,
             title: publication.title,
             author: publication.author,
-            publicationDate: publication.publicationDate,
+            publicationYearText: publication.publicationYearText,
             summary: publication.summary,
             hasContentAudio: publication.hasContentAudio,
             onTopTap: nil
@@ -156,7 +156,7 @@ fileprivate struct DownloadableBookListRow: View {
             imageURL: publication.coverURL,
             title: publication.title,
             author: publication.author,
-            publicationDate: publication.publicationDate,
+            publicationYearText: publication.publicationYearText,
             summary: publication.summary,
             hasContentAudio: publication.hasContentAudio,
             onTopTap: topTap
@@ -286,7 +286,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
     let imageURL: URL?
     let title: String
     let author: String?
-    let publicationDate: Date?
+    let publicationYearText: String?
     let summary: String?
     let hasContentAudio: Bool
     let onTopTap: (() -> Void)?
@@ -305,7 +305,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         imageURL: URL?,
         title: String,
         author: String?,
-        publicationDate: Date?,
+        publicationYearText: String?,
         summary: String?,
         hasContentAudio: Bool = false,
         onTopTap: (() -> Void)? = nil,
@@ -314,7 +314,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         self.imageURL = imageURL
         self.title = title
         self.author = author
-        self.publicationDate = publicationDate
+        self.publicationYearText = publicationYearText
         self.summary = summary
         self.hasContentAudio = hasContentAudio
         self.onTopTap = onTopTap
@@ -420,12 +420,6 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         }
     }
 
-    private var publicationYearText: String? {
-        guard let publicationDate else { return nil }
-        let components = Calendar.current.dateComponents([.year], from: publicationDate)
-        guard let year = components.year else { return nil }
-        return String(year)
-    }
 }
 
 fileprivate struct BookListRowThumbnail: View {

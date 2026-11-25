@@ -156,7 +156,7 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
         var title: String?
         var identifier: String?
         var modified: Date?
-        var published: Date?
+        var published: (date: Date, civilYear: Int?)?
         var languages: [String] = []
         var subjects: [Subject] = []
         var authors: [Contributor] = []
@@ -291,12 +291,13 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
             identifier: entry.identifier,
             title: title,
             modified: entry.modified,
-            published: entry.published,
+            published: entry.published?.date,
             languages: Array(Set(entry.languages)).sorted(),
             subjects: entry.subjects,
             authors: effectiveAuthors,
             publishers: entry.publishers,
-            description: entry.description
+            description: entry.description,
+            publicationCivilYear: entry.published?.civilYear
         )
 
         var links: [Link] = []
@@ -509,7 +510,7 @@ private final class OPDS1XMLParser: NSObject, XMLParserDelegate {
             case "identifier" where dc:
                 if currentEntry?.identifier == nil { currentEntry?.identifier = text.nilIfEmpty }
             case "published" where atom, "issued" where dc:
-                currentEntry?.published = text.dateFromISO8601
+                currentEntry?.published = text.opdsPublicationDate
             case "summary" where atom, "content" where atom:
                 if currentEntry?.description == nil { currentEntry?.description = text.nilIfEmpty }
             case "language" where dc:
