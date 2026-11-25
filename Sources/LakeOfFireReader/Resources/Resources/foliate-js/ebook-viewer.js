@@ -1,5 +1,5 @@
 import { readerDocumentStartedAtMs } from './reader-document-clock.js'
-import { makeNativeEbookSource, nativeEbookRequest, normalizeEbookPackageSessionID } from './ebook-native-source-request.js'
+import { committedNativeEbookSection, makeNativeEbookSource, nativeEbookRequest, normalizeEbookPackageSessionID } from './ebook-native-source-request.js'
 import './view.js'
 import {
 createTOCView
@@ -5493,6 +5493,7 @@ class Reader {
     #documentScopes = new Map();
     #documentScopeSequence = 0;
     #lastPublishedCurrentContentPageKey = null;
+    #nativePackageSource = null
     #postInitialOpenWorkHandle = null;
     #sidebarCloseHandle = null;
     #navButtonOperations = new Set();
@@ -5619,17 +5620,22 @@ class Reader {
     }
     #publishCurrentContentPage(reason = 'unspecified', explicitDoc = null) {
         if (this.#closed) return false;
-        const doc = explicitDoc ?? getPrimaryRendererContent(this.view?.renderer)?.doc ?? null;
+        const primaryContent = getPrimaryRendererContent(this.view?.renderer)
+        const doc = explicitDoc ?? primaryContent?.doc ?? null
         if (!isDocumentLike(doc)) return false;
         const currentPageURL = doc.location?.href ?? null;
         if (!currentPageURL) return false;
         const key = `${window.top.location.href}\n${currentPageURL}`;
         if (this.#lastPublishedCurrentContentPageKey === key) return false;
         this.#lastPublishedCurrentContentPageKey = key;
+        const nativeEbookSection = committedNativeEbookSection(
+            this.#nativePackageSource, this.view?.book?.sections, primaryContent, doc
+        )
         window.webkit?.messageHandlers?.updateCurrentContentPage?.postMessage?.({
             topWindowURL: window.top.location.href,
             currentPageURL,
             reason,
+            ...(nativeEbookSection ? { nativeEbookSection } : {}),
         });
         return true;
     }
@@ -5724,6 +5730,7 @@ class Reader {
     close(reason = 'unspecified') {
         if (this.#closed) return false;
         this.#closed = true;
+        this.#nativePackageSource = null
         this.#retireMarkReadAdvance();
         // Dispose transport while the original generation still identifies
         // the current chapter. The coordinator compares exact ownership and
@@ -9231,6 +9238,7 @@ class Reader {
     }
     async open(file, options = {}) {
         if (this.#closed) throw readerOpenSupersededError()
+        this.#nativePackageSource = null
         this.#retireMarkReadAdvance();
         const lifecycleGeneration = ++this.#lifecycleGeneration
         this.#confirmedTurnAwaitingChapter = null;
@@ -9267,6 +9275,7 @@ class Reader {
             view.remove?.()
             throw readerOpenSupersededError()
         }
+        if (file?.kind === 'native') this.#nativePackageSource = file
         this.bookReadingRuntime = installBookReadingRuntime({
             reader: this, view, document, window, documentStartedAtMs: readerDocumentStartedAtMs(),
             invalidateProjection: () => {

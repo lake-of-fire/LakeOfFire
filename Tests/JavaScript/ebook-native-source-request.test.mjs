@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { makeNativeEbookSource, nativeEbookRequest, normalizeEbookPackageSessionID } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-native-source-request.js'
+import { committedNativeEbookSection, makeNativeEbookSource, nativeEbookRequest, normalizeEbookPackageSessionID } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-native-source-request.js'
 import { processedSectionURLForHref } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-direct-section.js'
 
 const sourceURL = 'ebook://ebook/load/local/Books/日本語.epub'
@@ -33,6 +33,46 @@ test('an immutable source carries its original identity through cache warming', 
     assert.equal(Object.isFrozen(source), true)
     assert.throws(() => { source.packageSessionID = 'another' })
     assert.equal(source.packageSessionID, id)
+})
+test('a primary SVG blob reports its exact native spine path and keeps its display URL', () => {
+    const source = makeNativeEbookSource(sourceURL, id)
+    const doc = {
+        location: { href: 'blob:ebook://ebook/current-illustration#detail' },
+        body: { dataset: { mnbSourceHref: 'wrong.svg' } },
+    }
+    const sections = [
+        { id: 'OPS/other.xhtml' },
+        { id: 'OPS/日本語%2F illustration.svg', href: 'OPS/日本語%252F%20illustration.svg' },
+    ]
+    assert.deepEqual(committedNativeEbookSection(source, sections, { doc, index: 1 }, doc), {
+        sourceURL,
+        sectionHref: 'OPS/日本語%2F illustration.svg',
+        packageSessionID: id,
+    })
+    assert.equal(doc.location.href, 'blob:ebook://ebook/current-illustration#detail')
+})
+test('only the primary section of an admitted native package can supply a descriptor', () => {
+    const source = makeNativeEbookSource(sourceURL, id)
+    const sections = [{ id: 'OPS/chapter.xhtml' }]
+    const doc = { location: { href: 'blob:ebook://ebook/primary' } }
+    const primary = { doc, index: 0 }
+    assert.equal(committedNativeEbookSection(source, sections, primary, {}), null)
+    assert.equal(committedNativeEbookSection(source, sections, { doc, index: 1 }, doc), null)
+    assert.equal(committedNativeEbookSection(source, sections, { doc, index: '0' }, doc), null)
+    assert.equal(committedNativeEbookSection(makeNativeEbookSource(sourceURL), sections, primary, doc), null)
+    assert.equal(committedNativeEbookSection(null, sections, primary, doc), null)
+    assert.equal(committedNativeEbookSection({ kind: 'file' }, sections, primary, doc), null)
+})
+test('successive committed pages of the same book carry their original package session', () => {
+    const other = 'dce2c5c5-2537-42b7-b678-67b57ac0bccb'
+    const sections = [{ id: 'OPS/chapter.xhtml' }]
+    const doc = {}
+    const primary = { doc, index: 0 }
+    const first = committedNativeEbookSection(makeNativeEbookSource(sourceURL, id), sections, primary, doc)
+    const second = committedNativeEbookSection(makeNativeEbookSource(sourceURL, other), sections, primary, doc)
+    assert.equal(first.packageSessionID, id)
+    assert.equal(second.packageSessionID, other)
+    assert.equal(first.sectionHref, second.sectionHref)
 })
 test('processed documents carry capability for their relative resource owner', () => {
     const url = new URL(processedSectionURLForHref(sourceURL, 'OPS/chapter.xhtml', { direction: 'vertical' }, id))
