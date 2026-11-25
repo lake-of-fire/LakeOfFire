@@ -755,6 +755,92 @@ final class LibraryExportPresentationTests: XCTestCase {
         XCTAssertFalse(xml.contains("stale"))
     }
 
+    func testUsernameChangeRepreparesTheExportAndRetainsTheSharedFile() async throws {
+        let previousUsername = LibraryDataManager.currentUsername
+        let originalUsername = "Original OPML Owner"
+        LibraryDataManager.currentUsername = originalUsername
+        defer { LibraryDataManager.currentUsername = previousUsername }
+
+        let configuration = makeLibraryRealmConfiguration()
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = realOPMLExporter(configuration: configuration)
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+        defer {
+            manager.unregisterOPMLExportUI(registration)
+            manager.invalidateOPMLExport()
+        }
+
+        let initialExport = await waitForExport(manager)
+        let initialURL = try XCTUnwrap(initialExport)
+        XCTAssertEqual(try OPML(file: initialURL).ownerName, originalUsername)
+        let originalBytes = try Data(contentsOf: initialURL)
+
+        LibraryDataManager.currentUsername = originalUsername
+        XCTAssertEqual(manager.exportedOPMLFileURL, initialURL)
+
+        LibraryDataManager.currentUsername = nil
+        XCTAssertNil(manager.exportedOPMLFileURL)
+        XCTAssertNil(manager.exportedOPMLShareItem)
+        XCTAssertEqual(try Data(contentsOf: initialURL), originalBytes)
+
+        let replacement = await waitForExport(manager, after: initialURL)
+        let replacementURL = try XCTUnwrap(replacement)
+        XCTAssertNil(try OPML(file: replacementURL).ownerName)
+        XCTAssertEqual(try Data(contentsOf: initialURL), originalBytes)
+
+        manager.unregisterOPMLExportUI(registration)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: initialURL.path))
+    }
+
+    func testUsernameChangeRejectsAnInFlightExportWithThePreviousOwner() async throws {
+        let previousUsername = LibraryDataManager.currentUsername
+        let originalUsername = "Delayed OPML Owner"
+        let replacementUsername = "Current OPML Owner"
+        LibraryDataManager.currentUsername = originalUsername
+        defer { LibraryDataManager.currentUsername = previousUsername }
+
+        let configuration = makeLibraryRealmConfiguration()
+        let export = realOPMLExporter(configuration: configuration)
+        let gate = DelayedOPMLExporter()
+        addTeardownBlock { await gate.releaseFirst() }
+        let manager = LibraryManagerViewModel(observesRealm: false)
+        manager.exportUserOPML = {
+            let opml = try await export()
+            return await gate.export(opml)
+        }
+        let staleWrite = expectation(description: "The previous owner's export must never be written")
+        staleWrite.isInverted = true
+        manager.writeOPMLFile = { data, url in
+            if try OPML(data).ownerName == originalUsername {
+                staleWrite.fulfill()
+            }
+            try data.write(to: url, options: [.atomic])
+        }
+        let registration = UUID()
+        manager.registerOPMLExportUI(registration)
+        defer {
+            manager.unregisterOPMLExportUI(registration)
+            manager.invalidateOPMLExport()
+        }
+
+        for _ in 0..<150 {
+            if await gate.firstIsWaiting() { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let firstIsWaiting = await gate.firstIsWaiting()
+        guard firstIsWaiting else { return XCTFail("The original export did not reach the gate") }
+        XCTAssertNil(manager.exportedOPMLFileURL)
+        LibraryDataManager.currentUsername = replacementUsername
+
+        let replacement = await waitForExport(manager, containing: replacementUsername)
+        let replacementURL = try XCTUnwrap(replacement)
+        await gate.releaseFirst()
+        await fulfillment(of: [staleWrite], timeout: 0.2)
+        XCTAssertEqual(manager.exportedOPMLFileURL, replacementURL)
+        XCTAssertEqual(try OPML(file: replacementURL).ownerName, replacementUsername)
+    }
+
 #if os(macOS)
     func testVisibleViewsReprepareAfterMutationAndKeepEarlierSharedFile() async throws {
         let previous = LibraryDataManager.realmConfiguration
@@ -921,6 +1007,17 @@ final class LibraryExportPresentationTests: XCTestCase {
         return condition()
     }
 
+    private func realOPMLExporter(
+        configuration: Realm.Configuration
+    ) -> @Sendable () async throws -> OPML {
+        {
+            try await { @RealmBackgroundActor in
+                try await LibraryDataManager(observesChanges: false)
+                    .exportUserOPML(realmConfiguration: configuration)
+            }()
+        }
+    }
+
     private func makeLibraryRealmConfiguration() -> Realm.Configuration {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = [
@@ -963,22 +1060,26 @@ final class LibraryExportPresentationTests: XCTestCase {
 private actor DelayedOPMLExporter {
     private var calls = 0
     private var firstContinuation: CheckedContinuation<Void, Never>?
+    private var firstReleased = false
 
     func firstIsWaiting() -> Bool { firstContinuation != nil }
 
     func releaseFirst() {
+        firstReleased = true
         firstContinuation?.resume()
         firstContinuation = nil
     }
 
-    func export() async -> OPML {
+    func export(_ opml: OPML? = nil) async -> OPML {
         calls += 1
         if calls == 1 {
-            await withCheckedContinuation { continuation in
-                firstContinuation = continuation
+            if !firstReleased {
+                await withCheckedContinuation { continuation in
+                    firstContinuation = continuation
+                }
             }
-            return OPML(entries: [OPMLEntry(text: "stale")])
+            return opml ?? OPML(entries: [OPMLEntry(text: "stale")])
         }
-        return OPML(entries: [OPMLEntry(text: "fresh")])
+        return opml ?? OPML(entries: [OPMLEntry(text: "fresh")])
     }
 }

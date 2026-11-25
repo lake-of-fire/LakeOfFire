@@ -148,6 +148,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var reprepareOPMLTask: Task<Void, Never>?
     private var exportOPMLGeneration = 0
     private var opmlExportUIRegistrations = Set<UUID>()
+    private var opmlOwnerChangeSubscription: AnyCancellable?
     // Each successful generation has a readiness-checked file and immutable
     // share bytes. Retired files remain available while export UI is mounted.
     private var retiredOPMLExportFileURLs = Set<URL>()
@@ -218,6 +219,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             )
         }
         super.init()
+        observeOPMLOwner()
         observeRealm()
     }
 
@@ -230,7 +232,14 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             )
         }
         super.init()
+        observeOPMLOwner()
         if observesRealm { observeRealm() }
+    }
+
+    private func observeOPMLOwner() {
+        opmlOwnerChangeSubscription = LibraryDataManager.currentUsernameChanges.sink { [weak self] _ in
+            self?.invalidateOPMLExport()
+        }
     }
 
     private func observeRealm() {

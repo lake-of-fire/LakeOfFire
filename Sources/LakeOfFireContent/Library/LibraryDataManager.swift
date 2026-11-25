@@ -553,7 +553,20 @@ public class LibraryDataManager: NSObject {
     public static let shared = LibraryDataManager()
     
     public static var realmConfiguration: Realm.Configuration = .defaultConfiguration
-    public static var currentUsername: String? = nil
+
+    @MainActor private static let usernameChanges = PassthroughSubject<Void, Never>()
+
+    @MainActor public static var currentUsername: String? = nil {
+        didSet {
+            guard currentUsername != oldValue else { return }
+            usernameChanges.send()
+        }
+    }
+
+    /// Publishes a changed username synchronously after it has been stored.
+    @MainActor public static var currentUsernameChanges: AnyPublisher<Void, Never> {
+        usernameChanges.eraseToAnyPublisher()
+    }
 
     private var importOPMLTask: Task<(), Error>?
 
@@ -1978,6 +1991,7 @@ public class LibraryDataManager: NSObject {
     public func exportUserOPML(
         realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
     ) async throws -> OPML {
+        let ownerName = await Self.currentUsername
         let configuration = try await LibraryConfiguration.getConsolidatedOrCreate(
             realmConfiguration: realmConfiguration
         )
@@ -2057,7 +2071,7 @@ public class LibraryDataManager: NSObject {
 
         let opml = OPML(
             dateModified: Date(),
-            ownerName: (Self.currentUsername?.isEmpty ?? true) ? nil : Self.currentUsername,
+            ownerName: ownerName?.isEmpty == false ? ownerName : nil,
             entries: [scriptEntries] + categoryEntries
         )
         return opml
