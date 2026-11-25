@@ -1,6 +1,7 @@
 import BigSyncKit
 import Combine
 import RealmSwift
+@testable import SwiftUIWebView
 @testable import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
@@ -875,6 +876,32 @@ final class SyncMutationBoundaryTests: XCTestCase {
         XCTAssertEqual(pendingMutation(for: history, in: realm)?.changedAt, history.explicitlyModifiedAt)
         XCTAssertEqual(replacement.lastVisitedAt, Date(timeIntervalSinceReferenceDate: 59_000))
         XCTAssertNil(pendingMutation(for: replacement, in: replacementRealm))
+    }
+
+    @MainActor
+    func testSavedArticleLoaderDefersHistoryVisitUntilArticleCommits() async throws {
+        let configuration = makeNavigationConfiguration()
+        let realm = try await Realm.open(configuration: configuration)
+        let history = makeHistory(url: "https://example.com/saved-feed-article")
+        history.rssContainsFullContent = true
+        history.isReaderModeByDefault = true
+        history.html = "<p>Saved feed text.</p>"
+        try await realm.asyncWrite { realm.add(history) }
+        let previousVisit = history.lastVisitedAt
+        let model = ReaderViewModel(realmConfiguration: configuration, systemScripts: [])
+        var state = WebViewState.empty
+        state.pageURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: history.url))
+
+        try await model.onNavigationCommitted(content: history, newState: state)
+        try await realm.asyncRefresh()
+        XCTAssertEqual(history.lastVisitedAt, previousVisit)
+        XCTAssertNil(pendingMutation(for: history, in: realm))
+
+        state.pageURL = history.url
+        try await model.onNavigationCommitted(content: history, newState: state)
+        try await realm.asyncRefresh()
+        XCTAssertGreaterThan(history.lastVisitedAt, previousVisit)
+        XCTAssertNotNil(pendingMutation(for: history, in: realm))
     }
 
     @MainActor

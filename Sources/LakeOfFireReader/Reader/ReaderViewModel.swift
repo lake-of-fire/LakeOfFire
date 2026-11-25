@@ -235,6 +235,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
+        // The loader only hands off saved HTML. The final article commit
+        // records the visit, so rendering need not wait for a shell write.
+        guard !newState.pageURL.isReaderURLLoaderURL else { return }
         if let historyRecord = content as? HistoryRecord {
             try Task.checkCancellation()
             guard let contentRef = ReaderContentLoader.ContentReference(content: historyRecord) else { return }

@@ -1124,11 +1124,12 @@ public extension WebViewNavigator {
         didDispatchLoad: @MainActor () -> Void = {},
         resolveURL: @MainActor () async throws -> URL?
     ) async throws {
+        guard !Task.isCancelled else { return }
         let beginSnapshot = debugLoadSnapshot
         if let url = try await resolveURL() {
             // Callers refreshing an existing document can lose ownership while
             // native content is being resolved. Check before any UI mutation.
-            guard shouldLoad() else { return }
+            guard !Task.isCancelled, shouldLoad(), !Task.isCancelled else { return }
             let loadSnapshot = debugLoadSnapshot
             if loadSnapshot.lastRequestURL == url.absoluteString
                 || loadSnapshot.lastDataLoadBaseURL == url.absoluteString

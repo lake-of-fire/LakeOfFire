@@ -16,6 +16,7 @@ import WebKit
 import SwiftUtilities
 import Perception
 import BigSyncKit
+import os.signpost
 
 private func stripTemplateTagsForSanitize(_ html: String) -> String {
     guard html.range(of: "<template", options: .caseInsensitive) != nil else {
@@ -953,6 +954,41 @@ internal struct ReaderSnippetFinalDocumentSnapshot: Equatable, Sendable {
     }
 }
 
+internal enum ReaderArticleRenderTrace {
+    private static let log = OSLog(
+        subsystem: Bundle.main.bundleIdentifier ?? "io.manabi.reader",
+        category: .pointsOfInterest
+    )
+
+    private static let logsToConsole = ProcessInfo.processInfo.arguments.contains("--reader-load-trace")
+
+    static var isEnabled: Bool { log.signpostsEnabled || logsToConsole }
+
+    static func record(_ phase: StaticString, url: URL, generation: UUID? = nil) {
+        guard isEnabled else { return }
+        let contentURL = url.canonicalReaderContentURLForHotfix()
+        guard contentURL.scheme == "http" || contentURL.scheme == "https" else { return }
+        let generationID = generation?.uuidString ?? "-"
+        os_signpost(.event, log: log, name: phase, "generation=%{public}@", generationID)
+        if logsToConsole {
+            let time = String(format: "%.3f", ProcessInfo.processInfo.systemUptime)
+            let line = "ReaderLoadTrace t=\(time) phase=\(phase) generation=\(generationID)\n"
+            try? FileHandle.standardError.write(contentsOf: Data(line.utf8))
+        }
+    }
+}
+
+@MainActor
+func readerModeMetadataFlagsRequireWrite(for content: any ReaderContentProtocol) -> Bool {
+    // FeedEntry exposes these three flags as derived values with ignored
+    // setters. Treating them as pending changes only causes an empty Realm
+    // transaction and an unnecessary change-metadata refresh.
+    guard !(content is FeedEntry) else { return false }
+    return content.isReaderModeByDefault == false
+        || content.isReaderModeAvailable == true
+        || content.isReaderModeOfferHidden == true
+}
+
 internal enum ReaderSnippetFinalDocumentDiagnostics {
     static let logPrefix = "ReaderSnippetProcessingDiagnostics"
 
@@ -1685,6 +1721,7 @@ public class ReaderModeViewModel: ObservableObject {
         // A successor load has advanced the revision and owns its own cleanup.
         let originatingContentIsCurrent = render.originatingContentIsCurrent
         let failedBinding = scriptCaller.currentJavaScriptBindingToken
+        ReaderArticleRenderTrace.record("Reader Render Failed", url: url, generation: generation)
         cancelReaderModeLoad(for: url, readerContent: readerContent)
         let failureRevision = preparationFailureRevision
         navigator?.forceClearLoadingIndicators(reason: "readerMode.preparationFailed", pageURL: url)
@@ -1986,6 +2023,9 @@ public class ReaderModeViewModel: ObservableObject {
 
         if expectedMatches {
             publishSyntheticReaderLoaderExpectation(for: nil)
+        }
+        if pendingMatches || expectedMatches {
+            ReaderArticleRenderTrace.record("Reader Document Ready", url: canonicalURL, generation: renderGeneration)
         }
         markReaderModeLoadComplete(for: canonicalURL)
         return true
@@ -2927,6 +2967,9 @@ public class ReaderModeViewModel: ObservableObject {
     private func finishRenderTask(for url: URL, generation: UUID) {
         let key = canonicalRenderKey(url)
         guard let render = activeRendersByURL[key], render.generation == generation else { return }
+        if !render.hasDispatchedHTML, render.sourceNavigationProgressID != nil {
+            ReaderArticleRenderTrace.record("Reader Loader Render Ended Without Dispatch", url: url, generation: generation)
+        }
         // A dispatched document keeps the progress source until it is ready.
         activeRendersByURL.removeValue(forKey: key)
         if !render.hasDispatchedHTML, let sourceID = render.sourceNavigationProgressID {
@@ -2980,6 +3023,7 @@ public class ReaderModeViewModel: ObservableObject {
 
         let generation = UUID()
         expectedSyntheticReaderNavigation = nil
+        ReaderArticleRenderTrace.record("Reader Render Start", url: canonicalURL, generation: generation)
         ReaderSnippetFinalDocumentDiagnostics.record("render-start", contentURL: canonicalURL, generation: generation)
         completedRenderOwner = nil
         let task = Task { @ReaderViewModelActor [weak self] in
@@ -3178,6 +3222,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
             guard await originatingContentIsCurrent() else { return }
             let routeDecision = await self.resolveReaderModeRouteDecision(readerContent: readerContent)
+            ReaderArticleRenderTrace.record("Reader Render Route Resolved", url: contentURL, generation: generation)
             ReaderSnippetFinalDocumentDiagnostics.record("route.\(routeDecision.route.rawValue)", contentURL: contentURL, generation: generation)
             guard await self.isCurrentRender(for: contentURL, generation: generation) else {
                 return
@@ -3263,6 +3308,7 @@ public class ReaderModeViewModel: ObservableObject {
                         sourceNavigationProgressID: sourceNavigationProgressID
                     )
                 } catch is CancellationError {
+                    ReaderArticleRenderTrace.record("Reader Render Cancelled", url: contentURL, generation: generation)
                     await self.cancelReaderModeLoad(
                         for: contentURL,
                         ifOwnedBy: generation,
@@ -3395,6 +3441,7 @@ public class ReaderModeViewModel: ObservableObject {
             guard ownsContent() else { return }
 
             let resolvedReadabilityHTML: String?
+            ReaderArticleRenderTrace.record("Reader Local Extraction Start", url: contentURL, generation: renderGeneration)
             if hasCanonicalReadabilityMarkup(in: html) {
                 resolvedReadabilityHTML = rebuildCanonicalSnippetReadabilityHTML(
                     html: html,
@@ -3408,6 +3455,7 @@ public class ReaderModeViewModel: ObservableObject {
                 } else {
                     publicationDateFallback = await readerContentPublicationDateFallback(for: content)
                 }
+                ReaderArticleRenderTrace.record("Reader Publication Date Resolved", url: contentURL, generation: renderGeneration)
                 guard ownsContent() else { return }
                 let swiftReadability: SwiftReadabilityProcessingOutcome
                 if let swiftReadabilityProcessor {
@@ -3436,6 +3484,7 @@ public class ReaderModeViewModel: ObservableObject {
 
             guard ownsContent() else { return }
 
+            ReaderArticleRenderTrace.record("Reader Local Extraction Complete", url: contentURL, generation: renderGeneration)
             if let resolvedReadabilityHTML {
                 readabilityContent = resolvedReadabilityHTML
                 try await showReadabilityContent(
@@ -3474,6 +3523,7 @@ public class ReaderModeViewModel: ObservableObject {
                 )
                 return
             }
+            ReaderArticleRenderTrace.record("Reader Direct HTML Dispatched", url: contentURL, generation: renderGeneration)
             recordOwnedHTMLDispatch(for: contentURL, generation: renderGeneration) { [weak self, weak readerContent] in
                 guard let self, let readerContent else { return false }
                 return !content.isInvalidated
@@ -3481,6 +3531,7 @@ public class ReaderModeViewModel: ObservableObject {
                     && self.readerModeContentIsCurrent(content, readerContent: readerContent)
             }
         } catch is CancellationError {
+            ReaderArticleRenderTrace.record("Reader Render Cancelled", url: contentURL, generation: renderGeneration)
             // Retired work has no authority to clean up a newer selection.
             return
         } catch {
@@ -3587,9 +3638,7 @@ public class ReaderModeViewModel: ObservableObject {
         }()
         let titleForDisplay = content.titleForDisplay
         let needsAsyncWrite =
-            content.isReaderModeByDefault == false
-            || content.isReaderModeAvailable == true
-            || content.isReaderModeOfferHidden == true
+            readerModeMetadataFlagsRequireWrite(for: content)
             || (
                 !url.isEBookURL
                 && !url.isFileURL
@@ -3603,6 +3652,8 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         if needsAsyncWrite {
+            ReaderArticleRenderTrace.record("Reader Metadata Write Start", url: url, generation: renderGeneration)
+            defer { ReaderArticleRenderTrace.record("Reader Metadata Write End", url: url, generation: renderGeneration) }
             let processingAccount = ReaderModeProcessingAccountContext.account
             try await content.asyncWrite(
                 account: processingAccount.map { ($0.access, $0.snapshot) }
@@ -3634,7 +3685,9 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
+        ReaderArticleRenderTrace.record("Reader Image Lookup Start", url: url, generation: renderGeneration)
         let imageURLToDisplay = try await content.imageURLToDisplay()
+        ReaderArticleRenderTrace.record("Reader Image Lookup End", url: url, generation: renderGeneration)
         guard ownsContent() else {
             return
         }
@@ -3657,7 +3710,7 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             var doc: SwiftSoup.Document?
-            
+            ReaderArticleRenderTrace.record("Reader HTML Processor Start", url: url, generation: renderGeneration)
             if let processReadabilityContent, !prefersDirectSnippetReadabilityParse {
                 doc = try await processReadabilityContent(
                     readabilityContent,
@@ -3704,6 +3757,7 @@ public class ReaderModeViewModel: ObservableObject {
                 )
                 return
             }
+            ReaderArticleRenderTrace.record("Reader HTML Processor Complete", url: url, generation: renderGeneration)
             ReaderSnippetFinalDocumentDiagnostics.record("readability-returned", contentURL: requestedURL, generation: renderGeneration)
             if prefersDirectSnippetReadabilityParse {
                 doc = try await processPersistedSnippetWithCurrentReadabilityProcessor(
@@ -4039,6 +4093,7 @@ public class ReaderModeViewModel: ObservableObject {
                             && urlsMatchWithoutHashForHotfix(requestedURL, readerContent.pageURL)
                             && self.readerModeContentIsCurrent(content, readerContent: readerContent)
                     }
+                    ReaderArticleRenderTrace.record("Reader HTML Dispatched", url: url, generation: renderGeneration)
                     ReaderSnippetFinalDocumentDiagnostics.record("html-dispatch", contentURL: requestedURL, generation: renderGeneration)
                     expectedSyntheticReaderNavigation = PreparedReaderNavigation(
                         navigator: navigator, intent: issued, url: displayURL
@@ -4244,12 +4299,14 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         if Self.shouldInjectSharedFontForCommittedNavigation(at: newState.pageURL) {
+            ReaderArticleRenderTrace.record("Reader Commit Font Start", url: newState.pageURL)
             ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
             await injectSharedFontIfNeeded(
                 scriptCaller: scriptCaller,
                 pageURL: committedURL,
                 requiring: navigationBindingToken
             )
+            ReaderArticleRenderTrace.record("Reader Commit Font End", url: newState.pageURL)
             try requireCurrentDocument()
             ReaderSnippetFinalDocumentDiagnostics.record("font-injection-returned", contentURL: newState.pageURL)
             if scriptCaller.hasAsyncCaller {
@@ -4309,6 +4366,8 @@ public class ReaderModeViewModel: ObservableObject {
             let activeReaderFileManager = readerFileManager ?? .shared
             let html: String?
             do {
+                ReaderArticleRenderTrace.record("Reader Loader HTML Read Start", url: committedURL)
+                defer { ReaderArticleRenderTrace.record("Reader Loader HTML Read End", url: committedURL) }
                 html = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
             } catch {
                 // A late read failure has no authority to trigger the caller's

@@ -19,6 +19,7 @@ struct ReaderDocStateUserScript {
     let userScript: WebViewUserScript
 
     init() {
+        let traceVisibleLayout = ReaderArticleRenderTrace.isEnabled
         let contents = """
 (function () {
     try {
@@ -94,10 +95,38 @@ struct ReaderDocStateUserScript {
             if (rafHandle.value) { cancelAnimationFrame(rafHandle.value); }
             if (timeoutHandle.value) { clearTimeout(timeoutHandle.value); }
         }
+        let traceVisibleLayout = \(traceVisibleLayout);
+        let isWebArticle = location.protocol === "https:" || location.protocol === "http:";
+        let visibleLayoutProbeStarted = false;
+        function beginVisibleLayoutProbe(generation) {
+            if (!traceVisibleLayout || !isWebArticle || !generation || visibleLayoutProbeStarted) return;
+            visibleLayoutProbeStarted = true;
+            const deadline = bootstrapNow() + 12000;
+            function sample() {
+                const content = document.getElementById("reader-content");
+                if (content) {
+                    const bounds = content.getBoundingClientRect();
+                    const visible = content.checkVisibility?.({ opacityProperty: true, visibilityProperty: true })
+                        ?? (getComputedStyle(content).visibility === "visible"
+                            && getComputedStyle(document.body).opacity !== "0");
+                    if (visible && bounds.width > 0 && bounds.height > 0) {
+                        handler.postMessage(currentState("profile.visible-layout"));
+                        return;
+                    }
+                }
+                if (bootstrapNow() < deadline) {
+                    setTimeout(() => requestAnimationFrame(sample), 50);
+                } else {
+                    handler.postMessage(currentState("profile.visible-layout-timeout"));
+                }
+            }
+            requestAnimationFrame(sample);
+        }
         function postState(reason) {
             const state = currentState(reason);
             handler.postMessage(state);
             if (state.hasReaderRenderReady) {
+                beginVisibleLayoutProbe(state.readerRenderGeneration);
                 stopPolling();
                 return true;
             }

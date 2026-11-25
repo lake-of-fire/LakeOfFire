@@ -413,6 +413,20 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                 let hasReaderRenderReady = body["hasReaderRenderReady"] as? Bool ?? false
                 let renderGeneration = (body["readerRenderGeneration"] as? String)
                     .flatMap(UUID.init(uuidString:))
+                let reason = body["reason"] as? String
+                if reason == "profile.visible-layout" || reason == "profile.visible-layout-timeout" {
+                    guard message.isMainFrame,
+                          let renderGeneration,
+                          let binding = message.javaScriptBindingToken,
+                          binding == scriptCaller.currentJavaScriptBindingToken,
+                          readerContent.pageURL.matchesReaderURL(pageURL) else { return }
+                    ReaderArticleRenderTrace.record(
+                        reason == "profile.visible-layout" ? "Reader Visible Layout" : "Reader Visible Layout Timed Out",
+                        url: pageURL,
+                        generation: renderGeneration
+                    )
+                    return
+                }
                 // The user script also posts on every mutation/poll. Limit
                 // negative diagnostics to three finite lifecycle boundaries.
                 if !hasReaderRenderReady,

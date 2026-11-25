@@ -177,6 +177,9 @@ final class ReaderWebViewHandler {
             try requireCurrentCommit()
             ReaderSnippetFinalDocumentDiagnostics.record("content-load-start", contentURL: state.pageURL)
             try await readerContent.load(url: state.pageURL, consuming: selectionIntent)
+            if state.pageURL.isReaderURLLoaderURL {
+                ReaderArticleRenderTrace.record("Reader Loader Selection Resolved", url: state.pageURL)
+            }
             ReaderSnippetFinalDocumentDiagnostics.record("content-load-returned", contentURL: state.pageURL)
             try requireCurrentCommit()
             guard readerContent.pageURL.matchesReaderURL(state.pageURL),
@@ -241,9 +244,11 @@ final class ReaderWebViewHandler {
             )
             try Task.checkCancellation()
         } catch is CancellationError {
+            ReaderArticleRenderTrace.record("Reader Commit Cancelled", url: state.pageURL)
             ReaderSnippetFinalDocumentDiagnostics.record("commit-cancelled", contentURL: state.pageURL)
             throw CancellationError()
         } catch {
+            ReaderArticleRenderTrace.record("Reader Commit Failed", url: state.pageURL)
             ReaderSnippetFinalDocumentDiagnostics.record("commit-failed", contentURL: state.pageURL)
             // Replacement commits cancel the previous task. If an unrelated
             // operation failed at the same time, its cleanup must not release a
@@ -308,6 +313,11 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationCommitted(state: WebViewState) {
+        if state.pageURL.isReaderURLLoaderURL {
+            ReaderArticleRenderTrace.record("Reader Loader WebKit Commit", url: state.pageURL)
+        } else {
+            ReaderArticleRenderTrace.record("Reader WebKit Commit", url: state.pageURL)
+        }
         // Snapshot the native loader owner before queuing any content lookup or
         // reader-view-model callback. A same-URL retry receives a new ID.
         let sourceNavigationProgressID = state.pageURL.isReaderURLLoaderURL
@@ -319,6 +329,7 @@ final class ReaderWebViewHandler {
         if state.pageURL.isReaderURLLoaderURL,
            state.committedNavigationProgressID != nil,
            sourceNavigationProgressID == nil {
+            ReaderArticleRenderTrace.record("Reader Loader Commit Rejected", url: state.pageURL)
             return
         }
         readerModeViewModel.bindManagedFontsToPreparedReaderDocument(
@@ -365,7 +376,10 @@ final class ReaderWebViewHandler {
         disposition: WebViewNavigationFailureDisposition
     ) {
         let preservesCommittedDocument = disposition == .preservedCommittedDocument
-        if !preservesCommittedDocument {
+        if preservesCommittedDocument {
+            ReaderArticleRenderTrace.record("Reader WebKit Provisional Navigation Failed", url: state.pageURL)
+        } else {
+            ReaderArticleRenderTrace.record("Reader WebKit Navigation Failed", url: state.pageURL)
             readerContent.withdrawSelectionIntent()
             // Settle the admitted failure before a later same-URL preparation
             // can begin. Deferred public observers do not own render cleanup.
@@ -408,6 +422,7 @@ final class ReaderWebViewHandler {
             readerModeViewModel.cancelReaderModeLoad()
         }
         if reason == .webContentProcessTerminated {
+            ReaderArticleRenderTrace.record("Reader WebKit Process Terminated", url: state.pageURL)
             onNavigationFailed?(state)
         }
         onDocumentContextInvalidated?(state, reason)

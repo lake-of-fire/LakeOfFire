@@ -1403,6 +1403,42 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         await ReaderContentLoader.resetTransientCachesForTesting()
     }
 
+    @MainActor
+    func testFullContentDefaultFeedEntrySkipsDerivedFlagMetadataWrite() async throws {
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [Feed.self, FeedEntry.self]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+
+        let feed = Feed()
+        feed.isReaderModeByDefault = true
+        feed.rssContainsFullContent = true
+        let entry = FeedEntry()
+        entry.feedID = feed.id
+        entry.url = try XCTUnwrap(URL(string: "https://example.com/full-content-feed-entry"))
+        entry.title = "Full content article"
+        let html = "<article><p>Cached RSS article text.</p></article>"
+        entry.html = html
+        entry.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(feed)
+            realm.add(entry)
+        }
+
+        XCTAssertEqual(entry.html, html)
+        XCTAssertTrue(entry.isReaderModeByDefault)
+        XCTAssertTrue(entry.isReaderModeAvailable)
+        XCTAssertFalse(entry.isReaderModeOfferHidden)
+        XCTAssertFalse(readerModeMetadataFlagsRequireWrite(for: entry))
+
+        let history = HistoryRecord()
+        history.url = entry.url
+        history.isReaderModeByDefault = false
+        history.isReaderModeAvailable = true
+        history.updateCompoundKey()
+        XCTAssertTrue(readerModeMetadataFlagsRequireWrite(for: history))
+    }
+
     private func showOriginalReloadProbe() -> ReaderOriginalReloadProbe {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
@@ -2473,6 +2509,43 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
                 withExtendedLifetime(realm) {}
             }
         }
+    }
+
+    func testCancelledLoaderResolutionDoesNotDispatchOrChangeLoadingState() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let navigator = fixture.handler.navigator
+        let mode = fixture.readerModeViewModel
+        let url = try XCTUnwrap(URL(string: "https://example.com/cancelled-rss-reload"))
+        let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: url))
+        let record = HistoryRecord()
+        record.url = url
+        record.isReaderModeByDefault = true
+
+        let entered = expectation(description: "saved article resolution started")
+        let gate = ReaderCallbackGate()
+        let previousRequest = navigator.debugLoadSnapshot.lastRequestURL
+        let operation = Task { @MainActor in
+            try await navigator.loadResolvedContent(
+                content: record,
+                readerModeViewModel: mode,
+                shouldLoad: { true },
+                willDispatchLoad: { XCTFail("Retired URL resolution cannot prepare a navigation") },
+                didDispatchLoad: { XCTFail("Retired URL resolution cannot dispatch a navigation") },
+                resolveURL: {
+                    entered.fulfill()
+                    await gate.wait()
+                    return loaderURL
+                }
+            )
+        }
+
+        await fulfillment(of: [entered], timeout: 2)
+        operation.cancel()
+        await gate.release()
+        try await operation.value
+
+        XCTAssertFalse(mode.isReaderModeLoading)
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastRequestURL, previousRequest)
     }
 
     func testAutomaticRefreshCommitRetainsPlaybackAndConsumesOnlyFinalArticleAdmission() async throws {
