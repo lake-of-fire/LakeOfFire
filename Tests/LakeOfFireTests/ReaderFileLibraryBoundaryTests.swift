@@ -860,6 +860,39 @@ extension ReaderFileLibraryBoundaryTests {
         }
     }
 
+    func testReaderBackingReadRejectsEscapingAndDanglingSymlinksBeforeAvailability() async throws {
+        try await withFixture { f in
+            let outside = f.root.appendingPathComponent("outside", isDirectory: true)
+            try self.write("outside", to: outside.appendingPathComponent("read.txt"))
+            try self.write("inside", to: f.library.appendingPathComponent("read.txt"))
+            try FileManager.default.createSymbolicLink(
+                at: f.library.appendingPathComponent("escape"), withDestinationURL: outside
+            )
+            try FileManager.default.createSymbolicLink(
+                at: f.library.appendingPathComponent("dangling"),
+                withDestinationURL: outside.appendingPathComponent("missing-directory")
+            )
+
+            for path in ["escape/read.txt", "escape/missing.txt", "dangling/read.txt"] {
+                let backing = try XCTUnwrap(URL(string: "reader-file://file/load/local/" + path))
+                do {
+                    _ = try await f.manager.read(fileURL: backing, resolveReadableURL: { _ in
+                        XCTFail("Rejected path reached availability: " + path)
+                        return outside.appendingPathComponent("read.txt")
+                    }, readLocalFile: { _ in
+                        XCTFail("Rejected path reached coordinated I/O: " + path)
+                        return nil
+                    })
+                    XCTFail("Expected drive containment rejection: " + path)
+                } catch ReaderFileManagerError.invalidFileURL { }
+            }
+
+            let backing = try XCTUnwrap(URL(string: "reader-file://file/load/local/read.txt"))
+            let bytes = try await f.manager.read(fileURL: backing)
+            XCTAssertEqual(bytes, Data("inside".utf8))
+        }
+    }
+
     func testDiscoveredPublicationRejectsDriveReplacementDuringActualRealmOpen() async throws {
         try await withFixture { f in
             let incoming = try await self.seedRefreshRecord("incoming", in: f.realm)
