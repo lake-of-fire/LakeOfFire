@@ -386,6 +386,78 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
         XCTAssertEqual(journalGenerations(in: realm), before)
     }
 
+    func testPrecancelledIconRefreshDoesNotStartFetch() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let rssURL = feed.rssUrl
+        let generation = UUID()
+        model.beginMetadataRefresh(rssURL: rssURL, identifier: generation)
+        let journalBefore = journalGenerations(in: realm)
+
+        let refresh = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await model.refreshIcon(expectedRSSURL: rssURL, expectedGeneration: generation) { _ in
+                XCTFail("A cancelled refresh must not start an icon fetch")
+                return URL(string: "https://example.com/suggested.png")!
+            }
+        }
+        await refresh.value
+
+        realm.refresh()
+        XCTAssertEqual(feed.iconUrl.absoluteString, "about:blank")
+        XCTAssertTrue(model.feedIconURL.isEmpty)
+        XCTAssertEqual(journalGenerations(in: realm), journalBefore)
+    }
+
+    func testCancelledIconRefreshCancelsAndJoinsDetachedFetchWithoutJournaling() async throws {
+        let realm = try await Realm(configuration: configuration())
+        let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
+        let model = LibraryFeedFormSectionsViewModel(feed: feed, observesRealm: false)
+        let rssURL = feed.rssUrl
+        let generation = UUID()
+        model.beginMetadataRefresh(rssURL: rssURL, identifier: generation)
+        let journalBefore = journalGenerations(in: realm)
+        let started = expectation(description: "Detached icon fetch began")
+        let cancelled = expectation(description: "Detached icon fetch received cancellation")
+        let exited = expectation(description: "Detached icon fetch exited")
+        let gate = FeedEditorWriteGate()
+        var refreshReturned = false
+
+        let refresh = Task { @MainActor in
+            await FeedEditorIconFetchContext.$inRefreshCaller.withValue(true) {
+                await model.refreshIcon(expectedRSSURL: rssURL, expectedGeneration: generation) { _ in
+                    defer { exited.fulfill() }
+                    XCTAssertFalse(FeedEditorIconFetchContext.inRefreshCaller)
+                    return await withTaskCancellationHandler {
+                        started.fulfill()
+                        // Keep the fetch alive after cancellation, then return a stale success.
+                        await gate.wait()
+                        XCTAssertTrue(Task.isCancelled)
+                        return URL(string: "https://example.com/suggested.png")!
+                    } onCancel: {
+                        cancelled.fulfill()
+                    }
+                }
+            }
+            refreshReturned = true
+        }
+
+        await fulfillment(of: [started], timeout: 5)
+        refresh.cancel()
+        await fulfillment(of: [cancelled], timeout: 5)
+        XCTAssertFalse(refreshReturned, "Refresh must wait for the detached request to exit")
+        await gate.release()
+        await fulfillment(of: [exited], timeout: 5)
+        await refresh.value
+        XCTAssertTrue(refreshReturned)
+
+        realm.refresh()
+        XCTAssertEqual(feed.iconUrl.absoluteString, "about:blank")
+        XCTAssertTrue(model.feedIconURL.isEmpty)
+        XCTAssertEqual(journalGenerations(in: realm), journalBefore)
+    }
+
     func testCurrentMetadataFillsEmptyFieldsAndRepeatedCompletionDoesNotJournal() async throws {
         let realm = try await Realm(configuration: configuration())
         let feed = try installFeed(id: UUID(), categoryID: UUID(), title: "", in: realm)
@@ -710,6 +782,10 @@ final class LibraryFeedEditorOwnershipTests: XCTestCase {
         }
         return condition()
     }
+}
+
+private enum FeedEditorIconFetchContext {
+    @TaskLocal static var inRefreshCaller = false
 }
 
 private actor FeedEditorWriteGate {

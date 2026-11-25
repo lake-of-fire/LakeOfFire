@@ -868,35 +868,43 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         expectedGeneration: UUID,
         beforeWrite: (@RealmBackgroundActor @Sendable () async -> Void)? = nil,
         fetch: @escaping @Sendable (URL) async throws -> URL = { url in
-            try await Task.detached {
-                try await FaviconFinder(
-                    url: url,
-                    configuration: .init(
-                        preferredSource: .html,
-                        preferences: [
-                            .html: FaviconFormatType.appleTouchIcon.rawValue,
-                            .ico: "favicon.ico",
-                            .webApplicationManifestFile: FaviconFormatType.launcherIcon4x.rawValue
-                        ]
-                    )
+            try await FaviconFinder(
+                url: url,
+                configuration: .init(
+                    preferredSource: .html,
+                    preferences: [
+                        .html: FaviconFormatType.appleTouchIcon.rawValue,
+                        .ico: "favicon.ico",
+                        .webApplicationManifestFile: FaviconFormatType.launcherIcon4x.rawValue
+                    ]
                 )
-                .fetchFaviconURLs()
-                .largest()
-                .source
-            }.value
+            )
+            .fetchFaviconURLs()
+            .largest()
+            .source
         }
     ) async {
-        guard let request = metadataRequest, request.identifier == expectedGeneration,
+        guard !Task.isCancelled, let request = metadataRequest, request.identifier == expectedGeneration,
               request.rssURL == expectedRSSURL, !feed.isInvalidated, !feed.isDeleted,
               feed.rssUrl == expectedRSSURL,
               feed.iconUrl.isNativeReaderView, !expectedRSSURL.isNativeReaderView else { return }
         do {
-            let iconURL = try await fetch(expectedRSSURL.domainURL)
+            let domainURL = expectedRSSURL.domainURL
+            let iconFetch = Task.detached {
+                try Task.checkCancellation()
+                return try await fetch(domainURL)
+            }
+            let iconURL = try await withTaskCancellationHandler {
+                try await iconFetch.value
+            } onCancel: {
+                iconFetch.cancel()
+            }
             guard !Task.isCancelled, !iconURL.isNativeReaderView else { return }
             await applyMetadataValue(iconURL.absoluteString, field: .iconURL, request: request, beforeWrite: beforeWrite)
         } catch is CancellationError {
             return
         } catch {
+            guard !Task.isCancelled else { return }
             print("Error finding favicon:", error)
         }
     }
