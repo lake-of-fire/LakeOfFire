@@ -17,6 +17,34 @@ private actor ReaderSnippetRecoveryTestRecorder {
 }
 
 final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
+    func testPlainTextFileIngestionPreservesMixedLineAndParagraphBoundaries() throws {
+        let input = "　第一行 <b>原文</b> & 続き\r\n二行目\r\n　\t\r\n次の段落\rその続き\r\r最後"
+        let normalized = ReaderContentLoader.normalizeIngestedText(
+            input, mimeType: "text/plain", pathExtension: "txt", source: .file
+        )
+        XCTAssertEqual(normalized.format, .plainText)
+
+        let document = try SwiftSoup.parse(normalized.html)
+        let paragraphs = try document.select("body > p").array()
+        XCTAssertEqual(try paragraphs.map { try $0.select("br").size() }, [1, 1, 0])
+        let paragraphText = paragraphs.map { $0.textNodes().map { $0.getWholeText() } }
+        XCTAssertEqual(paragraphText, [
+            ["　第一行 <b>原文</b> & 続き", "二行目"],
+            ["次の段落", "その続き"],
+            ["最後"]
+        ])
+        XCTAssertEqual(try document.select("b").size(), 0)
+    }
+
+    func testRawSnippetTreatsUnicodeNewlinesAndBlankLinesAsParagraphBoundaries() throws {
+        let input = "見出し\u{2028}続き\u{2028}　\u{2028}次の段落\n\n最後"
+        let html = ReaderContentLoader.snippetHTML(fromRawText: input)
+        let document = try SwiftSoup.parse(html)
+        let paragraphs = try document.select("body > .mnb-snippet > p").array()
+        XCTAssertEqual(try paragraphs.map { try $0.select("br").size() }, [1, 0, 0])
+        XCTAssertEqual(try paragraphs.map { try $0.text() }, ["見出し 続き", "次の段落", "最後"])
+    }
+
     func testZeroJapaneseSnippetSnapshotDistinguishesRenderMarkerAndFontGate() throws {
         let url = try XCTUnwrap(URL(string: "internal://local/snippet?key=zero-japanese"))
         let source = ReaderContentLoader.snippetHTML(fromRawText:

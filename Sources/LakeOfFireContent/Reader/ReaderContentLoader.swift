@@ -1431,8 +1431,8 @@ public struct ReaderContentLoader {
             currentParagraphLines.removeAll()
         }
 
-        for line in normalizedText.components(separatedBy: "\n") {
-            if line.isEmpty {
+        for line in normalizedText.components(separatedBy: .newlines) {
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
                 flushParagraph()
             } else {
                 currentParagraphLines.append(line.escapeHtml())
