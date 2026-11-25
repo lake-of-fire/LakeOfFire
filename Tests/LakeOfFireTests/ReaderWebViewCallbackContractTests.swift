@@ -72,7 +72,7 @@ private final class ReaderSettingsDispatchProbe {
 @MainActor
 private func makeReaderCallbackLibraryConfiguration() -> Realm.Configuration {
     var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
-    configuration.objectTypes = [LibraryConfiguration.self, FeedCategory.self, UserScript.self]
+    configuration.objectTypes = [LibraryConfiguration.self, FeedCategory.self, UserScript.self, UserScriptAllowedDomain.self]
     configureLakeOfFireMutationTrackingForTesting(&configuration)
     return configuration
 }

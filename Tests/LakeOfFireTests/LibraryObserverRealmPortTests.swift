@@ -5,6 +5,7 @@ import RealmSwiftGaps
 import SwiftUIDownloads
 import XCTest
 @testable import LakeOfFireContent
+@testable import LakeOfFireReader
 
 @MainActor
 final class LibraryObserverRealmPortTests: XCTestCase {
@@ -14,6 +15,98 @@ final class LibraryObserverRealmPortTests: XCTestCase {
 
     func testConfigurationObserverStaysBoundToRealmCapturedAtSubscription() async throws {
         try await verifyObserver(changesLibraryConfiguration: true)
+    }
+
+    func testReaderUpdatesScriptsWhenOnlyAnAllowedDomainChangesInItsCapturedRealm() async throws {
+        let original = LibraryDataManager.realmConfiguration
+        let observed = Self.configuration()
+        let replacement = Self.configuration()
+        defer { LibraryDataManager.realmConfiguration = original }
+
+        let sourceRealm = try await Realm(configuration: observed, actor: MainActor.shared)
+        let source = try installReaderScript(in: sourceRealm, source: "// captured reader script",
+                                             domain: "original.example", installsDomain: false)
+        let replacementRealm = try await Realm(configuration: replacement, actor: MainActor.shared)
+        let other = try installReaderScript(in: replacementRealm, source: "// replacement reader script",
+                                            domain: "replacement.example")
+        LibraryDataManager.realmConfiguration = observed
+        let reader = ReaderViewModel(systemScripts: [])
+        addTeardownBlock { [weak reader] in
+            let deadline = Date().addingTimeInterval(8)
+            while reader != nil && Date() < deadline {
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            guard reader == nil else {
+                return XCTFail("The Reader did not retire before Realm cache cleanup")
+            }
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: observed)
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: replacement)
+        }
+        let initialReady = try await eventually { reader.webViewUserScripts?.isEmpty == true }
+        guard initialReady else { return XCTFail("The Reader did not withhold the script with a missing domain") }
+        let originalScriptModification = source.script.modifiedAt
+        let originalLibraryModification = source.library.modifiedAt
+
+        LibraryDataManager.realmConfiguration = replacement
+        // Multiple distinct domain-only publications cannot be satisfied by a
+        // delayed initial notification from either of the other collections.
+        try await sourceRealm.asyncWritePreservingOwnership {
+            sourceRealm.add(source.domain)
+            source.domain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let inserted = try await eventually {
+            reader.webViewUserScripts?.first?.allowedDomains == Set(["original.example"])
+        }
+        guard inserted else { return XCTFail("The Reader did not publish the script when its domain arrived") }
+
+        try await sourceRealm.asyncWritePreservingOwnership {
+            source.domain.domain = "changed.example"
+            source.domain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let updated = try await eventually {
+            reader.webViewUserScripts?.first?.allowedDomains == Set(["changed.example"])
+        }
+        guard updated else { return XCTFail("The Reader did not publish the domain-only edit") }
+        XCTAssertEqual(reader.webViewUserScripts?.map(\.source), [source.script.script])
+
+        try await sourceRealm.asyncWritePreservingOwnership {
+            source.domain.isDeleted = true
+            source.domain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let withheld = try await eventually { reader.webViewUserScripts?.isEmpty == true }
+        guard withheld else { return XCTFail("The Reader did not withdraw the script with a deleted domain") }
+
+        try await sourceRealm.asyncWritePreservingOwnership {
+            source.domain.isDeleted = false
+            source.domain.domain = "restored.example"
+            source.domain.refreshChangeMetadata(explicitlyModified: true)
+        }
+        let restored = try await eventually {
+            reader.webViewUserScripts?.first?.allowedDomains == Set(["restored.example"])
+        }
+        XCTAssertTrue(restored)
+        XCTAssertEqual(reader.webViewUserScripts?.map(\.source), [source.script.script])
+        XCTAssertEqual(source.script.modifiedAt, originalScriptModification)
+        XCTAssertEqual(source.library.modifiedAt, originalLibraryModification)
+        XCTAssertEqual(Array(source.library.userScriptIDs), [source.script.id])
+        XCTAssertEqual(other.domain.domain, "replacement.example")
+    }
+
+    private func installReaderScript(
+        in realm: Realm, source: String, domain: String, installsDomain: Bool = true
+    ) throws -> (library: LibraryConfiguration, script: UserScript, domain: UserScriptAllowedDomain) {
+        let allowedDomain = UserScriptAllowedDomain()
+        allowedDomain.domain = domain
+        let script = UserScript()
+        script.script = source
+        script.allowedDomainIDs.append(allowedDomain.id)
+        let library = LibraryConfiguration()
+        library.userScriptIDs.append(script.id)
+        try realm.write {
+            realm.add([library, script])
+            if installsDomain { realm.add(allowedDomain) }
+        }
+        return (library, script, allowedDomain)
     }
 
     private func verifyObserver(changesLibraryConfiguration: Bool) async throws {
