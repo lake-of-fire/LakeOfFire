@@ -1,6 +1,17 @@
 import SwiftUIWebView
 import WebKit
 
+let releaseReaderFontFirstPaintJavaScript = #"""
+root => {
+    if (root === document.documentElement && root.dataset.mnbFontFirstPaint === 'pending') {
+        root.dataset.mnbFontFirstPaint = 'revealed'
+        delete root.dataset.mnbFontPending
+        root.dataset.mnbFontReady = '1'
+    }
+    root.dispatchEvent(new Event('manabi-reader-font-first-paint-settled'))
+}
+"""#
+
 /// Reports the explicit reader render-ready contract to the native reader host.
 /// Reader markup owns the `mnb` dataset keys; SwiftUIWebView only transports messages.
 @MainActor
@@ -11,6 +22,11 @@ struct ReaderDocStateUserScript {
         let contents = """
 (function () {
     try {
+        const fontRoot = document.documentElement
+        if (fontRoot?.dataset.mnbFontFirstPaint === 'pending') {
+            const deadline = setTimeout(() => (\(releaseReaderFontFirstPaintJavaScript))(fontRoot), 1500)
+            fontRoot.addEventListener('manabi-reader-font-first-paint-settled', () => clearTimeout(deadline), { once: true })
+        }
         const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.readerDocState;
         if (!handler || typeof handler.postMessage !== "function") { return; }
         const bootstrapNow = (typeof performance !== "undefined" && typeof performance.now === "function")
@@ -53,6 +69,8 @@ struct ReaderDocStateUserScript {
             const hasReaderContent = !!readerContent || !!foliateView;
             const hasRenderReadyMarker = html?.dataset?.mnbReaderRenderReady === '1'
                 || body?.dataset?.mnbReaderRenderReady === '1';
+            const fontPending = html?.dataset.mnbFontPending === '1'
+                || html?.dataset.mnbFontFirstPaint === 'pending'
             return {
                 href: window.location.href,
                 elapsedMs: rounded(bootstrapNow() - bootstrapStartedAt),
@@ -60,10 +78,8 @@ struct ReaderDocStateUserScript {
                 hasBody: !!body,
                 hasReaderContent,
                 hasRenderReadyMarker,
-                fontPending: (html?.dataset?.mnbFontPending ?? null) === '1',
-                hasReaderRenderReady: hasRenderReadyMarker
-                    && hasReaderContent
-                    && (html?.dataset?.mnbFontPending ?? null) !== '1',
+                fontPending,
+                hasReaderRenderReady: hasRenderReadyMarker && hasReaderContent && !fontPending,
                 readerRenderGeneration:
                     html?.dataset?.mnbReaderRenderGeneration
                     ?? body?.dataset?.mnbReaderRenderGeneration
@@ -125,7 +141,8 @@ struct ReaderDocStateUserScript {
                 attributeFilter: [
                     "data-mnb-reader-render-ready",
                     "data-mnb-reader-render-generation",
-                    "data-mnb-font-pending"
+                    "data-mnb-font-pending",
+                    "data-mnb-font-first-paint"
                 ]
             });
         }
