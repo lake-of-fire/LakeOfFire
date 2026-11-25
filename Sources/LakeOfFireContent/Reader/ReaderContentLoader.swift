@@ -2452,9 +2452,10 @@ private extension ReaderContentLoader {
     static func configureImportHistory(_ record: HistoryRecord, from source: any ReaderContentProtocol) {
         record.title = source.title
         record.isTitlePrefixOfContent = source.isTitlePrefixOfContent
-        record.imageUrl = source.imageUrl
-        if record.imageUrl == nil, let feed = source as? FeedEntry {
+        if let feed = source as? FeedEntry {
             record.imageUrl = feed.importImageURLWithoutCaching()
+        } else {
+            record.imageUrl = source.imageUrl
         }
         record.sourceIconURL = source.sourceIconURL
         record.isFromClipboard = source.isFromClipboard

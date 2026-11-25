@@ -614,7 +614,12 @@ public extension ReaderContentProtocol {
         let feedEntryCollectionScheme = feedEntryCollectionScheme
         let feedEntryCollectionTerm = feedEntryCollectionTerm
         let feedEntryCollectionTitle = feedEntryCollectionTitle
-        let imageURL = imageUrl
+        let imageURL: URL?
+        if let feed = self as? FeedEntry {
+            imageURL = feed.storedImageURLToDisplay
+        } else {
+            imageURL = imageUrl
+        }
         let sourceIconURL = sourceIconURL
         let isFromClipboard = isFromClipboard
         let isTitlePrefixOfContent = isTitlePrefixOfContent
@@ -661,10 +666,16 @@ public extension ReaderContentProtocol {
                     bookmark.refreshChangeMetadata(explicitlyModified: true)
                     return false
                 }
+                let bookmarkImageURL: URL?
+                if let sourceContent, let feed = sourceContent as? FeedEntry {
+                    bookmarkImageURL = feed.importImageURLWithoutCaching()
+                } else {
+                    bookmarkImageURL = imageURL
+                }
                 _ = Bookmark.add(
                     url: url,
                     title: title,
-                    imageUrl: imageURL,
+                    imageUrl: bookmarkImageURL,
                     sourceIconURL: sourceIconURL,
                     html: html,
                     content: content,
@@ -911,7 +922,11 @@ private struct ReaderHistorySourceSnapshot {
         html = source.html
         title = source.title
         isTitlePrefixOfContent = source.isTitlePrefixOfContent
-        imageUrl = source.imageUrl ?? (source as? FeedEntry)?.importImageURLWithoutCaching()
+        if let feed = source as? FeedEntry {
+            imageUrl = feed.importImageURLWithoutCaching()
+        } else {
+            imageUrl = source.imageUrl
+        }
         sourceIconURL = source.sourceIconURL
         isFromClipboard = source.isFromClipboard
         rssContainsFullContent = source.rssContainsFullContent

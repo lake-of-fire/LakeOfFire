@@ -98,6 +98,24 @@ struct ReaderContentCellLoadIdentity: Hashable {
     }
 }
 
+/// A retained cell also reloads when its original physical row is replaced.
+/// Realm row keys are scoped to their store, and unmanaged objects have no row.
+struct ReaderContentCellDisplayLoadIdentity: Hashable {
+    let revision: ReaderContentCellLoadIdentity
+    let physicalRowID: UInt64?
+    let realmFileURL: URL?
+    let inMemoryIdentifier: String?
+
+    init?(item: any ReaderContentProtocol, includesSource: Bool, readingProgressRevision: UInt64 = 0) {
+        guard !item.isInvalidated else { return nil }
+        revision = .init(item: item, includesSource: includesSource, readingProgressRevision: readingProgressRevision)
+        let configuration = item.realm?.configuration
+        physicalRowID = configuration == nil ? nil : item.id
+        realmFileURL = configuration?.fileURL
+        inMemoryIdentifier = configuration?.inMemoryIdentifier
+    }
+}
+
 private struct ReaderContentCellReadingProgressRevisionKey: EnvironmentKey {
     static let defaultValue: UInt64 = 0
 }
@@ -116,12 +134,25 @@ private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
     return url
 }
 
+private struct ReaderContentCellDisplayOwner: Equatable, Sendable {
+    let storageScope: String
+    let compoundKey: String
+    let physicalRowID: UInt64
+    let url: URL
+
+    func matches(_ item: any ReaderContentProtocol) -> Bool {
+        !item.isInvalidated && !item.isDeleted
+            && item.id == physicalRowID && item.compoundKey == compoundKey && item.url == url
+    }
+}
+
 @MainActor
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
     @Published var forceShowBookmark = false
     @Published private var displayState = ReaderContentCellDisplayState()
     @Published private(set) var historyState = ReaderContentCellHistoryState.loading
     private var loadGeneration: UInt64 = 0
+    private var displayedOwner: ReaderContentCellDisplayOwner?
 
     var readingProgress: Float? { displayState.readingProgress }
     var isFullArticleFinished: Bool? { displayState.isFullArticleFinished }
@@ -137,11 +168,18 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     var hasLoadedDisplayState: Bool { displayState.hasLoadedDisplayState }
 
     private let imageURLLoader: @MainActor (C) async throws -> URL?
+    private let readingProgressLoader: @Sendable (URL) async throws -> (Float, Bool)?
 
-    init(imageURLLoader: @escaping @MainActor (C) async throws -> URL? = {
-        try await $0.imageURLToDisplay()
-    }) {
+    init(
+        imageURLLoader: @escaping @MainActor (C) async throws -> URL? = {
+            try await $0.imageURLToDisplay()
+        },
+        readingProgressLoader: @escaping @Sendable (URL) async throws -> (Float, Bool)? = {
+            try await ReaderContentReadingProgressLoader.readingProgressLoader?($0)
+        }
+    ) {
         self.imageURLLoader = imageURLLoader
+        self.readingProgressLoader = readingProgressLoader
     }
 
     func observeHistory(for itemURL: URL) async throws {
@@ -201,23 +239,42 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         try Task.checkCancellation()
         loadGeneration &+= 1
         let generation = loadGeneration
-        if displayState.hasLoadedDisplayState {
+        guard !item.isInvalidated, !item.isDeleted,
+              let reference = ReaderContentLoader.ContentReference(content: item) else { return }
+        let config = reference.realmConfiguration
+        let storage = reference.storageAdmission
+        let owner = ReaderContentCellDisplayOwner(
+            storageScope: storage.scopeIdentity, compoundKey: reference.contentKey, physicalRowID: item.id, url: item.url
+        )
+        if let displayedOwner, displayedOwner != owner {
+            self.displayedOwner = nil
+            displayState = ReaderContentCellDisplayState()
+        } else if displayState.hasLoadedDisplayState {
             var nextState = displayState
             nextState.hasLoadedDisplayState = false
             displayState = nextState
         }
-        guard let config = item.realm?.configuration else { return }
-        let pk = item.compoundKey
-        let itemURL = item.url
+        let validateStorage: @Sendable () throws -> Void = {
+            guard storage.matchesCurrentStorageIdentity({
+                RealmBackgroundActor.shared.realmCacheKey(for: config)
+            }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
+        }
+        let readingProgressLoader = self.readingProgressLoader
         let imageURL = try await imageURLLoader(item)
         try Task.checkCancellation()
-        guard generation == loadGeneration else { throw CancellationError() }
+        guard generation == loadGeneration, owner.matches(item) else { throw CancellationError() }
+        try reference.validateStorage()
         let nextDisplayState = try await { @ReaderContentCellActor in
-            let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
-            guard let item = realm.object(ofType: C.self, forPrimaryKey: pk) else {
-                return nil as ReaderContentCellDisplayState?
-            }
+            try await RealmBackgroundActor.shared.prepareStorage(for: config, storageAdmission: storage)
             try Task.checkCancellation()
+            try validateStorage()
+            let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
+            try Task.checkCancellation()
+            try validateStorage()
+            guard let item = realm.object(ofType: C.self, forPrimaryKey: owner.compoundKey),
+                  owner.matches(item) else {
+                throw CancellationError()
+            }
 
             let resolvedTitle = ReaderContentLoader.resolvedDisplayTitle(
                 item.title,
@@ -232,17 +289,28 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let feed = (item as? FeedEntry)?.getFeed()
             let feedTitle = feed?.title
             let sourceIconURL = usableReaderContentSourceIconURL(feed?.iconUrl) ?? usableReaderContentSourceIconURL(itemSourceIconURL)
-            let tracksReadingProgress = item.tracksReadingProgress
-            let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
-            let metadataResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL) : nil
+            @ReaderContentCellActor func validateProgressOwner() async throws {
+                await realm.asyncRefresh()
+                try Task.checkCancellation()
+                try validateStorage()
+                guard owner.matches(item) else { throw CancellationError() }
+            }
+            var progressResult: (Float, Bool)?
+            var metadataResult: ReaderContentProgressMetadata?
+            if item.tracksReadingProgress {
+                progressResult = try await readingProgressLoader(owner.url)
+                try await validateProgressOwner()
+                metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(owner.url)
+                try await validateProgressOwner()
+            }
 
             var sourceTitle: String?
             if includeSource {
-                if itemURL.isSnippetURL {
+                if owner.url.isSnippetURL {
                     sourceTitle = "Snippet"
                 } else if let feedTitle {
                     sourceTitle = feedTitle
-                } else if let host = itemURL.host, !host.isEmpty {
+                } else if let host = owner.url.host, !host.isEmpty {
                     sourceTitle = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
                 }
             }
@@ -263,7 +331,15 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         }()
         try Task.checkCancellation()
         guard generation == loadGeneration else { throw CancellationError() }
-        guard let nextDisplayState else { return }
+        // The view can supply a frozen Realm object, which remains readable
+        // even after the live row is retired. Reopen its captured store.
+        let currentItem = try await reference.resolveOnMainActor() as? C
+        try Task.checkCancellation()
+        guard generation == loadGeneration, let currentItem, owner.matches(currentItem) else {
+            throw CancellationError()
+        }
+        try reference.validateStorage()
+        displayedOwner = owner
         displayState = nextDisplayState
     }
 
@@ -586,7 +662,9 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     }
 
     private var displayImageURL: URL? {
-        viewModel.imageURL ?? item.imageUrl
+        if let imageURL = viewModel.imageURL { return imageURL }
+        if let feed = item as? FeedEntry { return feed.storedImageURLToDisplay }
+        return item.imageUrl
     }
 
     private var resolvedSourceIconURL: URL? {
@@ -1179,7 +1257,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             guard viewModel.forceShowBookmark != hovered else { return }
             viewModel.forceShowBookmark = hovered
         }
-        .task(id: ReaderContentCellLoadIdentity(
+        .task(id: ReaderContentCellDisplayLoadIdentity(
             item: item,
             includesSource: appearance.includeSource,
             readingProgressRevision: readingProgressRevision

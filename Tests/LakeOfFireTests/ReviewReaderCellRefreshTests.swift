@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import RealmSwift
+import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
@@ -52,6 +53,9 @@ final class ReviewReaderCellRefreshTests: XCTestCase {
         configuration.objectTypes = [ContentFile.self]
         let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
         try realm.write { realm.add(items) }
+        addTeardownBlock { [configuration] in
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
         return realm
     }
 
@@ -169,6 +173,118 @@ final class ReviewReaderCellRefreshTests: XCTestCase {
         XCTAssertEqual(model.author, "Author")
         XCTAssertEqual(model.imageURL, file.imageUrl)
         XCTAssertTrue(model.hasLoadedDisplayState)
+    }
+
+    func testSuspendedFrozenCellCannotPublishFromRecreatedPhysicalRow() async throws {
+        let gate = ReaderCellImageGate(expectation(description: "original image request suspended"))
+        let replacementGate = ReaderCellImageGate(expectation(description: "replacement image request suspended"))
+        let original = item("original")
+        original.createdAt = Date(timeIntervalSince1970: 100)
+        original.modifiedAt = Date(timeIntervalSince1970: 200)
+        let realm = try await managedRealm([original])
+        let frozen = original.freeze()
+        let originalIdentity = try XCTUnwrap(ReaderContentCellDisplayLoadIdentity(item: frozen, includesSource: false))
+        let originalImage = try XCTUnwrap(URL(string: "https://example.invalid/original.png"))
+        let replacementImage = try XCTUnwrap(URL(string: "https://example.invalid/replacement.png"))
+        var initialImageLoaded = false
+        let model = ReaderContentCellViewModel<ContentFile>(imageURLLoader: { value in
+            if value.title != "original" { return await replacementGate.wait() }
+            if initialImageLoaded { return await gate.wait() }
+            initialImageLoaded = true
+            return originalImage
+        })
+        try await model.load(item: frozen, includeSource: false)
+        let load = Task { try await model.load(item: frozen, includeSource: false) }
+        await fulfillment(of: [gate.entered], timeout: 3)
+        XCTAssertFalse(model.hasLoadedDisplayState)
+        XCTAssertEqual(model.title, "original")
+        XCTAssertEqual(model.imageURL, originalImage)
+
+        let replacement = item("original")
+        replacement.title = "Replacement"
+        replacement.author = "New author"
+        replacement.createdAt = frozen.createdAt
+        replacement.modifiedAt = frozen.modifiedAt
+        do {
+            try realm.write {
+                realm.delete(original)
+                realm.add(replacement)
+            }
+        } catch {
+            gate.release(originalImage)
+            _ = await load.result
+            throw error
+        }
+        gate.release(originalImage)
+        do {
+            try await load.value
+            XCTFail("An older frozen row must lose display authority even without a newer load")
+        } catch is CancellationError {
+        }
+        XCTAssertFalse(frozen.isInvalidated)
+        XCTAssertEqual(frozen.compoundKey, replacement.compoundKey)
+        XCTAssertEqual(replacement.createdAt, frozen.createdAt)
+        let replacementIdentity = try XCTUnwrap(ReaderContentCellDisplayLoadIdentity(
+            item: replacement.freeze(), includesSource: false
+        ))
+        XCTAssertEqual(originalIdentity.revision, replacementIdentity.revision)
+        XCTAssertNotEqual(originalIdentity, replacementIdentity)
+        XCTAssertEqual(model.title, "original")
+        XCTAssertEqual(model.imageURL, originalImage)
+        let replacementLoad = Task { try await model.load(item: replacement.freeze(), includeSource: false) }
+        await fulfillment(of: [replacementGate.entered], timeout: 3)
+        XCTAssertFalse(model.hasLoadedDisplayState)
+        XCTAssertEqual(model.title, "")
+        XCTAssertNil(model.imageURL)
+
+        replacementGate.release(replacementImage)
+        try await replacementLoad.value
+        XCTAssertTrue(model.hasLoadedDisplayState)
+        XCTAssertEqual(model.title, "Replacement")
+        XCTAssertEqual(model.author, "New author")
+        XCTAssertEqual(model.imageURL, replacementImage)
+    }
+
+    func testRecreatedPhysicalRowCannotReceiveLateProgress() async throws {
+        let progressGate = ReaderCellImageGate(expectation(description: "reading progress request suspended"))
+        let original = item("original")
+        original.readerContentKind = .readerContent
+        let realm = try await managedRealm([original])
+        let frozen = original.freeze()
+        let model = ReaderContentCellViewModel<ContentFile>(
+            imageURLLoader: { _ in nil },
+            readingProgressLoader: { _ in
+                _ = await progressGate.wait()
+                return (0.75, false)
+            }
+        )
+        let load = Task { try await model.load(item: frozen, includeSource: false) }
+        await fulfillment(of: [progressGate.entered], timeout: 3)
+
+        let replacement = item("original")
+        replacement.readerContentKind = .readerContent
+        replacement.title = "Replacement"
+        replacement.createdAt = frozen.createdAt
+        replacement.modifiedAt = frozen.modifiedAt
+        do {
+            try realm.write {
+                realm.delete(original)
+                realm.add(replacement)
+            }
+        } catch {
+            progressGate.release(nil)
+            _ = await load.result
+            throw error
+        }
+        progressGate.release(nil)
+        do {
+            try await load.value
+            XCTFail("A late progress result cannot grant display authority to a retired row")
+        } catch is CancellationError {
+        }
+        XCTAssertFalse(model.hasLoadedDisplayState)
+        XCTAssertEqual(model.title, "")
+        XCTAssertNil(model.readingProgress)
     }
 
     func testAlreadyCancelledCoverWidthRequestDoesNotStartResolution() async {
