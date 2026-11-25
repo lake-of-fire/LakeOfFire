@@ -55,11 +55,14 @@ final class EbookMetadataEnrichmentTests: XCTestCase {
     }
 
     @RealmBackgroundActor
-    private func seed(_ name: String, in realm: Realm) async throws -> ContentFile {
+    private func seed(
+        _ name: String, in realm: Realm, publicationDate: Date? = nil
+    ) async throws -> ContentFile {
         let file = ContentFile()
         file.url = URL(string: "ebook://ebook/load/local/\(name).epub")!
         file.title = "Before"
         file.mimeType = "application/epub+zip"
+        if let publicationDate { file.publicationDate = publicationDate }
         file.updateCompoundKey()
         try await realm.asyncWrite { realm.add(file) }
         return file
@@ -231,6 +234,71 @@ final class EbookMetadataEnrichmentTests: XCTestCase {
     }
 
     @RealmBackgroundActor
+    func testPublicationDateEnrichmentReplacesFileDateOnlyForValidMetadata() async throws {
+        try await withFixture { f in
+            let fileDate = Date(timeIntervalSince1970: 1_700_000_000)
+            let displayFormatter = DateFormatter()
+            displayFormatter.dateStyle = .medium
+            displayFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+            let cases: [(name: String, opfDate: String?, expected: Date)] = [
+                ("reduced", "1997-07", Date(timeIntervalSince1970: 867_715_200)),
+                ("invalid", "2019-02-29T03:04:05Z", fileDate),
+                ("absent", nil, fileDate),
+            ]
+            for (name, opfDate, expected) in cases {
+                try self.writeEPUB(
+                    at: f.root.appendingPathComponent("\(name).epub"), publicationDate: opfDate
+                )
+                let file = try await self.seed(name, in: f.realm, publicationDate: fileDate)
+                let deferred = try await EbookFileManager.enrichMetadata([file])
+                XCTAssertTrue(deferred.isEmpty, name)
+                XCTAssertEqual(file.publicationDate, expected, name)
+                XCTAssertEqual(file.humanReadablePublicationDate, displayFormatter.string(from: expected), name)
+                XCTAssertEqual(file.title, "Coverless title", name)
+                XCTAssertEqual(file.author, "Author", name)
+                let generation = try XCTUnwrap(self.generation(file, in: f.realm), name)
+
+                let deferredAgain = try await EbookFileManager.enrichMetadata([file])
+                XCTAssertTrue(deferredAgain.isEmpty, name)
+                XCTAssertEqual(self.generation(file, in: f.realm), generation, name)
+            }
+        }
+    }
+
+    func testAbsoluteEPUBPublicationDateUsesUTCAcrossDeviceTimeZones() throws {
+        let locale = Locale(identifier: "en_US_POSIX")
+        let startOf1997 = Date(timeIntervalSince1970: 852_076_800)
+        let cases: [(zone: String, instant: Date, ebookText: String, deviceText: String)] = [
+            ("America/Toronto", startOf1997, "Jan 1, 1997", "Dec 31, 1996"),
+            ("Asia/Tokyo", startOf1997.addingTimeInterval(-3_600), "Dec 31, 1996", "Jan 1, 1997"),
+        ]
+        for (identifier, instant, ebookText, deviceText) in cases {
+            let zone = try XCTUnwrap(TimeZone(identifier: identifier))
+            for storage in ["local", "icloud"] {
+                let url = try XCTUnwrap(URL(string: "ebook://ebook/load/\(storage)/book.epub"))
+                let format = ReaderAbsolutePublicationDateFormat(url: url, isPhysicalMedia: true)
+                let formatter = format.makeFormatter(locale: locale, deviceTimeZone: zone)
+                XCTAssertEqual(formatter.string(from: instant), ebookText, "\(identifier), \(storage)")
+            }
+
+            let otherItems = [
+                ("https://example.test/feed-entry", false),
+                ("https://example.test/remote.epub", true),
+                ("reader-file://file/load/local/comic.zip", true),
+                ("ebook://ebook/load/local/comic.zip", true),
+                ("ebook://ebook/load/local/book.epub", false),
+                ("ebook://ebook/view/local/book.epub", true),
+            ]
+            for (address, isPhysicalMedia) in otherItems {
+                let url = try XCTUnwrap(URL(string: address))
+                let format = ReaderAbsolutePublicationDateFormat(url: url, isPhysicalMedia: isPhysicalMedia)
+                let formatter = format.makeFormatter(locale: locale, deviceTimeZone: zone)
+                XCTAssertEqual(formatter.string(from: instant), deviceText, "\(identifier), \(address)")
+            }
+        }
+    }
+
+    @RealmBackgroundActor
     func testLaterAvailabilityAwaitCannotOverwriteEarlierEditedBook() async throws {
         try await withFixture { f in
             try self.writeEPUB(at: f.root.appendingPathComponent("first.epub"))
@@ -277,13 +345,14 @@ final class EbookMetadataEnrichmentTests: XCTestCase {
         }
     }
 
-    private func writeEPUB(at root: URL) throws {
+    private func writeEPUB(at root: URL, publicationDate: String? = nil) throws {
         try FileManager.default.createDirectory(at: root.appendingPathComponent("META-INF"), withIntermediateDirectories: true)
         try Data("""
         <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>
         """.utf8).write(to: root.appendingPathComponent("META-INF/container.xml"))
+        let date = publicationDate.map { "<dc:date>\($0)</dc:date>" } ?? ""
         try Data("""
-        <package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0"><metadata><dc:title>Coverless title</dc:title><dc:creator>Author</dc:creator></metadata><manifest/></package>
+        <package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0"><metadata><dc:title>Coverless title</dc:title><dc:creator>Author</dc:creator>\(date)</metadata><manifest/></package>
         """.utf8).write(to: root.appendingPathComponent("book.opf"))
     }
 }

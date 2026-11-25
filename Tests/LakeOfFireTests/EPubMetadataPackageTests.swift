@@ -10,6 +10,14 @@ final class EPubMetadataPackageTests: XCTestCase {
             XCTAssertEqual(metadata.title, "本の名前")
             XCTAssertEqual(metadata.author, "作者")
             XCTAssertNil(metadata.coverHref)
+            XCTAssertNil(metadata.publicationDate)
+        }
+    }
+
+    func testZIPAndDirectoryRetainReducedPublicationDate() throws {
+        try withBothPackages(opf: document(cover: nil, publicationDate: "1997-07")) { package in
+            let metadata = try XCTUnwrap(EPubParser.parseMetadataAndCover(from: package))
+            XCTAssertEqual(metadata.publicationDate, Date(timeIntervalSince1970: 867_715_200))
         }
     }
 
@@ -32,11 +40,12 @@ final class EPubMetadataPackageTests: XCTestCase {
         }
     }
 
-    private func document(cover: String?) -> String {
+    private func document(cover: String?, publicationDate: String? = nil) -> String {
         let item = cover.map { "<o:item id=\"cover\" href=\"\($0)\" properties=\"cover-image\" media-type=\"image/jpeg\"/>" } ?? ""
+        let date = publicationDate.map { "<d:date>\($0)</d:date>" } ?? ""
         return """
         <o:package xmlns:o="http://www.idpf.org/2007/opf" xmlns:d="http://purl.org/dc/elements/1.1/" version="3.0">
-        <o:metadata><d:title>本の名前</d:title><d:creator>作者</d:creator></o:metadata>
+        <o:metadata><d:title>本の名前</d:title><d:creator>作者</d:creator>\(date)</o:metadata>
         <o:manifest>\(item)</o:manifest></o:package>
         """
     }

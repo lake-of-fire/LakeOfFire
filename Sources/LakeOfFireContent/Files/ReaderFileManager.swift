@@ -1780,7 +1780,7 @@ public class ReaderFileManager: ObservableObject {
     /// Validates the URL grammar used by reader backing files.  URL.pathComponents
     /// normalizes away empty components and leaves dot segments in place, so it is
     /// intentionally not sufficient for validating a path received from a web view.
-    private static func isValidReaderBackingPath(components: URLComponents) -> Bool {
+    static func isValidReaderBackingPath(components: URLComponents) -> Bool {
         guard let scheme = components.scheme?.lowercased(),
               let host = components.host?.lowercased(),
               (scheme == "reader-file" && host == "file")

@@ -411,12 +411,44 @@ extension String {
     }
 }
 
-fileprivate let longDateFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .medium
-    formatter.timeStyle = .none
-    return formatter
-}()
+enum ReaderAbsolutePublicationDateFormat {
+    case deviceTimeZone
+    case ebookUTC
+
+    private static let deviceFormatter = Self.deviceTimeZone.makeFormatter()
+    private static let ebookFormatter = Self.ebookUTC.makeFormatter()
+
+    init(url: URL, isPhysicalMedia: Bool) {
+        guard isPhysicalMedia, url.scheme == "ebook", url.isEBookURL,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              ReaderFileManager.isValidReaderBackingPath(components: components) else {
+            self = .deviceTimeZone
+            return
+        }
+        self = .ebookUTC
+    }
+
+    func makeFormatter(locale: Locale? = nil, deviceTimeZone: TimeZone? = nil) -> DateFormatter {
+        let formatter = DateFormatter()
+        if let locale { formatter.locale = locale }
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        if case .ebookUTC = self {
+            // The EPUB parser anchors civil dates at UTC midnight.
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        } else if let deviceTimeZone {
+            formatter.timeZone = deviceTimeZone
+        }
+        return formatter
+    }
+
+    func string(from date: Date) -> String {
+        switch self {
+        case .deviceTimeZone: return Self.deviceFormatter.string(from: date)
+        case .ebookUTC: return Self.ebookFormatter.string(from: date)
+        }
+    }
+}
 
 public extension ReaderContentProtocol {
     var humanReadablePublicationDate: String? {
@@ -424,7 +456,8 @@ public extension ReaderContentProtocol {
         
         let oneMonthAgo = Calendar.current.date(byAdding: .month, value: -1, to: Date())
         if displayAbsolutePublicationDate || oneMonthAgo.map({ publicationDate < $0 }) == true {
-            return longDateFormatter.string(from: publicationDate)
+            return ReaderAbsolutePublicationDateFormat(url: url, isPhysicalMedia: isPhysicalMedia)
+                .string(from: publicationDate)
         } else {
             return ReaderDateFormatter.relativeString(from: publicationDate)
         }

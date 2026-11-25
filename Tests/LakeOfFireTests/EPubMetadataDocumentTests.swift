@@ -218,20 +218,43 @@ final class EPubMetadataDocumentTests: XCTestCase {
         XCTAssertNil(value.coverHref)
     }
 
-    func testDateOnlyAndFractionalTimestamp() throws {
-        for date in ["2020-01-02", "2020-01-02T03:04:05Z", "2020-01-02T03:04:05.125Z"] {
-            XCTAssertNotNil(try EPubMetadataDocument.metadata(opf(
-                "<dc:title>Book</dc:title><dc:date>\(date)</dc:date>"
-            ))?.publicationDate, date)
+    func testPublicationDatesResolveToExactUTCInstants() throws {
+        // Fixed instants keep the assertions independent of the runner's
+        // calendar, language, and time zone. Offsets cross both year boundaries.
+        let cases: [(String, TimeInterval)] = [
+            ("1997", 852_076_800),
+            ("1997-07", 867_715_200),
+            ("2020-02-29", 1_582_934_400),
+            ("2020-01-02T03:04Z", 1_577_934_240),
+            ("2020-01-01T00:00+09:00", 1_577_804_400),
+            ("2019-12-31T23:45-05:30", 1_577_855_700),
+            ("2020-01-02T03:04:05Z", 1_577_934_245),
+            ("2020-01-02T03:04:05.125Z", 1_577_934_245.125),
+        ]
+        for (source, expected) in cases {
+            let date = try XCTUnwrap(EPubMetadataDocument.metadata(opf(
+                "<dc:title>Book</dc:title><dc:date>\(source)</dc:date>"
+            ))?.publicationDate, source)
+            XCTAssertEqual(date.timeIntervalSince1970, expected, accuracy: 0.000_001, source)
         }
     }
 
-    func testInvalidDateDoesNotEraseOtherMetadata() throws {
-        let value = try XCTUnwrap(EPubMetadataDocument.metadata(opf(
-            "<dc:title>Book</dc:title><dc:date>not a date</dc:date>"
-        )))
-        XCTAssertNil(value.publicationDate)
-        XCTAssertEqual(value.title, "Book")
+    func testInvalidDatesDoNotEraseOtherMetadata() throws {
+        let invalid = [
+            "not a date", "0000", "１９９７", "1997-7", "1997-00", "1997-13", "1997-07-",
+            "2019-02-29", "2020-02-30", "2020-04-31", "2020-01-00", "2020-01-02 extra",
+            "2020-01T03:04Z", "2020-01-02T24:00Z", "2020-01-02T03:60Z", "2020-01-02T03:04",
+            "2020-01-02T03:04.5Z", "2020-01-02T03:04Z extra", "2020-01-02T03:04+24:00",
+            "2020-01-02T03:04-05:60", "2019-02-29T03:04:05Z", "2020-01-02T03:04:60Z",
+            "2020-01-02T03:04:05.Z", "2020-01-02T03:04:05.125Z extra",
+        ]
+        for source in invalid {
+            let value = try XCTUnwrap(EPubMetadataDocument.metadata(opf(
+                "<dc:title>Book</dc:title><dc:date>\(source)</dc:date>"
+            )), source)
+            XCTAssertNil(value.publicationDate, source)
+            XCTAssertEqual(value.title, "Book", source)
+        }
     }
 
     func testCoverResolutionDecodesOnceAndPreservesLiteralPercentAndDelimiters() {
