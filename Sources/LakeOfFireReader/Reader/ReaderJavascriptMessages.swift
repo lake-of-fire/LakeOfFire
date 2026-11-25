@@ -549,8 +549,7 @@ public struct FractionalCompletionMessage: Sendable {
 
     public init?(body rawBody: Any?) {
         guard let body = rawBody as? [String: Any],
-              let completion = body["fractionalCompletion"] as? Double,
-              completion.isFinite,
+              let completion = Self.finiteNumber(body["fractionalCompletion"]),
               (0...1).contains(completion),
               let cfi = body["cfi"] as? String,
               cfi.utf8.count <= Self.maximumCFIUTF8Bytes,
@@ -559,7 +558,11 @@ public struct FractionalCompletionMessage: Sendable {
         fractionalCompletion = Float(completion)
         self.cfi = cfi
         self.reason = reason
-        hasVisibleJapaneseText = body["hasVisibleJapaneseText"] as? Bool
+        if let rawVisibleText = body["hasVisibleJapaneseText"], !(rawVisibleText is NSNull) {
+            guard let number = rawVisibleText as? NSNumber,
+                  CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+            hasVisibleJapaneseText = number.boolValue
+        }
         if let rawPageValue = body["mainDocumentURL"] {
             guard let rawPage = rawPageValue as? String,
                   rawPage.utf8.count <= Self.maximumURLUTF8Bytes,
@@ -569,43 +572,42 @@ public struct FractionalCompletionMessage: Sendable {
             mainDocumentURL = pageURL
         }
         if let rawDocumentStartedAt = body["documentStartedAtMs"] {
-            guard !Self.isBoolean(rawDocumentStartedAt),
-                  let documentStartedAt = rawDocumentStartedAt as? Double,
-                  documentStartedAt.isFinite else {
+            guard let documentStartedAt = Self.finiteNumber(rawDocumentStartedAt) else {
                 return nil
             }
             documentStartedAtMilliseconds = documentStartedAt
         }
-        sectionIndex = Self.safeInteger(body["sectionIndex"])
-        currentPageNumber = Self.safeInteger(body["currentPageNumber"])
-        totalPages = Self.safeInteger(body["totalPages"])
-        visibleSegmentCount = Self.safeInteger(body["visibleSegmentCount"])
-        observedSegmentCount = Self.safeInteger(body["observedSegmentCount"])
+        do {
+            sectionIndex = try Self.optionalCount(body["sectionIndex"])
+            currentPageNumber = try Self.optionalCount(body["currentPageNumber"])
+            totalPages = try Self.optionalCount(body["totalPages"])
+            visibleSegmentCount = try Self.optionalCount(body["visibleSegmentCount"])
+            observedSegmentCount = try Self.optionalCount(body["observedSegmentCount"])
+        } catch {
+            return nil
+        }
     }
 
-    private static func safeInteger(_ value: Any?) -> Int? {
-        guard !isBoolean(value) else { return nil }
-        if let value = value as? Int {
-            return value
-        }
-        if let value = value as? String {
-            return Int(value)
-        }
-        let doubleValue: Double?
-        if let value = value as? Double {
-            doubleValue = value
-        } else if let value = value as? NSNumber {
-            doubleValue = value.doubleValue
-        } else {
-            doubleValue = nil
-        }
-        guard let doubleValue, doubleValue.isFinite else { return nil }
-        return Int(exactly: doubleValue.rounded(.towardZero))
+    private enum InvalidProgressCount: Error {
+        case invalidValue
     }
 
-    private static func isBoolean(_ value: Any?) -> Bool {
-        guard let number = value as? NSNumber else { return false }
-        return CFGetTypeID(number) == CFBooleanGetTypeID()
+    private static func optionalCount(_ value: Any?) throws -> Int? {
+        // The viewer sends null when a measurement is unavailable.
+        guard let value, !(value is NSNull) else { return nil }
+        guard let number = finiteNumber(value),
+              (0...9_007_199_254_740_991).contains(number),
+              let count = Int(exactly: number) else {
+            throw InvalidProgressCount.invalidValue
+        }
+        return count
+    }
+
+    private static func finiteNumber(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let value = number.doubleValue
+        return value.isFinite ? value : nil
     }
 }
 
