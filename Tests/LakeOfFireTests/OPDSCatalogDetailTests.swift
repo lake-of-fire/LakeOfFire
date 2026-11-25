@@ -183,6 +183,50 @@ final class OPDSCatalogDetailTests: XCTestCase {
         }
     }
 
+    func testDisappearanceCancelsQueuedBookOpen() async throws {
+        let model = OPDSCatalogDetailViewModel()
+        let task = try XCTUnwrap(model.selectionOwner.startOpenSelection { _ in
+            XCTFail("A book open queued by a disappeared catalog must not start")
+        })
+        model.cancel()
+        await task.value
+    }
+
+    func testDisappearanceRejectsBookOpenAfterSuspendedImportReturns() async throws {
+        let model = OPDSCatalogDetailViewModel()
+        let owner = model.selectionOwner
+        let importStarted = XCTestExpectation(description: "book import started")
+        var releaseImport: CheckedContinuation<Bool, Never>?
+        let task = try XCTUnwrap(owner.startOpenSelection { selection in
+            do {
+                try await owner.open(selection: selection, stages: .init(
+                    resolveDownloadable: { true },
+                    existsLocally: { true },
+                    importContent: { _ in
+                        await withCheckedContinuation { continuation in
+                            releaseImport = continuation
+                            importStarted.fulfill()
+                        }
+                    },
+                    loadContent: {
+                        XCTFail("An import completing after catalog dismissal must not load content")
+                        return true
+                    },
+                    navigate: { _ in XCTFail("A dismissed catalog must not navigate") },
+                    publishNavigation: { XCTFail("A dismissed catalog must not publish an open") }
+                ))
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        })
+
+        let started = await XCTWaiter.fulfillment(of: [importStarted], timeout: 2)
+        model.cancel()
+        releaseImport?.resume(returning: true)
+        await task.value
+        XCTAssertEqual(started, .completed)
+    }
+
     func testCancelledInvalidEntrantDoesNotRevokeHealthyRequest() async throws {
         try await withFixture { fixture in
             let (_, healthy) = fixture.load(firstURL)

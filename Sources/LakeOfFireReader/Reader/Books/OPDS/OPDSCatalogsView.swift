@@ -132,7 +132,9 @@ class OPDSCatalogsViewModel: ObservableObject {
 }
 @available(macOS 13.0, iOS 16, *)
 struct OPDSCatalogsView: View {
+    var onNavigateToReader: (() -> Void)? = nil
     @EnvironmentObject private var viewModel: OPDSCatalogsViewModel
+    @Environment(\.dismiss) private var dismiss
     @State private var showingCatalogDetail: OPDSCatalogSnapshot?
     
     @EnvironmentObject private var bookLibraryModalsModel: BookLibraryModalsModel
@@ -143,17 +145,25 @@ struct OPDSCatalogsView: View {
                 Button(catalog.title) {
                     showingCatalogDetail = catalog
                 }
-                .sheet(item: $showingCatalogDetail) { catalog in
-                    NavigationStack {
-                        OPDSCatalogDetailView(catalogURL: catalog.url)
-                    }
-                }
             }
             .onDelete(perform: deleteCatalogs)
         }
         .navigationTitle("Ebook Catalogs")
+        .sheet(item: $showingCatalogDetail) { catalog in
+            NavigationStack {
+                OPDSCatalogDetailView(
+                    catalogURL: catalog.url,
+                    onNavigateToReader: onNavigateToReader
+                )
+            }
+        }
         .toolbar {
-            Button("Add") { bookLibraryModalsModel.showingAddCatalog = true }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Done") { dismiss() }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Add") { bookLibraryModalsModel.showingAddCatalog = true }
+            }
         }
     }
     
