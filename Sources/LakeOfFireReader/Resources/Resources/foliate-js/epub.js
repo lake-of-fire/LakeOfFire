@@ -605,6 +605,8 @@ class Encryption {
 }
 
 class Resources {
+    #spineItemrefs
+
     constructor({
         opf,
         resolveHref
@@ -619,6 +621,7 @@ class Resources {
         const $manifest = $(opf.documentElement, 'manifest')
         const $spine = $(opf.documentElement, 'spine')
         const $$itemref = $$($spine, 'itemref')
+        this.#spineItemrefs = $$itemref
 
         this.manifest = $$($manifest, 'item')
             .map(getAttributes('href', 'id', 'media-type', 'properties', 'media-overlay'))
@@ -673,16 +676,15 @@ class Resources {
     resolveCFI(cfi) {
         const parts = CFI.parse(cfi)
         const top = (parts.parent ?? parts).shift()
-        let $itemref = CFI.toElement(this.opf, top)
-        // make sure it's an idref; if not, try again without the ID assertion
-        // mainly because Epub.js used to generate wrong ID assertions
+        const $itemref = CFI.toElement(this.opf, top)
+        let index = this.#spineItemrefs.indexOf($itemref)
+        // Keep a valid spine itemref assertion even when its ordinal is stale.
+        // Epub.js used to emit IDs outside the spine; retry those by ordinal.
         // https://github.com/futurepress/epub.js/issues/1236
-        if ($itemref && $itemref.nodeName !== 'idref') {
+        if ($itemref && index === -1 && top[top.length - 1].id) {
             top[top.length - 1].id = null
-            $itemref = CFI.toElement(this.opf, top)
+            index = this.#spineItemrefs.indexOf(CFI.toElement(this.opf, top))
         }
-        const idref = $itemref?.getAttribute('idref')
-        const index = this.spine.findIndex(item => item.idref === idref)
         // A section-only CFI is emitted before a rendered range is available.
         // It still names the section start after its OPF path is consumed.
         const sectionStart = Array.isArray(parts) && parts.every(path => path.length === 0)

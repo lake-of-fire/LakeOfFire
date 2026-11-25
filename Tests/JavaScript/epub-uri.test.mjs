@@ -16,7 +16,8 @@ const fragment = 'sentence %20#?'
 const encodedFragment = encodeURIComponent(fragment)
 
 const makeURIFixture = ({ directory = 'OPS', ncx = false, names = filenames, manifestRefs = null,
-    textFragment = 'sentence-1', navigationRefs = null } = {}) => {
+    textFragment = 'sentence-1', navigationRefs = null, extraMetadata = [],
+    spineIDRefs = names.map((_, i) => `c${i}`) } = {}) => {
     const path = name => directory ? `${directory}/${name}` : name
     const docs = new Map()
     const reads = [], sizes = [], processed = [], blobs = []
@@ -28,7 +29,7 @@ const makeURIFixture = ({ directory = 'OPS', ncx = false, names = filenames, man
     docs.set('container', xml(el('container', ns.container, {}, [el('rootfile', ns.container, {
         'full-path': path('book.opf'), 'media-type': 'application/oebps-package+xml',
     })])))
-    docs.set('package', xml(el('package', ns.opf, {}, [el('metadata', ns.opf, {}, [el('language', ns.dc, {}, [], 'en')]),
+    docs.set('package', xml(el('package', ns.opf, {}, [el('metadata', ns.opf, {}, [el('language', ns.dc, {}, [], 'en'), ...extraMetadata]),
         el('manifest', ns.opf, {}, [
             ...names.map((name, i) => el('item', ns.opf, { id: `c${i}`, href: manifestRefs?.[i] ?? encodeURIComponent(name),
                 'media-type': 'application/xhtml+xml', 'media-overlay': 'overlay' })),
@@ -36,7 +37,8 @@ const makeURIFixture = ({ directory = 'OPS', ncx = false, names = filenames, man
                 'media-type': ncx ? 'application/x-dtbncx+xml' : 'application/xhtml+xml', properties: ncx ? '' : 'nav' }),
             el('item', ns.opf, { id: 'overlay', href: 'overlay.smil', 'media-type': 'application/smil+xml' }),
             el('item', ns.opf, { id: 'asset', href: 'image%23%3F%2520.png', 'media-type': 'image/png' }),
-        ]), el('spine', ns.opf, { toc: ncx ? 'nav' : '' }, names.map((_, i) => el('itemref', ns.opf, { idref: `c${i}` }))),
+        ]), el('spine', ns.opf, { toc: ncx ? 'nav' : '' }, spineIDRefs.map((idref, i) =>
+            Object.assign(el('itemref', ns.opf, { id: `spine-${i}`, idref }), { nodeName: 'opf:itemref' }))),
     ])))
     const nav = el('nav', ns.xhtml, {}, [el('ol', ns.xhtml, {}, names.map((name, i) => el('li', ns.xhtml, {}, [
         el('a', ns.xhtml, { href: navigationRefs?.[i] ?? `${encodeURIComponent(name)}#${encodedFragment}` }, [], name),
@@ -62,6 +64,35 @@ const makeURIFixture = ({ directory = 'OPS', ncx = false, names = filenames, man
     return { book, path, reads, sizes, processed, blobs, loadBlob,
         close() { book.destroy(); Object.assign(globalThis, globals) } }
 }
+
+test('EPUB CFI assertions recover the original spine entry after its ordinal changes', async t => {
+    const f = makeURIFixture({ names: ['first.xhtml', 'second.xhtml'], spineIDRefs: ['missing', 'c0', 'c1'] })
+    t.after(f.close)
+    await f.book.init()
+
+    assert.deepEqual(f.book.sections.map(section => section.id), [f.path('first.xhtml'), f.path('second.xhtml')])
+    assert.equal(f.book.sections[1].cfi, 'epubcfi(/6/6[spine-2])')
+
+    const restored = f.book.resolveCFI('epubcfi(/6/4[spine-2])')
+    assert.equal(restored.index, 1)
+    assert.equal(restored.anchor(), 0)
+    assert.equal(f.book.resolveCFI('epubcfi(/6/4[spine-0])').index, -1)
+})
+
+test('EPUB CFI navigation preserves ordinal fallback for legacy and out-of-spine assertions', async t => {
+    const f = makeURIFixture({
+        names: ['first.xhtml', 'second.xhtml'],
+        extraMetadata: [el('itemref', 'urn:extension', { id: 'foreign-itemref', idref: 'c1' })],
+    })
+    t.after(f.close)
+    await f.book.init()
+
+    for (const cfi of ['epubcfi(/6/2[c1])', 'epubcfi(/6/2[foreign-itemref])', 'epubcfi(/6/2)']) {
+        const resolved = f.book.resolveCFI(cfi)
+        assert.equal(resolved.index, 0, cfi)
+        assert.equal(resolved.anchor(), 0, cfi)
+    }
+})
 
 for (const ncx of [false, true]) {
     test(`${ncx ? 'NCX' : 'NAV'} canonicalizes equivalent path escape spellings`, async () => {
@@ -280,6 +311,10 @@ test('real View content links and TOC clicks reach the intended percent/reserved
             await new Promise(resolve => setImmediate(resolve))
             assert.equal(renderer.calls.at(-1)?.index, i)
         }
+        const savedCFI = 'epubcfi(/6/2[spine-1])'
+        assert.equal((await view.goTo(savedCFI))?.index, 1)
+        assert.equal(renderer.calls.at(-1)?.index, 1)
+
         let jump
         const toc = createTOCView(f.book.toc, href => { jump = view.goTo(href) })
         for (const [i, item] of toc.element.children.entries()) {
