@@ -1040,7 +1040,8 @@ export class Loader {
                 if (el.namespaceURI === NS.SVG) await replace(el, 'href')
             }
             for (const el of Array.from(doc.getElementsByTagName('*'))
-                .filter(el => !el.hasAttribute('href') && el.hasAttributeNS(NS.XLINK, 'href'))) {
+                .filter(el => !(el.namespaceURI === NS.SVG && el.localName === 'a')
+                    && !el.hasAttribute('href') && el.hasAttributeNS(NS.XLINK, 'href'))) {
                 el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(el.getAttributeNS(NS.XLINK, 'href'), href, parents))
             }
             // replace inline styles
