@@ -27,21 +27,15 @@ struct BookLibrarySheetsModifier: ViewModifier {
     @ObservedObject var bookLibraryModalsModel: BookLibraryModalsModel
     @AppStorage("errorMessage") private var errorMessage = ""
 
-    @StateObject private var opdsCatalogsViewModel = OPDSCatalogsViewModel()
-
     func body(content: Content) -> some View {
         content
-            .sheet(isPresented: $bookLibraryModalsModel.showingEbookCatalogs.gatedBy(isActive)) {
+            .sheet(isPresented: $bookLibraryModalsModel.showingEbookCatalogs.gatedBy(isActive), onDismiss: {
+                bookLibraryModalsModel.showingAddCatalog = false
+            }) {
                 if #available(iOS 16, macOS 13, *) {
-                    NavigationStack {
-                        OPDSCatalogsView()
-                    }
-                    .sheet(isPresented: $bookLibraryModalsModel.showingAddCatalog) {
-                        AddCatalogView()
-                    }
+                    BookLibraryCatalogsSheet(bookLibraryModalsModel: bookLibraryModalsModel)
                 }
             }
-            .environmentObject(opdsCatalogsViewModel)
             .background {
                 Color.clear
                     .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile, allowedContentTypes: ReaderFileManager.shared.readerContentMimeTypes) { result in
@@ -72,6 +66,24 @@ struct BookLibrarySheetsModifier: ViewModifier {
                         }
                     }
             }
+    }
+}
+
+@available(macOS 13.0, iOS 16.0, *)
+private struct BookLibraryCatalogsSheet: View {
+    @ObservedObject var bookLibraryModalsModel: BookLibraryModalsModel
+    var onNavigateToReader: (() -> Void)? = nil
+    @StateObject private var viewModel = OPDSCatalogsViewModel()
+
+    var body: some View {
+        NavigationStack {
+            OPDSCatalogsView(onNavigateToReader: onNavigateToReader)
+        }
+        .sheet(isPresented: $bookLibraryModalsModel.showingAddCatalog) {
+            AddCatalogView()
+        }
+        .environmentObject(viewModel)
+        .environmentObject(bookLibraryModalsModel)
     }
 }
 
@@ -148,6 +160,8 @@ public struct BookLibraryView: View {
     @EnvironmentObject private var readerFileManager: ReaderFileManager
 
     @StateObject private var readerContentListViewModel = ReaderContentListViewModel<ContentFile>()
+    @StateObject private var catalogModalsModel = BookLibraryModalsModel()
+    @State private var catalogNavigationAction: (() -> Void)?
     @AppStorage("BookLibraryView.editorsPicks.isExpanded") private var isEditorsPicksExpanded = true
     @State private var isMyBooksExpanded = true
 
@@ -261,6 +275,13 @@ public struct BookLibraryView: View {
                 }
             }
 
+            if viewModel.fileTypes.contains(.epub) || viewModel.fileTypes.contains(.epubZip) {
+                Button(action: presentEbookCatalogs) {
+                    Label("Ebook Catalogs", systemImage: "books.vertical")
+                }
+                .accessibilityIdentifier("BookLibrary.EbookCatalogs")
+            }
+
             if #available(iOS 17, macOS 14.0, *) {
                 Section(isExpanded: $isEditorsPicksExpanded) {
                     EditorsPicksView(viewModel: viewModel)
@@ -308,6 +329,20 @@ public struct BookLibraryView: View {
 
     public var body: some View {
         list
+            .sheet(isPresented: $catalogModalsModel.showingEbookCatalogs, onDismiss: {
+                catalogModalsModel.showingAddCatalog = false
+                catalogNavigationAction = nil
+            }) {
+                BookLibraryCatalogsSheet(
+                    bookLibraryModalsModel: catalogModalsModel,
+                    onNavigateToReader: catalogNavigationAction
+                )
+            }
+    }
+
+    private func presentEbookCatalogs() {
+        catalogNavigationAction = viewModel.onNavigateToReader
+        catalogModalsModel.showingEbookCatalogs = true
     }
     
     @MainActor
@@ -741,12 +776,11 @@ public class BookLibraryViewModel: ObservableObject {
                     countsAsHistoryVisit: true,
                     source: "BookLibraryView.openDownloaded"
                 )
-                return content?.url.matchesReaderURL(
-                    readerContent.pageURL
-                ) == false
+                guard let content else { return false }
+                return !content.url.matchesReaderURL(readerContent.pageURL) || onNavigateToReader != nil
             },
             navigate: { claim in
-                guard let content else { return }
+                guard let content, !content.url.matchesReaderURL(readerContent.pageURL) else { return }
                 try await navigator.load(
                     content: content,
                     readerFileManager: readerFileManager,
