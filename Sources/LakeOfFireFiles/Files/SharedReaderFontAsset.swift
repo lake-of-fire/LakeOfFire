@@ -66,6 +66,23 @@ public struct SharedReaderFontAsset: Hashable, Sendable {
     public func supportsFamily(_ familyName: String) -> Bool {
         supportedFamilyNames.contains(familyName)
     }
+
+    /// A network-backed @font-face must not shadow an installed face of the
+    /// same name. Route requests and reader settings still use logical names.
+    public func cssFontFaceFamilyName(for familyName: String) -> String {
+        // A preview may supply an explicit routed face name already.
+        let prefix = "Manabi Reader "
+        guard enablesRuntimeResourceDelivery,
+              systemFontNames[familyName] != nil,
+              !familyName.hasPrefix(prefix) else { return familyName }
+        return prefix + familyName
+    }
+
+    public func cssFontFamilyList(for familyName: String) -> String {
+        let routedFamily = cssFontFaceFamilyName(for: familyName)
+        guard routedFamily != familyName else { return "'\(familyName)'" }
+        return "'\(routedFamily)', '\(familyName)'"
+    }
 }
 
 // The endpoint encodes logical identity only, never a filesystem path. Each
@@ -336,7 +353,7 @@ public func sharedReaderFontResponse(
             }
             fontFaceRules.append("""
             @font-face {
-              font-family: '\(supportedFamilyName)';
+              font-family: '\(asset.cssFontFaceFamilyName(for: supportedFamilyName))';
               font-weight: 400 700;
               font-style: normal;
               src: \(source);
@@ -345,20 +362,22 @@ public func sharedReaderFontResponse(
             """)
         }
         let fontFaces = fontFaceRules.joined(separator: "\n")
+        let horizontalFontList = asset.cssFontFamilyList(for: asset.horizontalFamilyName)
+        let verticalFontList = asset.cssFontFamilyList(for: asset.verticalFamilyName)
         let css = """
         \(fontFaces)
         :root {
-          --mnb-content-font: '\(asset.horizontalFamilyName)';
-          --mnb-content-vertical-font: '\(asset.verticalFamilyName)';
+          --mnb-content-font: \(horizontalFontList);
+          --mnb-content-vertical-font: \(verticalFontList);
         }
         html,
         body,
         body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
-          font-family: var(--mnb-content-font, '\(asset.horizontalFamilyName)'), system-ui !important;
+          font-family: var(--mnb-content-font, \(horizontalFontList)), system-ui !important;
         }
         body.reader-vertical-writing,
         body.reader-vertical-writing *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
-          font-family: var(--mnb-content-vertical-font, '\(asset.verticalFamilyName)'), system-ui !important;
+          font-family: var(--mnb-content-vertical-font, \(verticalFontList)), system-ui !important;
         }
         rt {
           font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', system-ui, sans-serif !important;
