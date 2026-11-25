@@ -3253,10 +3253,13 @@ public class ReaderModeViewModel: ObservableObject {
                 .truncate(36) ?? ""
         }()
         let titleForDisplay = content.titleForDisplay
+        // FeedEntry derives these three flags from its feed and ignores their
+        // setters. Those values alone do not justify a metadata transaction.
+        let needsReaderModeFlagWrite = !(content is FeedEntry) && (
+            !content.isReaderModeByDefault || content.isReaderModeAvailable || content.isReaderModeOfferHidden
+        )
         let needsAsyncWrite =
-            content.isReaderModeByDefault == false
-            || content.isReaderModeAvailable == true
-            || content.isReaderModeOfferHidden == true
+            needsReaderModeFlagWrite
             || (
                 !url.isEBookURL
                 && !url.isFileURL
