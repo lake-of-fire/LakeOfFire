@@ -164,6 +164,121 @@ final class OPDSTransportAndSearchBoundaryTests: XCTestCase {
             return XCTFail("Missing HTTP failure")
         }
     }
+
+    func testStructuredOPDS2CatalogAcceptsLocalizedMetadata() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BoundaryURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let url = URL(string: "https://opds-boundary.example/catalog/localized-opds2")!
+
+        let document = try await OPDSParser.parseURL(url: url, session: session)
+        let feed = try XCTUnwrap(document.feed)
+        let publication = try XCTUnwrap(feed.publications.first)
+        let group = try XCTUnwrap(feed.groups.first)
+        XCTAssertEqual(feed.metadata.title, "図書目録")
+        XCTAssertEqual(feed.facets.map(\.metadata.title), ["言語"])
+        XCTAssertEqual(group.metadata.title, "小説")
+        XCTAssertEqual(group.publications.map(\.metadata.title), ["A plain title"])
+        XCTAssertNil(group.publications.first?.metadata.subtitle)
+        XCTAssertEqual(publication.metadata.title, "吾輩は猫である")
+        XCTAssertEqual(publication.metadata.subtitle, "小説")
+        XCTAssertEqual(publication.metadata.languages, ["en"])
+        XCTAssertEqual(publication.metadata.authors.map(\.name), ["夏目漱石", "A plain contributor"])
+        XCTAssertEqual(publication.metadata.publishers.map(\.name), ["試験出版社"])
+        XCTAssertEqual(publication.metadata.subjects.map(\.name), ["近代文学"])
+        XCTAssertEqual(publication.metadata.authors.first?.links.first?.href,
+                       "https://opds-boundary.example/people/soseki?key=a%2Fb")
+        XCTAssertEqual(publication.metadata.subjects.first?.links.first?.href,
+                       "https://opds-boundary.example/catalog/localized-opds2?topic=modern%2Fliterature")
+        XCTAssertEqual(publication.links.first?.href,
+                       "https://opds-boundary.example/catalog/books/cat.epub?token=a%2Fb")
+    }
+
+    func testStandaloneOPDS2PublicationAcceptsLocalizedTitle() throws {
+        let json = #"""
+        {
+          "metadata": {"title": {"ja": "坊っちゃん"}, "subtitle": "A plain subtitle"},
+          "links": [{"href": "book.epub", "rel": "http://opds-spec.org/acquisition"}]
+        }
+        """#
+        let response = URLResponse(url: base, mimeType: "application/opds-publication+json",
+                                   expectedContentLength: -1, textEncodingName: nil)
+        let document = try OPDS2Parser.parse(jsonData: Data(json.utf8), url: base, response: response)
+        XCTAssertNil(document.feed)
+        XCTAssertEqual(document.publication?.metadata.title, "坊っちゃん")
+        XCTAssertEqual(document.publication?.metadata.subtitle, "A plain subtitle")
+    }
+
+    func testOPDS2LocalizedNamesStillRequireValidNestedLinks() {
+        let object: [String: Any] = [
+            "name": ["ja": "名前"],
+            "links": [["title": "Missing href"]],
+        ]
+        for field in ["author", "publisher", "subject"] {
+            let metadata: [String: Any] = ["title": "Book", field: object]
+            let catalog: [String: Any] = ["metadata": ["title": "Catalog"], "publications": [["metadata": metadata]]]
+            XCTAssertThrowsError(try OPDS2Parser.parse(jsonDict: catalog)) { error in
+                guard case OPDS2ParserError.invalidLink = error else {
+                    return XCTFail("Unexpected error for \(field): \(error)")
+                }
+            }
+        }
+    }
+
+    func testOPDS2LanguageLookupRetainsScriptRegionAndPriority() {
+        let variants = [
+            "zh-Hant-TW": "Taiwan",
+            "zh-Hant": "Traditional",
+            "zh-Hans": "Simplified",
+            "zh": "Chinese",
+            "en": "English",
+        ]
+        XCTAssertEqual(OPDS2LocalizedText.resolve(variants, preferredLanguages: ["ZH-hant-TW-u-co-stroke"]), "Taiwan")
+        XCTAssertEqual(OPDS2LocalizedText.resolve(variants, preferredLanguages: ["zh-Hant-HK", "en"]), "Traditional")
+        XCTAssertEqual(OPDS2LocalizedText.resolve(variants, preferredLanguages: ["fr", "zh-Hans"]), "Simplified")
+    }
+
+    func testOPDS2LanguageLookupTriesPreferredRangesBeforeRegionalFallback() {
+        let variants = ["de": "Deutsch", "en-US": "American English"]
+        XCTAssertEqual(OPDS2LocalizedText.resolve(variants, preferredLanguages: ["en-CA"]), "American English")
+        XCTAssertEqual(OPDS2LocalizedText.resolve(variants, preferredLanguages: ["en-Latn-CA"]), "American English")
+        XCTAssertEqual(OPDS2LocalizedText.resolve(variants, preferredLanguages: ["en-CA", "de-DE"]), "Deutsch")
+        let scripts = ["zh-Hans-CN": "Simplified", "zh-Hant-TW": "Traditional"]
+        XCTAssertEqual(OPDS2LocalizedText.resolve(scripts, preferredLanguages: ["zh-Hant-HK"]), "Traditional")
+        let fallback = ["zh-Hans": "Simplified", "und": "Fallback"]
+        XCTAssertEqual(OPDS2LocalizedText.resolve(fallback, preferredLanguages: ["zh-Hant-HK"]), "Fallback")
+    }
+
+    func testOPDS2LanguageDefaultsAreDeterministicAndKeepSpecialTags() {
+        var variants = ["FR": "Français", "de": "Deutsch", "UND": "Fallback"]
+        XCTAssertEqual(OPDS2LocalizedText.resolve(variants, preferredLanguages: ["ja"]), "Fallback")
+        variants.removeValue(forKey: "UND")
+        XCTAssertEqual(OPDS2LocalizedText.resolve(variants, preferredLanguages: ["ja"]), "Deutsch")
+        XCTAssertEqual(OPDS2LocalizedText.resolve(["i-Klingon": "tlhIngan Hol"], preferredLanguages: ["i-klingon"]),
+                       "tlhIngan Hol")
+        XCTAssertEqual(OPDS2LocalizedText.resolve(["x-reader": "Private"], preferredLanguages: ["x-reader"]),
+                       "Private")
+    }
+
+    func testOPDS2MalformedRequiredLanguageMapsStillFailCatalogParsing() {
+        let malformedTitles: [Any] = [
+            [String: String](),
+            ["ja": " ", "en": "Valid"],
+            ["ja": 123, "en": "Valid"] as [String: Any],
+            ["en": "One", "EN": "Ambiguous"],
+            ["en_US": "Invalid tag"],
+            ["en--US": "Invalid tag"],
+        ]
+        for title in malformedTitles {
+            let catalog: [String: Any] = ["metadata": ["title": title], "publications": []]
+            XCTAssertThrowsError(try OPDS2Parser.parse(jsonDict: catalog)) { error in
+                guard case OPDS2ParserError.missingTitle = error else {
+                    return XCTFail("Unexpected error: \(error)")
+                }
+            }
+        }
+    }
 }
 
 private final class BoundaryURLProtocol: URLProtocol {
@@ -173,12 +288,54 @@ private final class BoundaryURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let data: Data
+        var status = 503
         switch request.url?.lastPathComponent {
+        case "localized-opds2":
+            status = 200
+            data = Data(#"""
+            {
+              "metadata": {"title": {"ja": "図書目録"}},
+              "links": [{"href": "localized-opds2", "rel": "self", "type": "application/opds+json"}],
+              "facets": [{
+                "metadata": {"title": {"ja": "言語"}},
+                "links": [{"href": "?language=ja", "title": "Japanese", "rel": "http://opds-spec.org/facet"}]
+              }],
+              "groups": [{
+                "metadata": {"title": {"ja": "小説"}},
+                "publications": [{
+                  "metadata": {"title": "A plain title", "subtitle": {"en": 123}},
+                  "links": [{"href": "books/other.epub", "rel": "http://opds-spec.org/acquisition"}]
+                }]
+              }],
+              "publications": [{
+                "metadata": {
+                  "title": {"ja": "吾輩は猫である"},
+                  "subtitle": {"ja": "小説"},
+                  "language": "en",
+                  "author": [
+                    {"name": {"ja": "夏目漱石"}, "links": [{"href": "../people/soseki?key=a%2Fb"}]},
+                    "A plain contributor",
+                    {"name": {"ja": 123}, "links": [{"title": "Missing href"}]}
+                  ],
+                  "publisher": {"name": {"ja": "試験出版社"}},
+                  "subject": [
+                    {"name": {"ja": "近代文学"}, "links": [{"href": "?topic=modern%2Fliterature"}]},
+                    {"name": {"ja": " "}}
+                  ]
+                },
+                "links": [{
+                  "href": "books/cat.epub?token=a%2Fb",
+                  "rel": "http://opds-spec.org/acquisition",
+                  "type": "application/epub+zip"
+                }]
+              }]
+            }
+            """#.utf8)
         case "fail-2": data = Data(#"{"metadata":{"title":"Error body"},"publications":[]}"#.utf8)
         case "fail-search": data = Data(#"<OpenSearchDescription><Url type="application/atom+xml" template="https://example.com/search?q={searchTerms}"/></OpenSearchDescription>"#.utf8)
         default: data = Data("<feed><title>Error body</title></feed>".utf8)
         }
-        let response = HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
