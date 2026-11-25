@@ -184,7 +184,7 @@ public struct Contributor: Hashable {
             return
         }
 
-        guard let dict = json as? [String: Any], let name = dict["name"] as? String else {
+        guard let dict = json as? [String: Any], let name = OPDS2LocalizedText.resolve(dict["name"]) else {
             return nil
         }
 
@@ -233,7 +233,7 @@ public struct Subject: Hashable {
             return
         }
 
-        guard let dict = json as? [String: Any], let name = dict["name"] as? String else {
+        guard let dict = json as? [String: Any], let name = OPDS2LocalizedText.resolve(dict["name"]) else {
             return nil
         }
 

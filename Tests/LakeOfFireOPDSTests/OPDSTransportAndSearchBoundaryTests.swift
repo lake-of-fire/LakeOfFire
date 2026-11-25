@@ -184,6 +184,13 @@ final class OPDSTransportAndSearchBoundaryTests: XCTestCase {
         XCTAssertEqual(publication.metadata.title, "吾輩は猫である")
         XCTAssertEqual(publication.metadata.subtitle, "小説")
         XCTAssertEqual(publication.metadata.languages, ["en"])
+        XCTAssertEqual(publication.metadata.authors.map(\.name), ["夏目漱石", "A plain contributor"])
+        XCTAssertEqual(publication.metadata.publishers.map(\.name), ["試験出版社"])
+        XCTAssertEqual(publication.metadata.subjects.map(\.name), ["近代文学"])
+        XCTAssertEqual(publication.metadata.authors.first?.links.first?.href,
+                       "https://opds-boundary.example/people/soseki?key=a%2Fb")
+        XCTAssertEqual(publication.metadata.subjects.first?.links.first?.href,
+                       "https://opds-boundary.example/catalog/localized-opds2?topic=modern%2Fliterature")
         XCTAssertEqual(publication.links.first?.href,
                        "https://opds-boundary.example/catalog/books/cat.epub?token=a%2Fb")
     }
@@ -201,6 +208,22 @@ final class OPDSTransportAndSearchBoundaryTests: XCTestCase {
         XCTAssertNil(document.feed)
         XCTAssertEqual(document.publication?.metadata.title, "坊っちゃん")
         XCTAssertEqual(document.publication?.metadata.subtitle, "A plain subtitle")
+    }
+
+    func testOPDS2LocalizedNamesStillRequireValidNestedLinks() {
+        let object: [String: Any] = [
+            "name": ["ja": "名前"],
+            "links": [["title": "Missing href"]],
+        ]
+        for field in ["author", "publisher", "subject"] {
+            let metadata: [String: Any] = ["title": "Book", field: object]
+            let catalog: [String: Any] = ["metadata": ["title": "Catalog"], "publications": [["metadata": metadata]]]
+            XCTAssertThrowsError(try OPDS2Parser.parse(jsonDict: catalog)) { error in
+                guard case OPDS2ParserError.invalidLink = error else {
+                    return XCTFail("Unexpected error for \(field): \(error)")
+                }
+            }
+        }
     }
 
     func testOPDS2LanguageLookupRetainsScriptRegionAndPriority() {
@@ -288,7 +311,17 @@ private final class BoundaryURLProtocol: URLProtocol {
                 "metadata": {
                   "title": {"ja": "吾輩は猫である"},
                   "subtitle": {"ja": "小説"},
-                  "language": "en"
+                  "language": "en",
+                  "author": [
+                    {"name": {"ja": "夏目漱石"}, "links": [{"href": "../people/soseki?key=a%2Fb"}]},
+                    "A plain contributor",
+                    {"name": {"ja": 123}, "links": [{"title": "Missing href"}]}
+                  ],
+                  "publisher": {"name": {"ja": "試験出版社"}},
+                  "subject": [
+                    {"name": {"ja": "近代文学"}, "links": [{"href": "?topic=modern%2Fliterature"}]},
+                    {"name": {"ja": " "}}
+                  ]
                 },
                 "links": [{
                   "href": "books/cat.epub?token=a%2Fb",
