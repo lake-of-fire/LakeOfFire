@@ -231,15 +231,58 @@ enum EPubMetadataDocument {
         }
 
         private func parseDate(_ value: String) -> Date? {
-            let formatter = ISO8601DateFormatter()
-            if let date = formatter.date(from: value) { return date }
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let date = formatter.date(from: value) { return date }
-            formatter.formatOptions = [.withFullDate]
-            guard let date = formatter.date(from: value), formatter.string(from: date) == value else {
+            let fields = value.split(separator: "T", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let calendarField = fields.first else { return nil }
+            let dateField = String(calendarField)
+            guard dateField.range(of: #"\A[0-9]{4}(?:-[0-9]{2}(?:-[0-9]{2})?)?\z"#,
+                                  options: .regularExpression) != nil else {
                 return nil
             }
-            return date
+            let components = dateField.split(separator: "-")
+            guard let year = Int(components[0]), year > 0,
+                  let month = components.count > 1 ? Int(components[1]) : 1,
+                  let day = components.count > 2 ? Int(components[2]) : 1 else {
+                return nil
+            }
+
+            // Reader stores a Date, so reduced precision uses the first UTC
+            // instant in the stated year or month.
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            guard let date = calendar.date(from: DateComponents(year: year, month: month, day: day)) else {
+                return nil
+            }
+            let actual = calendar.dateComponents([.year, .month, .day], from: date)
+            guard actual.year == year, actual.month == month, actual.day == day else {
+                return nil
+            }
+            if fields.count == 1 { return date }
+            guard components.count == 3 else { return nil }
+
+            let clock = String(fields[1])
+            guard let timeRange = clock.range(
+                of: #"\A(?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9](?:\.[0-9]+)?)?"#,
+                options: .regularExpression
+            ) else {
+                return nil
+            }
+            let time = clock[timeRange]
+            let zone = String(clock[timeRange.upperBound...])
+            guard zone.range(of: #"\A(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])\z"#,
+                             options: .regularExpression) != nil else {
+                return nil
+            }
+
+            // Normalize minute precision for the same ISO decoder used for
+            // full timestamps. The validated suffix retains the authored zone.
+            let timestamp = time.count == 5 ? "\(dateField)T\(time):00\(zone)" : value
+            let formatter = ISO8601DateFormatter()
+            formatter.timeZone = calendar.timeZone
+            formatter.formatOptions = [.withInternetDateTime]
+            if time.contains(".") {
+                formatter.formatOptions.insert(.withFractionalSeconds)
+            }
+            return formatter.date(from: timestamp)
         }
     }
 }
