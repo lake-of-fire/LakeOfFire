@@ -685,11 +685,21 @@ internal func readerContentPublicationDateFallback(for url: URL) async -> String
 
 @MainActor
 internal func readerContentPublicationDateFallback(
-    for content: any ReaderContentProtocol
+    for content: any ReaderContentProtocol,
+    renderGeneration: UUID? = nil,
+    loadURLFallback: @MainActor (URL) async -> String? = {
+        await readerContentPublicationDateFallback(for: $0)
+    }
 ) async -> String? {
-    if !(content is HistoryRecord),
+    // Full-content RSS records carry the date and display preference for
+    // their saved body. A missing or disabled date also resolves locally.
+    let usesSavedFeedMetadata = content.rssContainsFullContent
+    if !(content is HistoryRecord) || usesSavedFeedMetadata,
        (content.displayPublicationDate || content.isPhysicalMedia),
        let publicationDate = content.publicationDate {
+        ReaderArticleRenderTrace.record(
+            "Reader Publication Date From Record", url: content.url, generation: renderGeneration
+        )
         return formattedReaderContentPublicationDate(
             ReaderContentPublicationDateSnapshot(
                 publicationDate: publicationDate,
@@ -698,8 +708,19 @@ internal func readerContentPublicationDateFallback(
             )
         )
     }
-    return await readerContentPublicationDateFallback(for: content.url)
+    if usesSavedFeedMetadata {
+        ReaderArticleRenderTrace.record(
+            "Reader Publication Date Unavailable In Record", url: content.url, generation: renderGeneration
+        )
+        return nil
+    }
+    ReaderArticleRenderTrace.record(
+        "Reader Publication Date Related Lookup Start", url: content.url, generation: renderGeneration
+    )
+    return await loadURLFallback(content.url)
 }
+
+private let readerTitleTrackingSectionStart = #"<div class="mnb-tracking-section mnb-tracking-section-title" data-mnb-tracking-section-kind="title" data-mnb-tracking-section-read="true">"#
 
 internal func buildCanonicalReadabilityHTML(
     title: String,
@@ -759,7 +780,9 @@ internal func buildCanonicalReadabilityHTML(
         </head>
         <body class="\(bodyClass)" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" \(availabilityAttributes)>
             <div id="reader-header" class="header">
-                <h1 id="reader-title">\(resolvedTitle)</h1>
+                \(readerTitleTrackingSectionStart)
+                    <h1 id="reader-title">\(resolvedTitle)</h1>
+                </div>
                 <div id="reader-byline-container">
                     \(bylineLine)
                     \(metaLine)
@@ -3453,7 +3476,9 @@ public class ReaderModeViewModel: ObservableObject {
                 if let readerPublicationDateLoader {
                     publicationDateFallback = await readerPublicationDateLoader(resolvedContentURL)
                 } else {
-                    publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                    publicationDateFallback = await readerContentPublicationDateFallback(
+                        for: content, renderGeneration: renderGeneration
+                    )
                 }
                 ReaderArticleRenderTrace.record("Reader Publication Date Resolved", url: contentURL, generation: renderGeneration)
                 guard ownsContent() else { return }
@@ -4697,6 +4722,14 @@ nonisolated public func processForReaderMode(
        let snippetElement = try doc.getElementsByClass("mnb-snippet").first() {
         try snippetElement.attr("id", "reader-content")
         try snippetElement.removeClass("mnb-snippet")
+    }
+
+    // Saved and fallback article HTML can still have a bare heading. Wrap it
+    // before presentation so tracking hydration does not change its typography.
+    if !isEBook,
+       let title = try doc.getElementById("reader-title"),
+       title.parent()?.id() == "reader-header" {
+        try title.wrap(readerTitleTrackingSectionStart + "</div>")
     }
     
     if isEBook {

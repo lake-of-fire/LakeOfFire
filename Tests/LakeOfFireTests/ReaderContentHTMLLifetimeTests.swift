@@ -46,6 +46,102 @@ extension XCTestCase {
 final class ReaderContentHTMLLifetimeTests: XCTestCase {
     private let fileURL = URL(string: "reader-file://file/load/local/example.txt")!
 
+    func testCanonicalArticleIncludesTheTitleSectionBeforeTrackingHydration() throws {
+        let url = try XCTUnwrap(URL(string: "https://example.com/article"))
+        let html = buildCanonicalReadabilityHTML(
+            title: "A Reader article", byline: "", publishedTime: nil,
+            content: "<p>Article text.</p>", contentURL: url
+        )
+        let document = try SwiftSoup.parse(html)
+        let title = try XCTUnwrap(try document.getElementById("reader-title"))
+        let header = try XCTUnwrap(try document.getElementById("reader-header"))
+        let section = try XCTUnwrap(title.parent())
+
+        XCTAssertTrue(section.parent() === header)
+        XCTAssertTrue(section.hasClass("mnb-tracking-section-title"))
+        XCTAssertEqual(try section.attr("data-mnb-tracking-section-kind"), "title")
+        XCTAssertEqual(try title.text(), "A Reader article")
+    }
+
+    func testSavedArticleTitleKeepsItsMarkupWhenPreparingForReaderMode() throws {
+        let url = try XCTUnwrap(URL(string: "https://example.com/article"))
+        let document = try SwiftSoup.parse("""
+        <div id="reader-header" class="header">
+            <h1 id="reader-title"><ruby>記事<rt>きじ</rt></ruby></h1>
+        </div>
+        <div id="reader-content"><p>Article text.</p></div>
+        """)
+        let title = try XCTUnwrap(try document.getElementById("reader-title"))
+        let ruby = try XCTUnwrap(try title.select("ruby").first())
+
+        for _ in 0..<2 {
+            try processForReaderMode(
+                doc: document, url: url, contentSectionLocationIdentifier: nil,
+                isEBook: false, isCacheWarmer: false, defaultTitle: nil,
+                imageURL: nil, injectEntryImageIntoHeader: false, defaultFontSize: 21
+            )
+        }
+
+        let section = try XCTUnwrap(title.parent())
+        XCTAssertTrue(section.hasClass("mnb-tracking-section-title"))
+        XCTAssertEqual(section.parent()?.id(), "reader-header")
+        XCTAssertTrue(ruby.parent() === title)
+    }
+
+    func testSavedRSSHistoryUsesItsPublicationDateWithoutDiscoveringOtherRecords() async throws {
+        let history = HistoryRecord()
+        history.url = try XCTUnwrap(URL(string: "https://example.com/saved-feed-article"))
+        history.rssContainsFullContent = true
+        history.publicationDate = Date(timeIntervalSinceNow: -86_400)
+
+        let date = await readerContentPublicationDateFallback(for: history) { _ in
+            XCTFail("The saved RSS history already carries a publication date")
+            return nil
+        }
+
+        XCTAssertNotNil(date)
+    }
+
+    func testSavedRSSHistoryWithoutPublicationDateSkipsRelatedRecords() async throws {
+        let history = HistoryRecord()
+        history.url = try XCTUnwrap(URL(string: "https://example.com/older-feed-article"))
+        history.rssContainsFullContent = true
+
+        let date = await readerContentPublicationDateFallback(for: history) { _ in
+            XCTFail("A saved RSS article must render without waiting for a related record's date")
+            return nil
+        }
+
+        XCTAssertNil(date)
+    }
+
+    func testSavedRSSHistoryWithPublicationDateDisplayDisabledSkipsRelatedRecords() async throws {
+        let history = HistoryRecord()
+        history.url = try XCTUnwrap(URL(string: "https://example.com/feed-article-with-hidden-date"))
+        history.rssContainsFullContent = true
+        history.publicationDate = Date(timeIntervalSinceNow: -86_400)
+        history.displayPublicationDate = false
+
+        let date = await readerContentPublicationDateFallback(for: history) { _ in
+            XCTFail("A related record must not override the saved feed's date display preference")
+            return nil
+        }
+
+        XCTAssertNil(date)
+    }
+
+    func testNonRSSHistoryUsesRelatedRecordsForPublicationDate() async throws {
+        let history = HistoryRecord()
+        history.url = try XCTUnwrap(URL(string: "https://example.com/web-article"))
+
+        let date = await readerContentPublicationDateFallback(for: history) { url in
+            XCTAssertEqual(url, history.url)
+            return "Date from the source record"
+        }
+
+        XCTAssertEqual(date, "Date from the source record")
+    }
+
     func testRenderingFixtureTeardownReleasesBackgroundRealmAndRestoresDiscoveryStores() async throws {
         let previousBookmark = ReaderContentLoader.bookmarkRealmConfiguration
         let previousHistory = ReaderContentLoader.historyRealmConfiguration
