@@ -17,6 +17,79 @@ private actor ReaderSnippetRecoveryTestRecorder {
 }
 
 final class ReaderSnippetPipelineDiagnosticsTests: XCTestCase {
+    func testUnchangedSnippetTitlePreservesPreparedRubyAndLookupIdentity() throws {
+        let document = try SwiftSoup.parse("""
+        <html><body>
+          <h1 id="reader-title"><m-c><m-s><m-m id="native-title-word"><ruby class="mnb-gen"><m-t>学校</m-t><rt>がっこう</rt><rp>(</rp></ruby></m-m>へ行く</m-s></m-c></h1>
+          <script id="mnb-segment-metadata">{"version":1}</script>
+        </body></html>
+        """)
+        let before = try document.outerHtml()
+
+        XCTAssertFalse(try updateSnippetReaderTitleIfNeeded(in: document, title: "学校へ行く"))
+        XCTAssertEqual(try document.outerHtml(), before)
+        XCTAssertEqual(try document.getElementById("native-title-word")?.select("rt").text(), "がっこう")
+    }
+
+    func testUnchangedSnippetTitleWithRepeatedSpacesPreservesPreparedHeading() throws {
+        let document = try SwiftSoup.parse("""
+        <html><body>
+          <h1 id="reader-title"><m-m id="native-title-word"><ruby>学校<rt>がっこう</rt></ruby></m-m>  へ行く</h1>
+        </body></html>
+        """)
+        let before = try document.outerHtml()
+
+        XCTAssertFalse(try updateSnippetReaderTitleIfNeeded(in: document, title: "学校  へ行く"))
+        XCTAssertEqual(try document.outerHtml(), before)
+        XCTAssertEqual(try document.getElementById("native-title-word")?.select("rt").text(), "がっこう")
+    }
+
+    func testRenamingSnippetTitleKeepsHeadingAttributesAndUnrelatedMarkup() throws {
+        let document = try SwiftSoup.parse("""
+        <html><body>
+          <h1 id="reader-title" class="prepared" lang="ja" data-origin="saved"><m-m id="old-title-word"><ruby>学校<rt>がっこう</rt></ruby></m-m></h1>
+          <main id="reader-content"><p id="body-paragraph"><ruby>本文<rt>ほんぶん</rt></ruby></p></main>
+          <script id="mnb-segment-metadata">{"version":1}</script>
+        </body></html>
+        """)
+        let originalContent = try XCTUnwrap(document.getElementById("reader-content")).outerHtml()
+        let originalSidecar = try XCTUnwrap(document.getElementById("mnb-segment-metadata")).outerHtml()
+
+        XCTAssertTrue(try updateSnippetReaderTitleIfNeeded(in: document, title: "新しい見出し"))
+
+        let heading = try XCTUnwrap(document.getElementById("reader-title"))
+        XCTAssertEqual(try heading.text(), "新しい見出し")
+        XCTAssertEqual(try heading.attr("class"), "prepared")
+        XCTAssertEqual(try heading.attr("lang"), "ja")
+        XCTAssertEqual(try heading.attr("data-origin"), "saved")
+        XCTAssertNil(try document.getElementById("old-title-word"))
+        XCTAssertEqual(try document.getElementById("reader-content")?.outerHtml(), originalContent)
+        XCTAssertEqual(try document.getElementById("mnb-segment-metadata")?.outerHtml(), originalSidecar)
+    }
+
+    func testUpdatingSnippetTitleWithoutReaderHeadingDoesNotMutateFallbackHeading() throws {
+        let document = try SwiftSoup.parse("<html><body><h1>Other heading</h1><p>Body</p></body></html>")
+        let before = try document.outerHtml()
+
+        XCTAssertFalse(try updateSnippetReaderTitleIfNeeded(in: document, title: "Replacement"))
+        XCTAssertEqual(try document.outerHtml(), before)
+    }
+
+    func testReadabilityTitleUsesBaseTextWithoutMutatingRubyMarkup() throws {
+        let ruby = "<ruby>学校<rp>(</rp><rt>がっこう</rt><rp>)</rp><rtc>annotation</rtc></ruby>  へ行く"
+        for headings in [
+            "<h1>Other heading</h1><h1 id=\"reader-title\">\(ruby)</h1>",
+            "<h1>\(ruby)</h1>"
+        ] {
+            let document = try SwiftSoup.parse("<html><body>\(headings)</body></html>")
+            let before = try document.outerHtml()
+            XCTAssertEqual(try document.select("rt, rp, rtc").count, 4)
+
+            XCTAssertEqual(titleFromReadabilityDocument(document), "学校 へ行く")
+            XCTAssertEqual(try document.outerHtml(), before)
+        }
+    }
+
     func testZeroJapaneseSnippetSnapshotDistinguishesRenderMarkerAndFontGate() throws {
         let url = try XCTUnwrap(URL(string: "internal://local/snippet?key=zero-japanese"))
         let source = ReaderContentLoader.snippetHTML(fromRawText:

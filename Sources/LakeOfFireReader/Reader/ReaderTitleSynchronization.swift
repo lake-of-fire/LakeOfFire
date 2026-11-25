@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import LakeOfFireContent
+import LakeOfFireCore
 import SwiftUIWebView
 
 /// Latest title projection owned by a mounted Reader; SwiftUI owns its task.
@@ -46,11 +47,20 @@ final class ReaderTitleSynchronization: ObservableObject {
                 (function() {
                   const el = document.getElementById('reader-title');
                   const body = document.body;
-                  if (el && el.textContent !== title) { el.textContent = title; }
+                  if (el) {
+                    let currentTitle = el.textContent
+                    if (isSnippet) {
+                      const plainTitle = el.cloneNode(true)
+                      plainTitle.querySelectorAll('rt, rp, rtc').forEach(node => node.remove())
+                      currentTitle = plainTitle.textContent
+                    }
+                    if (currentTitle !== title) { el.textContent = title }
+                  }
                   if (body) { body.classList.toggle(bodyClassName, !!hideReaderTitle); }
                 })();
                 """, [
                     "title": title,
+                    "isSnippet": snapshot.contentURL.isSnippetURL,
                     "bodyClassName": ReaderContentLoader.snippetReaderTitleSuppressionBodyClass,
                     "hideReaderTitle": snapshot.hidesReaderTitle
                 ], current)
