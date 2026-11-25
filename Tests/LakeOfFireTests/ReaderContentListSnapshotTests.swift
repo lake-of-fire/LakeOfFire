@@ -1,6 +1,7 @@
 import Combine
 import XCTest
 import RealmSwift
+import SwiftUI
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
@@ -21,76 +22,86 @@ private final class DeleteCommandContent: Bookmark, DeletableReaderContent {
 
 @MainActor
 final class ReaderContentListSnapshotTests: XCTestCase {
-    func testDeleteConfirmationCancelPerformsZeroDeletes() {
+    func testDeleteConfirmationCancelPerformsZeroDeletes() throws {
         let item = DeleteCommandContent()
         let model = ReaderContentListModalsModel()
         model.presentDeleteConfirmation(for: [item])
-        model.clearDeleteDialog()
+        let presentation = try XCTUnwrap(model.deleteDialogBinding(isActive: .constant(true)).wrappedValue)
+        presentation.dismiss()
+        XCTAssertNil(presentation.confirm?())
         XCTAssertEqual(item.deleteCalls, 0)
         XCTAssertNil(model.deleteDialog)
     }
 
-    func testDeleteConfirmationCommandDeletesExactlyOnce() async {
+    func testDeleteConfirmationCommandDeletesExactlyOnce() async throws {
         let item = DeleteCommandContent()
         let model = ReaderContentListModalsModel()
         model.presentDeleteConfirmation(for: [item])
-        await model.deleteConfirmedItems([item])
+        let presentation = try XCTUnwrap(model.deleteDialogBinding(isActive: .constant(true)).wrappedValue)
+        let command = try XCTUnwrap(presentation.confirm?())
+        XCTAssertNil(presentation.confirm?())
+        await command.value
         XCTAssertEqual(item.deleteCalls, 1)
         XCTAssertNil(model.deleteDialog)
     }
 
-    func testDeleteConfirmationCommandRetainsError() async {
+    func testDeleteConfirmationCommandRetainsError() async throws {
         let item = DeleteCommandContent()
         item.deletion = { throw ReaderFileDeleteError.blockedCloudOnly }
         let model = ReaderContentListModalsModel()
         model.presentDeleteConfirmation(for: [item])
-        await model.deleteConfirmedItems([item])
+        let presentation = try XCTUnwrap(model.deleteDialogBinding(isActive: .constant(true)).wrappedValue)
+        let command = try XCTUnwrap(presentation.confirm?())
+        await command.value
         XCTAssertEqual(item.deleteCalls, 1)
         guard case .error? = model.deleteDialog else {
             return XCTFail("The command error must remain available to the alert presenter")
         }
     }
 
-    func testOlderDeleteCompletionDoesNotClearNewerConfirmation() async {
-        await checkOlderDeletePreservesNewerConfirmation(sameItem: false, fails: false)
+    func testOlderDeleteCompletionDoesNotClearNewerConfirmation() async throws {
+        try await checkOlderDeletePreservesNewerConfirmation(sameItem: false, fails: false)
     }
 
-    func testConfirmedCommandRetainsErrorAfterAlertBindingDismissal() async {
+    func testConfirmedCommandRetainsErrorAfterAlertBindingDismissal() async throws {
         let item = DeleteCommandContent()
         item.deletion = { throw ReaderFileDeleteError.blockedCloudOnly }
         let model = ReaderContentListModalsModel()
         model.presentDeleteConfirmation(for: [item])
-        let generation = model.deleteDialogGeneration
+        let binding = model.deleteDialogBinding(isActive: .constant(true))
+        let presentation = try XCTUnwrap(binding.wrappedValue)
         // SwiftUI dismisses the alert through its binding when a button is
         // tapped; this is not a new user request or an explicit cancellation.
-        model.deleteDialog = nil
-        await model.deleteConfirmedItems([item], generation: generation)
+        binding.wrappedValue = nil
+        let command = try XCTUnwrap(presentation.confirm?())
+        presentation.dismiss()
+        await command.value
         XCTAssertEqual(item.deleteCalls, 1)
         guard case .error? = model.deleteDialog else {
             return XCTFail("Alert dismissal must not suppress the confirmed command's error")
         }
     }
 
-    func testOlderDeleteCompletionDoesNotClearNewerSameItemConfirmation() async {
-        await checkOlderDeletePreservesNewerConfirmation(sameItem: true, fails: false)
+    func testOlderDeleteCompletionDoesNotClearNewerSameItemConfirmation() async throws {
+        try await checkOlderDeletePreservesNewerConfirmation(sameItem: true, fails: false)
     }
 
-    func testOlderDeleteErrorDoesNotReplaceNewerConfirmation() async {
-        await checkOlderDeletePreservesNewerConfirmation(sameItem: false, fails: true)
+    func testOlderDeleteErrorDoesNotReplaceNewerConfirmation() async throws {
+        try await checkOlderDeletePreservesNewerConfirmation(sameItem: false, fails: true)
     }
 
-    func testOlderDeleteErrorDoesNotReplaceNewerSameItemConfirmation() async {
-        await checkOlderDeletePreservesNewerConfirmation(sameItem: true, fails: true)
+    func testOlderDeleteErrorDoesNotReplaceNewerSameItemConfirmation() async throws {
+        try await checkOlderDeletePreservesNewerConfirmation(sameItem: true, fails: true)
     }
 
-    private func checkOlderDeletePreservesNewerConfirmation(sameItem: Bool, fails: Bool) async {
+    private func checkOlderDeletePreservesNewerConfirmation(sameItem: Bool, fails: Bool) async throws {
         let oldItem = DeleteCommandContent()
         oldItem.compoundKey = "old"
         let newItem = sameItem ? oldItem : DeleteCommandContent()
         if !sameItem { newItem.compoundKey = "new" }
         let model = ReaderContentListModalsModel()
         model.presentDeleteConfirmation(for: [oldItem])
-        let oldGeneration = model.deleteDialogGeneration
+        let presentation = try XCTUnwrap(model.deleteDialogBinding(isActive: .constant(true)).wrappedValue)
         defer { oldItem.deletion = nil }
         oldItem.deletion = {
             // Resume only after the replacement request is installed; this
@@ -103,29 +114,120 @@ final class ReaderContentListSnapshotTests: XCTestCase {
             }
             if fails { throw ReaderFileDeleteError.blockedCloudOnly }
         }
-        await model.deleteConfirmedItems([oldItem], generation: oldGeneration)
+        let command = try XCTUnwrap(presentation.confirm?())
+        await command.value
         XCTAssertEqual(oldItem.deleteCalls, 1)
         XCTAssertEqual(newItem.deleteCalls, sameItem ? 1 : 0)
-        XCTAssertNotEqual(model.deleteDialogGeneration, oldGeneration)
+        XCTAssertNotEqual(model.deleteDialogGeneration, presentation.id)
         guard case .confirm(let items, _, _, _)? = model.deleteDialog else {
             return XCTFail("An older completion must preserve the newer confirmation")
         }
         XCTAssertEqual(items.map(\.compoundKey), [newItem.compoundKey])
     }
 
-    func testConfirmedCommandCapturedBeforeTaskStartsPreservesNewerRequest() async {
+    func testConfirmedCommandCapturedBeforeTaskStartsPreservesNewerRequest() async throws {
         let item = DeleteCommandContent()
         let model = ReaderContentListModalsModel()
         model.presentDeleteConfirmation(for: [item])
-        let generation = model.deleteDialogGeneration
+        let presentation = try XCTUnwrap(model.deleteDialogBinding(isActive: .constant(true)).wrappedValue)
+        let command = try XCTUnwrap(presentation.confirm?())
         model.presentDeleteConfirmation(for: [item])
         let newerGeneration = model.deleteDialogGeneration
-        await model.deleteConfirmedItems([item], generation: generation)
+        await command.value
         XCTAssertEqual(item.deleteCalls, 1, "Presentation fencing must not revoke confirmed deletion")
         XCTAssertEqual(model.deleteDialogGeneration, newerGeneration)
         guard case .confirm? = model.deleteDialog else {
             return XCTFail("The request made before task entry must remain presented")
         }
+    }
+
+    func testRetiredSameItemAlertCannotClearOrConfirmNewPresentation() async throws {
+        let item = DeleteCommandContent()
+        let model = ReaderContentListModalsModel()
+        model.presentDeleteConfirmation(for: [item])
+        let oldBinding = model.deleteDialogBinding(isActive: .constant(true))
+        let oldPresentation = try XCTUnwrap(oldBinding.wrappedValue)
+
+        model.presentDeleteConfirmation(for: [item])
+        let newBinding = model.deleteDialogBinding(isActive: .constant(true))
+        let newPresentation = try XCTUnwrap(newBinding.wrappedValue)
+        XCTAssertNotEqual(oldPresentation.id, newPresentation.id)
+
+        oldBinding.wrappedValue = nil
+        oldPresentation.dismiss()
+        XCTAssertNil(oldPresentation.confirm?())
+        XCTAssertEqual(newBinding.wrappedValue?.id, newPresentation.id)
+        XCTAssertEqual(item.deleteCalls, 0)
+
+        let command = try XCTUnwrap(newPresentation.confirm?())
+        await command.value
+        XCTAssertEqual(item.deleteCalls, 1)
+    }
+
+    func testCustomDeleteRetiresOldPromptAndCannotReplaceNewerConfirmation() async throws {
+        let item = DeleteCommandContent()
+        let model = ReaderContentListModalsModel()
+        model.presentDeleteConfirmation(for: [item])
+        let oldBinding = model.deleteDialogBinding(isActive: .constant(true))
+        let oldPresentation = try XCTUnwrap(oldBinding.wrappedValue)
+
+        let command = try XCTUnwrap(model.requestDeleteOperation {
+            model.presentDeleteConfirmation(for: [item])
+            throw ReaderFileDeleteError.blockedCloudOnly
+        })
+        XCTAssertNil(model.deleteDialog)
+        XCTAssertNil(oldPresentation.confirm?())
+
+        await command.value
+        guard case .confirm? = model.deleteDialog else {
+            return XCTFail("The more recent confirmation must remain presented")
+        }
+        XCTAssertEqual(item.deleteCalls, 0)
+    }
+
+    func testCurrentCustomDeleteReportsFailure() async throws {
+        let model = ReaderContentListModalsModel()
+        let command = try XCTUnwrap(model.requestDeleteOperation {
+            throw ReaderFileDeleteError.blockedCloudOnly
+        })
+        await command.value
+        guard case .error? = model.deleteDialog else {
+            return XCTFail("The current custom deletion failure must remain presented")
+        }
+    }
+
+    func testCancelledDeleteDoesNotPublishFailure() async throws {
+        let item = DeleteCommandContent()
+        item.deletion = { throw CancellationError() }
+        let model = ReaderContentListModalsModel()
+        model.presentDeleteConfirmation(for: [item])
+        let presentation = try XCTUnwrap(model.deleteDialogBinding(isActive: .constant(true)).wrappedValue)
+        let command = try XCTUnwrap(presentation.confirm?())
+        await command.value
+        XCTAssertNil(model.deleteDialog)
+    }
+
+    func testCancelledCallerCannotAdmitDeletionOrRetireConfirmation() async throws {
+        let item = DeleteCommandContent()
+        let model = ReaderContentListModalsModel()
+        model.presentDeleteConfirmation(for: [item])
+        let binding = model.deleteDialogBinding(isActive: .constant(true))
+        let presentation = try XCTUnwrap(binding.wrappedValue)
+
+        let cancelledCaller = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            XCTAssertNil(presentation.confirm?())
+            XCTAssertNil(model.requestDeleteOperation {
+                XCTFail("A cancelled caller must not start deletion")
+            })
+        }
+        await cancelledCaller.value
+        XCTAssertEqual(binding.wrappedValue?.id, presentation.id)
+        XCTAssertEqual(item.deleteCalls, 0)
+
+        let command = try XCTUnwrap(presentation.confirm?())
+        await command.value
+        XCTAssertEqual(item.deleteCalls, 1)
     }
 
     func testFilteredContentsAndIDsPublishAsOneAlignedSnapshot() async throws {
