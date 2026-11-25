@@ -400,23 +400,30 @@ public struct ReaderContentLoader {
         }
     }
     
-    /// Capture account-selected stores before the processing actor can suspend.
+    /// Capture account-selected stores and the primary row before processing can suspend.
     public struct ReaderModePropagationStorage: @unchecked Sendable {
         fileprivate let storage: DiscoveryStorage
-        public init() { storage = DiscoveryStorage() }
-    }
+        fileprivate let primary: CapturedReaderPropagationRow?
+        public let capturedPrimaryTitle: String?
 
-    private struct ReaderModePropagationTarget: @unchecked Sendable {
-        let row: any ReaderContentProtocol
-        let configuration: Realm.Configuration
-        let admission: RealmStorageAdmission
-    }
+        public init() {
+            self.init(storage: DiscoveryStorage(), primary: nil, title: nil)
+        }
 
-    @RealmBackgroundActor
-    private static func resolvePropagationTarget<T: ReaderContentProtocol>(
-        _ frozen: T, in realm: Realm
-    ) -> T? {
-        realm.resolve(ThreadSafeReference(to: frozen))
+        private init(storage: DiscoveryStorage, primary: CapturedReaderPropagationRow?, title: String?) {
+            self.storage = storage
+            self.primary = primary
+            capturedPrimaryTitle = title
+        }
+
+        @MainActor
+        public func capturingPrimary(_ content: any ReaderContentProtocol) -> Self {
+            guard capturedPrimaryTitle == nil, !content.isInvalidated, !content.isDeleted else {
+                return self
+            }
+            let primary = CapturedReaderPropagationRow(content: content, reference: ContentReference(content: content))
+            return Self(storage: storage, primary: primary, title: content.title)
+        }
     }
 
     /// Every related row keeps its physical identity and commits under the
@@ -429,75 +436,110 @@ public struct ReaderContentLoader {
         storage capturedStorage: ReaderModePropagationStorage,
         readabilityHTML: String,
         resolvedTitle: String?,
+        legacyFlattenedTitle: String? = nil,
+        primaryTitleUpdate: (expected: String, replacement: String)? = nil,
         account: (access: AccountSessionAccess, snapshot: AccountSessionSnapshot)? = nil,
         permitsCommit: @escaping @Sendable () -> Bool
     ) async throws {
         func validateLifetime() throws {
             try Task.checkCancellation()
             guard permitsCommit() else { throw CancellationError() }
-            if let account, account.snapshot.identity == .transitioning {
-                throw CancellationError()
+            if let account {
+                guard account.snapshot.identity != .transitioning,
+                      account.access.snapshot == account.snapshot else { throw CancellationError() }
             }
         }
         try validateLifetime()
         let storage = capturedStorage.storage
-        let records = try await loadAll(url: url, skipContentFiles: false,
-            skipFeedEntries: false, storage: storage)
+#if DEBUG
+        await loadAllDiscoveryGateForTesting?()
+#endif
         try validateLifetime()
-        let targets = records.compactMap { record -> ReaderModePropagationTarget? in
-            guard !record.isInvalidated, !record.isDeleted,
-                  !(record.compoundKey == primaryKey && record.objectSchema.className == primaryClassName),
-                  let configuration = record.realm?.configuration,
-                  let reference = storage.reference(for: record) else { return nil }
-            return ReaderModePropagationTarget(row: record.freeze(), configuration: configuration,
-                admission: reference.storageAdmission)
+        let targets = try await discoverCapturedContent(
+            url: url, skipContentFiles: false, skipFeedEntries: false, storage: storage
+        ) { content in
+            guard !(content.compoundKey == primaryKey && content.objectSchema.className == primaryClassName) else {
+                return nil
+            }
+            return CapturedReaderPropagationRow(content: content, storage: storage)
         }
-        for target in targets {
+
+        let timestamp = Date()
+        @RealmBackgroundActor
+        func write(
+            _ target: CapturedReaderPropagationRow,
+            titleUpdate: (expected: String, replacement: String)? = nil
+        ) async throws {
             try validateLifetime()
+            let reference = target.reference
             let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: target.configuration, storageAdmission: target.admission)
+                for: reference.realmConfiguration, storageAdmission: reference.storageAdmission
+            )
             try await realm.asyncWritePreservingOwnership {
                 try validateLifetime()
-                func validateStorage() throws {
-                    guard target.admission.matchesCurrentStorageIdentity({
-                        RealmBackgroundActor.shared.realmCacheKey(for: target.configuration)
-                    }) else { throw RealmBackgroundActorError.realmFileChangedDuringOpen }
-                }
-                try validateStorage()
-                guard let record = resolvePropagationTarget(target.row, in: realm),
-                      !record.isInvalidated, !record.isDeleted,
-                      record.url == target.row.url else { return }
-                record.isReaderModeByDefault = true
-                record.isReaderModeAvailable = false
-                if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                    if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
-                        record.html = readabilityHTML
+                try reference.validateStorage()
+                guard let record = target.resolve(in: realm) else { return }
+
+                var changed = false
+                if let titleUpdate {
+                    if record.title.utf8.elementsEqual(titleUpdate.expected.utf8), record.title != titleUpdate.replacement {
+                        record.title = titleUpdate.replacement
+                        changed = true
                     }
-                    if let resolvedTitle,
-                       record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        record.title = resolvedTitle
+                } else {
+                    if !record.isReaderModeByDefault {
+                        record.isReaderModeByDefault = true
+                        changed = true
                     }
-                    record.rssContainsFullContent = true
-                }
-                record.refreshChangeMetadata(explicitlyModified: true)
-                try validateLifetime()
-                try validateStorage()
-                if let account {
-                    var didCommit = false
-                    do {
-                        _ = try account.access.publish(ifCurrent: account.snapshot) {
-                            guard !didCommit else { return }
-                            try Task.checkCancellation()
-                            try validateStorage()
-                            try realm.commitWrite()
-                            didCommit = true
+                    if record.isReaderModeAvailable {
+                        record.isReaderModeAvailable = false
+                        changed = true
+                    }
+                    if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                        if !url.isReaderFileURL, (record.content?.isEmpty ?? true), record.html != readabilityHTML {
+                            record.html = readabilityHTML
+                            changed = true
                         }
-                    } catch {
-                        if !didCommit { throw error }
+                        let legacyTitleMatches = legacyFlattenedTitle.map {
+                            record.title.utf8.elementsEqual($0.utf8)
+                        } ?? false
+                        if let resolvedTitle, record.title != resolvedTitle,
+                           record.title.utf8.elementsEqual(target.row.title.utf8),
+                           record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || legacyTitleMatches {
+                            record.title = resolvedTitle
+                            changed = true
+                        }
+                        if !record.rssContainsFullContent {
+                            record.rssContainsFullContent = true
+                            changed = true
+                        }
                     }
-                    guard didCommit else { throw CancellationError() }
+                }
+                guard changed else { return }
+                record.refreshChangeMetadata(explicitlyModified: true, at: timestamp)
+                try validateLifetime()
+                func validateStorageAndRow() throws {
+                    try Task.checkCancellation()
+                    try reference.validateStorage()
+                    guard !record.isInvalidated, !record.isDeleted, record.url == target.intendedURL else {
+                        throw CancellationError()
+                    }
+                }
+                try validateStorageAndRow()
+                if let account {
+                    try ReaderContentAccountCommit.commit(in: realm, account: account, validateCommit: validateStorageAndRow)
                 }
             }
+        }
+
+        if let primaryTitleUpdate, let primary = capturedStorage.primary,
+           primary.reference.contentKey == primaryKey,
+           primary.row.objectSchema.className == primaryClassName,
+           primary.intendedURL == url {
+            try await write(primary, titleUpdate: primaryTitleUpdate)
+        }
+        for target in targets {
+            try await write(target)
         }
     }
 
@@ -621,13 +663,17 @@ public struct ReaderContentLoader {
         return candidates.compactMap(capture)
     }
 
-    private final class CapturedReaderPropagationRow: @unchecked Sendable {
+    fileprivate final class CapturedReaderPropagationRow: @unchecked Sendable {
         let reference: ContentReference
         let row: any ReaderContentProtocol
         let intendedURL: URL
 
-        init?(content: any ReaderContentProtocol, storage: DiscoveryStorage) {
-            guard let reference = storage.reference(for: content) else { return nil }
+        convenience init?(content: any ReaderContentProtocol, storage: DiscoveryStorage) {
+            self.init(content: content, reference: storage.reference(for: content))
+        }
+
+        init?(content: any ReaderContentProtocol, reference: ContentReference?) {
+            guard let reference else { return nil }
             self.reference = reference
             intendedURL = content.url
             row = content.freeze()

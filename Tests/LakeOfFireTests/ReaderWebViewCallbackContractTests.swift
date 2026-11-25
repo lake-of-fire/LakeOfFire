@@ -7,6 +7,7 @@ import UIKit
 import SwiftUI
 import Combine
 import RealmSwift
+@testable import RealmSwiftGaps
 @testable import SwiftUIWebView
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
@@ -67,6 +68,11 @@ private final class ReaderCallbackMediaViewModel: ReaderMediaPlayerViewModel {
 private final class ReaderSettingsDispatchProbe {
     var settingsCount = 0
     var titles: [String] = []
+}
+
+@MainActor
+private final class ReaderSavedTitlePropagationProbe {
+    var task: Task<Void, Never>?
 }
 
 @MainActor
@@ -345,6 +351,196 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         record.url = url
         try realm.write { realm.add(record) }
         return (realm, record)
+    }
+
+    func testSavedArticleTitleRepairUsesOnlySourceHeadingEvidence() throws {
+        let suffix = String(repeating: "長", count: 40)
+        let html = """
+            <html><head><title>Publisher site title</title></head><body>
+            <h1>Section elsewhere on publisher site</h1>
+            <h1 id="reader-title">ノーベル<ruby>化学賞<rp>(</rp><rt>かがくしょう</rt><rp>)</rp></ruby>\(suffix)</h1>
+            <article>Article text.</article>
+            </body></html>
+            """
+        let evidence = try XCTUnwrap(readerArticleTitleEvidence(from: html))
+        let legacy = String(("ノーベル化学賞(かがくしょう)" + suffix).prefix(36)) + "…"
+        let recovered = String(("ノーベル化学賞" + suffix).prefix(36)) + "…"
+
+        XCTAssertEqual(evidence.heading, recovered)
+        XCTAssertEqual(evidence.legacyFlattenedTitle, legacy)
+        XCTAssertEqual(evidence.replacement(for: " \n\t"), recovered)
+        XCTAssertEqual(evidence.replacement(for: legacy), recovered)
+        XCTAssertNil(evidence.replacement(for: recovered))
+        XCTAssertNil(evidence.replacement(for: "ノーベル化学賞かがくしょう"))
+        XCTAssertNil(evidence.replacement(for: "Publisher site title"))
+        XCTAssertNil(evidence.replacement(for: "自分で編集した題名"))
+
+        let plain = try XCTUnwrap(readerArticleTitleEvidence(from: "<h1>化学賞が決まった</h1>"))
+        XCTAssertEqual(plain.replacement(for: ""), "化学賞が決まった")
+        XCTAssertNil(plain.replacement(for: "化学賞かがくしょうが決まった"))
+        let fallbackParenthesis = try XCTUnwrap(readerArticleTitleEvidence(
+            from: "<h1><ruby>化学賞<rp>(</rp><rp>)</rp></ruby>が決まった</h1>"
+        ))
+        XCTAssertEqual(fallbackParenthesis.replacement(for: ""), "化学賞が決まった")
+        XCTAssertNil(fallbackParenthesis.replacement(for: "化学賞()が決まった"))
+        XCTAssertNil(readerArticleTitleEvidence(
+            from: "<head><title>Only publisher metadata</title></head><body><article>Article text.</article></body>"
+        ))
+    }
+
+    func testSavedArticleTitleRepairStartsAfterReaderDocumentDispatch() async throws {
+        try await assertSavedArticleTitleRepairAfterDispatch(invalidateOrigin: false)
+    }
+
+    func testSavedArticleTitlePropagationRejectsSourceInvalidatedAtDispatch() async throws {
+        try await assertSavedArticleTitleRepairAfterDispatch(invalidateOrigin: true)
+    }
+
+    func testSavedArticleTitleRepairUsesExtractedHeadingForFreshLocalHTML() async throws {
+        let publisherHTML = """
+            <html><head><title>Publisher site title</title></head><body>
+            <header><h1>Publisher Home</h1></header>
+            <article><p>日本語の本文。</p></article>
+            </body></html>
+            """
+        try await assertSavedArticleTitleRepairAfterDispatch(invalidateOrigin: false, freshLocalHTML: publisherHTML)
+    }
+
+    private func assertSavedArticleTitleRepairAfterDispatch(
+        invalidateOrigin: Bool,
+        freshLocalHTML: String? = nil
+    ) async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let mode = fixture.readerModeViewModel
+        let reader = fixture.readerContent
+        let navigator = fixture.handler.navigator
+        let url = URL(string: "https://example.com/article/\(UUID().uuidString)")!
+        let originalTitle = freshLocalHTML == nil ? "化学賞かがくしょうが決まった" : ""
+        let expectedTitle = "化学賞が決まった"
+        let sourceHTML = """
+            <html><head><title>Publisher site title</title></head><body class="readability-mode">
+            <div id="reader-header"><h1 id="reader-title"><ruby>化学賞<rt>かがくしょう</rt></ruby>が決まった</h1></div>
+            <div id="reader-content"><p>Readable fallback source 日本語.</p></div>
+            </body></html>
+            """
+        let configuration: Realm.Configuration = {
+            var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+            configuration.objectTypes = [HistoryRecord.self, Bookmark.self, ContentFile.self, FeedEntry.self]
+            configureLakeOfFireMutationTrackingForTesting(&configuration)
+            return configuration
+        }()
+        let realm = try Realm(configuration: configuration, queue: nil)
+        let row = HistoryRecord()
+        row.url = url
+        row.title = originalTitle
+        row.html = freshLocalHTML ?? sourceHTML
+        row.isReaderModeByDefault = true
+        row.isReaderModeAvailable = false
+        row.isReaderModeOfferHidden = false
+        row.rssContainsFullContent = true
+        row.updateCompoundKey()
+        let related = Bookmark()
+        related.url = url
+        related.title = originalTitle
+        related.isReaderModeByDefault = false
+        related.updateCompoundKey()
+        try realm.write {
+            realm.add(row)
+            realm.add(related)
+        }
+
+        let priorBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let priorHistory = ReaderContentLoader.historyRealmConfiguration
+        let priorFeed = ReaderContentLoader.feedEntryRealmConfiguration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+
+        reader.pageURL = url
+        reader.content = row
+        reader.isRenderingReaderHTML = true
+        mode.navigator = navigator
+        mode.readerPublicationDateLoader = { _ in nil }
+        let extracted: XCTestExpectation?
+        if let freshLocalHTML {
+            let processorCalled = expectation(description: "Swift Readability receives fresh publisher HTML")
+            extracted = processorCalled
+            mode.readerLocalHTMLLoader = { _ in freshLocalHTML }
+            mode.swiftReadabilityProcessor = { html, contentURL, _, _ in
+                XCTAssertEqual(html, freshLocalHTML)
+                XCTAssertEqual(contentURL, url)
+                processorCalled.fulfill()
+                return sourceHTML
+            }
+        } else {
+            extracted = nil
+            mode.readabilityContent = sourceHTML
+        }
+        let dispatched = expectation(description: "Reader HTML navigation issued")
+        let discovery = invalidateOrigin ? nil : expectation(description: "delayed storage discovery entered")
+        let propagation = ReaderSavedTitlePropagationProbe()
+        mode.readerDocumentDispatchedForTesting = {
+            XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+            XCTAssertEqual(row.title, originalTitle, "The primary still has its stored title at dispatch")
+            if invalidateOrigin {
+                do {
+                    try realm.write { realm.delete(row) }
+                } catch {
+                    XCTFail("Could not retire the original fixture row: \(error)")
+                }
+            }
+            dispatched.fulfill()
+        }
+        mode.readerModePropagationTaskScheduledForTesting = {
+            propagation.task = $0
+        }
+        let gate = ReaderCallbackGate()
+        await { @RealmBackgroundActor in
+            ReaderContentLoader.loadAllDiscoveryGateForTesting = {
+                discovery?.fulfill()
+                await gate.wait()
+            }
+        }()
+        addTeardownBlock {
+            await gate.release()
+            await mode.waitForReaderModeRender(for: url)
+            let task = await MainActor.run { propagation.task }
+            await task?.value
+            await { @RealmBackgroundActor in
+                ReaderContentLoader.loadAllDiscoveryGateForTesting = nil
+            }()
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+            await MainActor.run {
+                mode.readerDocumentDispatchedForTesting = nil
+                mode.readerModePropagationTaskScheduledForTesting = nil
+                mode.readerLocalHTMLLoader = nil
+                mode.swiftReadabilityProcessor = nil
+                ReaderContentLoader.bookmarkRealmConfiguration = priorBookmark
+                ReaderContentLoader.historyRealmConfiguration = priorHistory
+                ReaderContentLoader.feedEntryRealmConfiguration = priorFeed
+            }
+        }
+
+        mode.showReaderView(readerContent: reader, scriptCaller: fixture.handler.scriptCaller)
+        let orderedEvents = [extracted, dispatched, discovery].compactMap { $0 }
+        await fulfillment(of: orderedEvents, timeout: 5, enforceOrder: true)
+        await gate.release()
+        await mode.waitForReaderModeRender(for: url)
+        if invalidateOrigin {
+            XCTAssertTrue(row.isInvalidated)
+            XCTAssertNil(propagation.task, "A dispatch callback retiring the source must stop propagation")
+            await propagation.task?.value
+            await realm.asyncRefresh()
+            XCTAssertEqual(related.title, originalTitle)
+            XCTAssertFalse(related.isReaderModeByDefault)
+            return
+        }
+        let task = try XCTUnwrap(propagation.task, "Dispatch must schedule the deferred Realm update")
+        await task.value
+        await realm.asyncRefresh()
+        XCTAssertEqual(row.title, expectedTitle)
+        XCTAssertEqual(related.title, expectedTitle)
+        XCTAssertTrue(related.isReaderModeByDefault)
     }
 
     func testCommitRejectsCachedRowInvalidatedDuringLoadPublication() async throws {
