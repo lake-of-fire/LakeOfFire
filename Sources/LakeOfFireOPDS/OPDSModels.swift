@@ -122,14 +122,14 @@ public struct Metadata: Hashable {
     }
 
     init(json: [String: Any], normalizeHREF: (String) -> String = { $0 }) throws {
-        guard let title = json["title"] as? String else {
+        guard let title = OPDS2LocalizedText.resolve(json["title"]) else {
             throw OPDS2ParserError.missingTitle
         }
 
         self.init(
             identifier: json["identifier"] as? String,
             title: title,
-            subtitle: json["subtitle"] as? String,
+            subtitle: OPDS2LocalizedText.resolve(json["subtitle"]),
             modified: (json["modified"] as? String)?.dateFromISO8601,
             published: (json["published"] as? String)?.dateFromISO8601,
             languages: String.array(from: json["language"]),
