@@ -9,23 +9,6 @@ import RealmSwiftGaps
 import SwiftUtilities
 import LakeKit
 
-#if DEBUG
-public typealias ReaderContentVideoMakerOpenAction = @MainActor (_ contents: [any ReaderContentProtocol]) -> Void
-
-private struct ReaderContentVideoMakerOpenActionKey: EnvironmentKey {
-    static let defaultValue: ReaderContentVideoMakerOpenAction? = nil
-}
-
-public extension EnvironmentValues {
-    var readerContentVideoMakerOpenAction: ReaderContentVideoMakerOpenAction? {
-        get { self[ReaderContentVideoMakerOpenActionKey.self] }
-        set { self[ReaderContentVideoMakerOpenActionKey.self] = newValue }
-    }
-}
-#endif
-
-
-
 public func readerContentListSeparatedRowScrollAnchorID(_ contentID: String) -> String {
     "reader-content-list-section-\(contentID)"
 }
@@ -1061,10 +1044,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     let scrollTargetID: String?
 
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
-#if DEBUG
-    @Environment(\.readerContentVideoMakerOpenAction) private var readerContentVideoMakerOpenAction
-#endif
-
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     @State private var groupedSections: [ReaderContentGroupingSection<C>] = []
@@ -1120,28 +1099,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     private var multiSelectionBinding: Binding<Set<String>> {
         externalMultiSelection ?? $internalMultiSelection
     }
-
-#if DEBUG
-    private var selectedVideoMakerContents: [C] {
-        viewModel.filteredContents.filter {
-            multiSelection.contains($0.compoundKey) && $0.hasTranscriptTracerVideoSource
-        }
-    }
-
-    private var showsVideoMakerToolbarMenu: Bool {
-        guard readerContentVideoMakerOpenAction != nil else { return false }
-        guard !selectedVideoMakerContents.isEmpty else { return false }
-#if os(iOS)
-        return allowEditing && editMode?.wrappedValue != .inactive
-#else
-        return true
-#endif
-    }
-
-    private var makeSelectedVideoTitle: String {
-        selectedVideoMakerContents.count == 1 ? "Make Video" : "Make Videos"
-    }
-#endif
 
     private var showsHeaderSection: Bool {
         !rendersHeaderViewInSectionHeader && Header.self != EmptyView.self
@@ -1418,11 +1375,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     deletionToolbarButtonView
                 }
 #endif
-#if DEBUG
-                ToolbarItem(placement: videoMakerToolbarPlacement) {
-                    videoMakerToolbarMenu
-                }
-#endif
             }
             .onChange(of: multiSelection) { newSelection in
 #if os(iOS)
@@ -1517,34 +1469,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             .opacity(isDeletionToolbarButtonDisabled ? 0.45 : 1)
         }
     }
-
-#if DEBUG
-    private var videoMakerToolbarPlacement: ToolbarItemPlacement {
-#if os(macOS)
-        .automatic
-#else
-        .topBarTrailing
-#endif
-    }
-
-    @ViewBuilder
-    private var videoMakerToolbarMenu: some View {
-        if showsVideoMakerToolbarMenu, let readerContentVideoMakerOpenAction {
-            Menu {
-                Button {
-                    readerContentVideoMakerOpenAction(
-                        selectedVideoMakerContents.map { $0 as any ReaderContentProtocol }
-                    )
-                } label: {
-                    Label(makeSelectedVideoTitle, systemImage: "film")
-                }
-            } label: {
-                Label("More Options", systemImage: "ellipsis")
-                    .labelStyle(.iconOnly)
-            }
-        }
-    }
-#endif
 
     @ViewBuilder
     private var contentSectionHeader: some View {

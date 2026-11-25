@@ -534,10 +534,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     @Environment(\.readerContentCellAnnotationStatusUpdates) private var readerContentCellAnnotationStatusUpdates
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
     @Environment(\.controlSize) private var controlSize
-#if DEBUG
-    @Environment(\.readerContentVideoMakerOpenAction) private var readerContentVideoMakerOpenAction
-#endif
-
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
@@ -804,19 +800,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         item.hasAudio
     }
 
-#if DEBUG
-    @ViewBuilder
-    private var videoMakerMenuItem: some View {
-        if let readerContentVideoMakerOpenAction, item.hasTranscriptTracerVideoSource {
-            Button {
-                readerContentVideoMakerOpenAction([item])
-            } label: {
-                Label("Make Video", systemImage: "film")
-            }
-        }
-    }
-#endif
-
     @ViewBuilder
     private var sourceOrAuthorRow: some View {
         if appearance.isEbookStyle, let author = bookAuthorText {
@@ -988,9 +971,6 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             Divider()
         }
         AnyView(self.item.bookmarkButtonView(iconOnly: false))
-#if DEBUG
-        videoMakerMenuItem
-#endif
         if let customMenuOptions {
             customMenuOptions(self.item)
         }
