@@ -9,6 +9,7 @@ import Combine
 import RealmSwift
 @testable import SwiftUIWebView
 @testable import LakeOfFireContent
+import LakeOfFireFiles
 @testable import LakeOfFireReader
 
 private actor ReaderCallbackGate {
@@ -332,6 +333,293 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         let pendingAttribute = try await webView.evaluateJavaScript("document.documentElement.hasAttribute('data-mnb-font-pending')")
         XCTAssertEqual(pendingAttribute as? Bool, false)
         withExtendedLifetime((fixture, nativeFixture, webView)) {}
+    }
+
+    func testSavedHTTPSReaderWaitsForSelectedFontBeforeRevealing() async throws {
+        try await exerciseSavedHTTPSReaderFirstPaint(.selectedFont)
+    }
+
+    func testSavedHTTPSReaderRevealsAtDeadlineAndStaysVisibleWhenFontArrives() async throws {
+        try await exerciseSavedHTTPSReaderFirstPaint(.stalledProvider)
+    }
+
+    func testSavedHTTPSReaderDeadlineSettlesRetiredRootWithoutChangingSuccessor() async throws {
+        try await exerciseSavedHTTPSReaderFirstPaint(.retiredRoot)
+    }
+
+    func testSavedHTTPSReaderNavigationFinishWaitsForDeadlineWhenFontProviderReturnsNoCSS() async throws {
+        try await exerciseSavedHTTPSReaderFirstPaint(.missingStylesheet)
+    }
+
+    private enum SavedHTTPSReaderFirstPaintCase: Equatable {
+        case selectedFont, stalledProvider, retiredRoot, missingStylesheet
+    }
+
+    private func exerciseSavedHTTPSReaderFirstPaint(_ testCase: SavedHTTPSReaderFirstPaintCase) async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let handler = fixture.handler
+        let mode = fixture.readerModeViewModel
+        let reader = fixture.readerContent
+        let url = try XCTUnwrap(URL(string: "https://example.invalid/saved-reader-font"))
+        let html = """
+            <html style="--mnb-content-font: system-ui"><body style="--mnb-content-font: system-ui">
+            <div id="reader-content"><p style="font-family: var(--mnb-content-font)">日本語の文章。</p></div>
+            </body></html>
+            """
+        let (realm, row) = try cachedHistoryRecord(url: url)
+        try realm.write {
+            row.title = "Saved Reader font"
+            row.html = html
+            row.isReaderModeByDefault = true
+            row.rssContainsFullContent = true
+        }
+        reader.pageURL = url
+        reader.content = row
+        reader.isRenderingReaderHTML = true
+        mode.navigator = handler.navigator
+        mode.readabilityContent = html
+        mode.readerPublicationDateLoader = { _ in nil }
+        mode.sharedReaderFontAsset = SharedReaderFontAsset(
+            systemFontNames: ["YuKyokasho": "YuKyo-Medium", "YuKyokasho Yoko": "YuKyo_Yoko-Medium"],
+            horizontalFamilyName: "YuKyokasho",
+            verticalFamilyName: "YuKyokasho Yoko",
+            enablesRuntimeResourceDelivery: true
+        )
+        let css = Data("@font-face { font-family: 'YuKyokasho'; src: local('YuKyo-Medium'); }".utf8)
+            .base64EncodedString()
+        let providerGate = ReaderCallbackGate()
+        let providerStarted = testCase == .missingStylesheet
+            ? XCTestExpectation(description: "Optional provider returns no stylesheet")
+            : expectation(description: "Shared font provider entered")
+        mode.sharedFontCSSBase64Provider = {
+            if testCase == .missingStylesheet { return nil }
+            providerStarted.fulfill()
+            if testCase == .stalledProvider { await providerGate.wait() }
+            return css
+        }
+        var generatedHTML: Data?
+        mode.processHTMLBytes = { bytes, _ in
+            await MainActor.run { generatedHTML = Data(bytes) }
+            return bytes
+        }
+        defer {
+            mode.readerPublicationDateLoader = nil
+            mode.processHTMLBytes = nil
+            mode.sharedFontCSSBase64Provider = nil
+            withExtendedLifetime(realm) {}
+        }
+        mode.showReaderView(readerContent: reader, scriptCaller: handler.scriptCaller)
+        await mode.waitForReaderModeRender(for: url)
+        let generated = try XCTUnwrap(generatedHTML)
+        XCTAssertEqual(handler.navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+
+        var state = WebViewState.empty
+        state.pageURL = url
+        handler.readerViewModel.state = state
+        let loaded = expectation(description: "Generated HTTPS Reader loaded")
+        let pending = expectation(description: "Native Reader receives font-pending state")
+        let ready = testCase == .retiredRoot
+            ? XCTestExpectation(description: "Retired document does not settle the Reader")
+            : expectation(description: "Native Reader receives ready state")
+        let messageHandlers = ReaderMessageHandlers(
+            forceReaderModeWhenAvailable: false,
+            scriptCaller: handler.scriptCaller,
+            readerViewModel: handler.readerViewModel,
+            readerModeViewModel: mode,
+            readerContent: reader,
+            navigator: handler.navigator,
+            hideNavigationDueToScroll: .constant(false),
+            showOriginalWillBeginHandler: nil,
+            navigationVisibilityWillChangeHandler: nil,
+            colorScheme: .light
+        )
+        defer { withExtendedLifetime(messageHandlers) {} }
+        let receive = try XCTUnwrap(messageHandlers.webViewMessageHandlers.handlers["readerDocState"])
+        let nativeFixture = ReaderGeneratedReadinessFixture(
+            html: generated, loaded: loaded, pending: pending, ready: ready,
+            receive: receive, nativeIsReady: { handler.readerViewModel.state.hasReaderRenderReady }
+        )
+        let controller = WKUserContentController()
+        controller.add(nativeFixture, name: "readerDocState")
+        var script = ReaderDocStateUserScript().userScript
+        controller.addUserScript(script.webKitUserScript)
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController = controller
+        configuration.websiteDataStore = .nonPersistent()
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 430, height: 932), configuration: configuration)
+        webView.navigationDelegate = nativeFixture
+        let owner = UUID()
+#if os(iOS)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        weak var previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let host = UIViewController()
+        host.view.frame = webView.frame
+        host.view.addSubview(webView)
+        window.rootViewController = host
+        window.frame = webView.frame
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+#endif
+        defer {
+            _ = handler.scriptCaller.clearBinding(ownedBy: owner)
+            webView.stopLoading()
+            webView.navigationDelegate = nil
+            controller.removeScriptMessageHandler(forName: "readerDocState")
+            nativeFixture.stop()
+#if os(iOS)
+            webView.removeFromSuperview()
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKeyAndVisible()
+#endif
+        }
+        webView.load(generated, mimeType: "text/html", characterEncodingName: "UTF-8", baseURL: url)
+        await fulfillment(of: [loaded, pending], timeout: 10)
+        let initialOpacity = try await webView.evaluateJavaScript("getComputedStyle(document.body).opacity")
+        XCTAssertEqual(initialOpacity as? String, "0")
+        XCTAssertFalse(handler.readerViewModel.state.hasReaderRenderReady)
+
+        // Keep the actual WebKit stylesheet load and visibility checks. Supply
+        // deterministic face settlement on systems without the optional font.
+        _ = try await webView.evaluateJavaScript("""
+            document.fonts.load = async (descriptor, text) => {
+                window.firstPaintFontProbe = {
+                    descriptor,
+                    text,
+                    stylesheetLoaded: !!document.getElementById('mnb-custom-fonts-inline')?.sheet,
+                    opacity: getComputedStyle(document.body).opacity,
+                    fontStack: getComputedStyle(document.querySelector('#reader-content p')).fontFamily
+                }
+                return [{ status: 'loaded' }]
+            }
+            """)
+        if testCase == .retiredRoot {
+            _ = try await webView.evaluateJavaScript("""
+                (() => {
+                    // With no href this real link cannot complete a CSS load.
+                    const link = document.createElement('link')
+                    link.id = 'mnb-custom-fonts-inline'
+                    link.rel = 'stylesheet'
+                    document.head.appendChild(link)
+                    const add = link.addEventListener.bind(link)
+                    const remove = link.removeEventListener.bind(link)
+                    window.oldFontLinkListeners = new Map()
+                    link.addEventListener = (type, listener, options) => {
+                        window.oldFontLinkListeners.set(type, listener)
+                        add(type, listener, options)
+                    }
+                    link.removeEventListener = (type, listener, options) => {
+                        if (window.oldFontLinkListeners.get(type) === listener) window.oldFontLinkListeners.delete(type)
+                        remove(type, listener, options)
+                    }
+                })()
+                """)
+        }
+        handler.scriptCaller.installBinding(
+            ownedBy: owner,
+            asyncCaller: { source, arguments, frame, world in
+                let result = try await webView.callAsyncJavaScript(
+                    source, arguments: arguments?.mapValues { $0 as Any } ?? [:],
+                    in: frame, contentWorld: world ?? .page
+                )
+                return .init(result)
+            },
+            unsafeCaller: nil,
+            snapshotCapture: nil,
+            coordinateOriginInWindow: { nil }
+        )
+        if testCase == .missingStylesheet {
+            XCTAssertTrue(mode.expectsSyntheticReaderLoaderCommit(for: url))
+            try await mode.onNavigationCommitted(
+                readerContent: reader, newState: state,
+                scriptCaller: handler.scriptCaller, navigator: handler.navigator
+            )
+            XCTAssertFalse(mode.expectsSyntheticReaderLoaderCommit(for: url))
+            await mode.onNavigationFinished(newState: state, scriptCaller: handler.scriptCaller)
+            XCTAssertTrue(mode.isReaderModeLoadPending(for: url))
+            XCTAssertTrue(mode.isReaderModeLoading)
+            XCTAssertTrue(reader.isRenderingReaderHTML)
+
+            await fulfillment(of: [ready], timeout: 5)
+            await nativeFixture.drainMessages()
+            XCTAssertTrue(handler.readerViewModel.state.hasReaderRenderReady)
+            XCTAssertFalse(mode.isReaderModeLoadPending(for: url))
+            XCTAssertFalse(mode.isReaderModeLoading)
+            XCTAssertFalse(reader.isRenderingReaderHTML)
+            return
+        }
+        let injection = Task { @MainActor in
+            await mode.injectSharedFontIfNeeded(scriptCaller: handler.scriptCaller, pageURL: url)
+        }
+        if testCase == .retiredRoot {
+            await fulfillment(of: [providerStarted], timeout: 5)
+            await injection.value
+            let result = try await webView.callAsyncJavaScript("""
+                const oldRoot = document.documentElement
+                const waitInstalled = window.oldFontLinkListeners.has('load')
+                    && window.oldFontLinkListeners.has('error')
+                const successor = document.createElement('html')
+                successor.dataset.mnbFontFirstPaint = 'pending'
+                successor.dataset.mnbFontPending = '1'
+                successor.dataset.mnbFontReady = '0'
+                const notified = new Promise(resolve => {
+                    const timeout = setTimeout(() => resolve(false), 2500)
+                    oldRoot.addEventListener('manabi-reader-font-first-paint-settled', () => {
+                        clearTimeout(timeout)
+                        resolve(true)
+                    }, { once: true })
+                })
+                document.replaceChild(successor, oldRoot)
+                const oldRootNotified = await notified
+                await new Promise(resolve => setTimeout(resolve, 0))
+                return {
+                    waitInstalled,
+                    oldRootNotified,
+                    listenersRemoved: window.oldFontLinkListeners.size === 0,
+                    oldFlagsIntact: oldRoot.dataset.mnbFontFirstPaint === 'pending'
+                        && oldRoot.dataset.mnbFontPending === '1' && oldRoot.dataset.mnbFontReady === '0',
+                    successorFlagsIntact: successor.dataset.mnbFontFirstPaint === 'pending'
+                        && successor.dataset.mnbFontPending === '1' && successor.dataset.mnbFontReady === '0'
+                }
+                """, arguments: [:], in: nil, contentWorld: .page)
+            let finalState = try XCTUnwrap(result as? [String: Bool])
+            XCTAssertEqual(finalState, [
+                "waitInstalled": true, "oldRootNotified": true, "listenersRemoved": true,
+                "oldFlagsIntact": true, "successorFlagsIntact": true,
+            ])
+            return
+        }
+        await fulfillment(of: [providerStarted, ready], timeout: 5)
+        await providerGate.release()
+        await injection.value
+        await nativeFixture.drainMessages()
+
+        if testCase == .selectedFont {
+            let result = try await webView.evaluateJavaScript("window.firstPaintFontProbe")
+            let probe = try XCTUnwrap(result as? [String: Any])
+            XCTAssertEqual(probe["descriptor"] as? String, "1em 'YuKyokasho'")
+            XCTAssertEqual(probe["text"] as? String, "日本語")
+            XCTAssertEqual(probe["stylesheetLoaded"] as? Bool, true)
+            XCTAssertEqual(probe["opacity"] as? String, "0")
+            XCTAssertTrue((probe["fontStack"] as? String)?.contains("YuKyokasho") == true)
+        }
+        XCTAssertTrue(handler.readerViewModel.state.hasReaderRenderReady)
+        XCTAssertFalse(mode.isReaderModeLoadPending(for: url))
+        XCTAssertFalse(reader.isRenderingReaderHTML)
+        mode.sharedFontCSSBase64 = css
+        await mode.injectSharedFontIfNeeded(scriptCaller: handler.scriptCaller, pageURL: url)
+        let result = try await webView.evaluateJavaScript("""
+            ({
+                visible: Number(getComputedStyle(document.body).opacity) > 0,
+                pending: document.documentElement.hasAttribute('data-mnb-font-pending'),
+                installed: !!document.getElementById('mnb-custom-fonts-inline')
+            })
+            """)
+        let finalState = try XCTUnwrap(result as? [String: Bool])
+        XCTAssertEqual(finalState, ["visible": true, "pending": false, "installed": true])
     }
 
     private func cachedHistoryRecord(url: URL) throws -> (Realm, HistoryRecord) {

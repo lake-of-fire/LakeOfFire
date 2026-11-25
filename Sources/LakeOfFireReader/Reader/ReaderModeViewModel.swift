@@ -306,6 +306,28 @@ private func readerModeSharedFontCSSWithVerticalAlias(_ css: String) -> String {
     return yokoCSS == css ? css : css + "\n" + yokoCSS
 }
 
+private func armReaderFontFirstPaint(in doc: SwiftSoup.Document, horizontalFamily: String) throws -> Bool {
+    guard let root = try doc.select("html").first(), let head = doc.head(), let body = doc.body() else { return false }
+    let fontValues = readerFontCSSValues(horizontalFamily: horizontalFamily)
+    let fontStyle = [
+        "--mnb-content-font": fontValues.horizontalCSSValue,
+        "--mnb-content-vertical-font": fontValues.verticalCSSValue,
+    ]
+    for element in [root, body] {
+        try element.attr("style", readerModeStyleDeclaration(
+            try element.attr("style"),
+            additions: fontStyle
+        ))
+    }
+    let style = try doc.createElement("style")
+    try style.text(#"html[data-mnb-font-first-paint="pending"] body { opacity: 0 !important; }"#)
+    try head.appendChild(style)
+    try root.attr("data-mnb-font-pending", "1")
+    try root.attr("data-mnb-font-ready", "0")
+    try root.attr("data-mnb-font-first-paint", "pending")
+    return true
+}
+
 internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) throws {
     let gateCSS = """
     html[data-mnb-font-pending="1"] body.readability-mode {
@@ -1682,6 +1704,7 @@ public class ReaderModeViewModel: ObservableObject {
         let accountSession: AccountSessionSnapshot?
         let accountBoundaryID: AccountSessionBoundaryID?
         var contentIsCurrent: (@MainActor () -> Bool)? = nil
+        var awaitsFontFirstPaint = false
     }
 
     private struct ActiveRender {
@@ -1878,6 +1901,10 @@ public class ReaderModeViewModel: ObservableObject {
         if expectedMatches {
             publishSyntheticReaderLoaderExpectation(for: nil)
         }
+        if completedRenderOwner?.key == canonicalRenderKey(canonicalURL),
+           completedRenderOwner?.generation == renderGeneration {
+            completedRenderOwner?.awaitsFontFirstPaint = false
+        }
         markReaderModeLoadComplete(for: canonicalURL)
         return true
     }
@@ -1944,6 +1971,17 @@ public class ReaderModeViewModel: ObservableObject {
             return true
         }
         return false
+    }
+
+    private func managedFirstPaintFontFamily(for pageURL: URL) -> String? {
+        let family = readerFontFamilyName
+        guard let scheme = pageURL.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let asset = sharedReaderFontAsset, asset.enablesRuntimeResourceDelivery,
+              asset.supportsFamily(family), asset.systemFontNames[family] != nil,
+              sharedFontCSSBase64Provider != nil || sharedFontCSSBase64?.isEmpty == false else {
+            return nil
+        }
+        return family
     }
 
     private func evaluateReaderDocumentJavaScript(
@@ -2159,16 +2197,18 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         let fontHash = blobPayload.identity
+        let blobFontValues = readerFontCSSValues(horizontalFamily: readerFontFamilyName)
         let js = """
             (function() {
+                const root = document.documentElement
+                if (!root) return
                 const postLog = (_message) => {};
                 const isLoaderShellDocument = () => {
                     const href = window.location.href || '';
                     return href.startsWith('internal://local/load/reader');
                 };
                 const setFontPendingState = (pending) => {
-                    const root = document.documentElement;
-                    if (!root) return;
+                    if (root !== document.documentElement || root.dataset.mnbFontFirstPaint !== undefined) return
                 if (pending) {
                     root.dataset.mnbFontPending = '1';
                     root.dataset.mnbFontReady = '0';
@@ -2254,8 +2294,53 @@ public class ReaderModeViewModel: ObservableObject {
                     } catch (_) {}
                 }
             };
+            const currentSelectedFamily = () => {
+                const direction = document.body?.dataset.mnbWritingDirection || root.dataset.mnbWritingDirection
+                return direction === 'vertical' ? root.dataset.mnbVerticalFontFamily : root.dataset.mnbHorizontalFontFamily
+            }
+            const revealOnSelectedFont = async (style) => {
+                if (root.dataset.mnbFontFirstPaint !== 'pending') return
+                const family = currentSelectedFamily()
+                const ownsFirstPaint = () =>
+                    root === document.documentElement
+                    && root.dataset.mnbFontFirstPaint === 'pending'
+                    && style === document.getElementById('mnb-custom-fonts-inline')
+                    && family === currentSelectedFamily()
+                const settledEvent = 'manabi-reader-font-first-paint-settled'
+                let finishFirstPaint
+                const firstPaintSettled = new Promise(resolve => {
+                    finishFirstPaint = () => resolve(false)
+                    root.addEventListener(settledEvent, finishFirstPaint)
+                })
+                let finishStylesheet
+                let failStylesheet
+                const selectedFontIsReady = async () => {
+                    if (!style || !family || !ownsFirstPaint() || typeof document.fonts?.load !== 'function') return false
+                    if (style.tagName === 'LINK' && !style.sheet) {
+                        const stylesheetLoaded = await new Promise(resolve => {
+                            finishStylesheet = () => resolve(true)
+                            failStylesheet = () => resolve(false)
+                            style.addEventListener('load', finishStylesheet, { once: true })
+                            style.addEventListener('error', failStylesheet, { once: true })
+                        })
+                        if (!stylesheetLoaded) return false
+                    }
+                    if (!ownsFirstPaint()) return false
+                    const faces = await document.fonts.load("1em '" + family + "'", '日本語')
+                    return faces.some(face => face.status === 'loaded')
+                }
+                try {
+                    if (await Promise.race([selectedFontIsReady(), firstPaintSettled]) && ownsFirstPaint()) {
+                        (\(releaseReaderFontFirstPaintJavaScript))(root)
+                    }
+                } finally {
+                    root.removeEventListener(settledEvent, finishFirstPaint)
+                    if (finishStylesheet) style.removeEventListener('load', finishStylesheet)
+                    if (failStylesheet) style.removeEventListener('error', failStylesheet)
+                    failStylesheet?.()
+                }
+            }
             return (async () => {
-                const root = document.documentElement;
                 const horizontalFamily =
                     typeof horizontalFontFamily !== 'undefined'
                     ? horizontalFontFamily
@@ -2283,7 +2368,7 @@ public class ReaderModeViewModel: ObservableObject {
                     || globalThis.manabiHorizontalFontFamilyName
                     || null);
                 setFontPendingState(true);
-                scheduleGateTimeout();
+                if (root.dataset.mnbFontFirstPaint === undefined) scheduleGateTimeout()
                 let style = ensureReaderFontStyle(desiredFamily);
                 if (!style) {
                     const css = atob(fontCSSBase64);
@@ -2309,6 +2394,10 @@ public class ReaderModeViewModel: ObservableObject {
                     document.documentElement?.dataset?.mnbInjectedFontFamily
                     || desiredFamily
                     || null;
+                if (root.dataset.mnbFontFirstPaint !== undefined) {
+                    await revealOnSelectedFont(style)
+                    return
+                }
                 await waitForFontReady(resolvedFamily);
                 if (gateTimeout) {
                     clearTimeout(gateTimeout);
@@ -2332,8 +2421,8 @@ public class ReaderModeViewModel: ObservableObject {
             arguments: [
                 "fontCSSBase64": blobPayload.base64CSS,
                 "fontHash": fontHash,
-                "horizontalFontFamily": fontValues.horizontalFamily,
-                "verticalFontFamily": fontValues.verticalFamily,
+                "horizontalFontFamily": blobFontValues.horizontalFamily,
+                "verticalFontFamily": blobFontValues.verticalFamily,
             ],
             duplicateInMultiTargetFrames: true,
             scriptCaller: scriptCaller,
@@ -2558,6 +2647,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func recordOwnedHTMLDispatch(
         for url: URL, generation: UUID,
+        awaitsFontFirstPaint: Bool = false,
         contentIsCurrent: @escaping @MainActor () -> Bool
     ) {
         guard isCurrentRender(for: url, generation: generation) else { return }
@@ -2567,7 +2657,7 @@ public class ReaderModeViewModel: ObservableObject {
         completedRenderOwner = CompletedRenderOwner(
             key: key, generation: generation,
             accountSession: render.accountSession, accountBoundaryID: render.accountBoundaryID,
-            contentIsCurrent: contentIsCurrent
+            contentIsCurrent: contentIsCurrent, awaitsFontFirstPaint: awaitsFontFirstPaint
         )
     }
 
@@ -3478,6 +3568,12 @@ public class ReaderModeViewModel: ObservableObject {
                 in: doc,
                 renderGeneration: frameInfo?.isMainFrame == false ? nil : renderGeneration
             )
+            let awaitsFontFirstPaint: Bool
+            if frameInfo?.isMainFrame != false, let family = await managedFirstPaintFontFamily(for: url) {
+                awaitsFontFirstPaint = (try? armReaderFontFirstPaint(in: doc, horizontalFamily: family)) == true
+            } else {
+                awaitsFontFirstPaint = false
+            }
 
             let expectedNativeContentFingerprint =
                 (try? doc.body()?.attr("data-mnb-native-sidecar-content-fingerprint")) ?? ""
@@ -3700,7 +3796,10 @@ public class ReaderModeViewModel: ObservableObject {
                         retireRender(forKey: canonicalRenderKey(requestedURL), ifOwnedBy: renderGeneration)
                         return
                     }
-                    recordOwnedHTMLDispatch(for: requestedURL, generation: renderGeneration) { [weak self, weak readerContent] in
+                    recordOwnedHTMLDispatch(
+                        for: requestedURL, generation: renderGeneration,
+                        awaitsFontFirstPaint: awaitsFontFirstPaint
+                    ) { [weak self, weak readerContent] in
                         guard let self, let readerContent else { return false }
                         return selectionIsCurrent() && !content.isInvalidated
                             && urlsMatchWithoutHashForHotfix(requestedURL, readerContent.pageURL)
@@ -4082,6 +4181,17 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func navigationFinishedDeferral(newState: WebViewState) -> NavigationFinishedDeferral? {
         guard let pendingReaderModeURL else { return nil }
+
+        if pendingKeysMatch(pendingReaderModeURL, newState.pageURL),
+           let renderOwner = completedRenderOwner,
+           renderOwner.key == canonicalRenderKey(newState.pageURL),
+           renderOwner.awaitsFontFirstPaint,
+           renderOwner.contentIsCurrent?() == true,
+           preparedReaderNavigationIsCurrent() {
+            // WebKit can finish before the selected face or the document's
+            // fallback deadline. Only the exact render-ready receipt settles it.
+            return .pending
+        }
 
         if newState.pageURL.isReaderURLLoaderURL {
             let pageMatchesPending = pendingKeysMatch(pendingReaderModeURL, newState.pageURL)
