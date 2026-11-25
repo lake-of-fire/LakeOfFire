@@ -1550,6 +1550,7 @@ public class ReaderModeViewModel: ObservableObject {
     public var defaultFontSize: Double?
     /// In-memory presentation state supplied by the app's settings owner.
     public var readerFontFamilyName = "YuKyokasho"
+    public var readerFontAvailabilityRevisionProvider: @MainActor () -> UInt64 = { 0 }
     @Published public var sharedFontCSSBase64: String?
     @Published public var sharedFontCSSBase64Provider: (() async -> String?)?
     @Published public var sharedReaderFontAsset: SharedReaderFontAsset?
@@ -1984,6 +1985,172 @@ public class ReaderModeViewModel: ObservableObject {
         return scriptCaller.currentJavaScriptBindingToken == bindingToken
     }
 
+    private struct ManagedFontRequest: Equatable {
+        let binding: WebViewScriptCaller.JavaScriptBindingToken
+        let revision: UInt64
+        let asset: SharedReaderFontAsset
+    }
+
+    private var managedFontDocumentBinding: WebViewScriptCaller.JavaScriptBindingToken?
+    private var managedFontRequest: ManagedFontRequest?
+
+    func bindManagedFontsToPreparedReaderDocument(
+        pageURL: URL, scriptCaller: WebViewScriptCaller, navigator: WebViewNavigator
+    ) {
+        let binding: WebViewScriptCaller.JavaScriptBindingToken?
+        if let navigation = expectedSyntheticReaderNavigation,
+           navigation.navigator === navigator,
+           navigator.isCurrent(navigation.intent),
+           urlsMatchWithoutHashForHotfix(navigation.url, pageURL) {
+            binding = scriptCaller.currentJavaScriptBindingToken
+        } else {
+            binding = nil
+        }
+        if managedFontDocumentBinding != binding {
+            managedFontDocumentBinding = binding
+            managedFontRequest = nil
+        }
+    }
+
+    public func refreshManagedFontsInSyntheticReaderDocument(
+        scriptCaller: WebViewScriptCaller, pageURL: URL,
+        requiring binding: WebViewScriptCaller.JavaScriptBindingToken
+    ) async {
+        guard binding == managedFontDocumentBinding,
+              scriptCaller.currentJavaScriptBindingToken == binding else { return }
+        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: pageURL, requiring: binding)
+    }
+
+    private func refreshEmbeddedManagedFonts(
+        _ request: ManagedFontRequest,
+        scriptCaller: WebViewScriptCaller,
+        accountIsCurrent: @MainActor () -> Bool
+    ) async {
+        guard managedFontRequest != request else { return }
+        managedFontRequest = request
+        var installed = false
+        defer {
+            if !installed, managedFontRequest == request { managedFontRequest = nil }
+        }
+        let revision = String(request.revision)
+        let styleURL = sharedReaderFontStylesheetURL(
+            for: URL(string: "internal://local/")!, familyName: request.asset.horizontalFamilyName
+        )
+        guard var components = styleURL.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) else { return }
+        components.queryItems = (components.queryItems ?? []) + [.init(name: "revision", value: revision)]
+        guard let sourceURL = components.url else { return }
+        let asset = request.asset
+        let resources = Task.detached(priority: .userInitiated) {
+            guard !Task.isCancelled,
+                  let response = sharedReaderFontResponse(for: sourceURL, asset: asset),
+                  let css = String(data: response.data, encoding: .utf8),
+                  !css.isEmpty else { return nil as (String, [[String: any Sendable]])? }
+            let fonts = sharedReaderFontDocumentResources(asset: asset, sourceURL: sourceURL).map {
+                ["base64": $0.base64, "mimeType": $0.mimeType, "sourceURLs": $0.sourceURLs] as [String: any Sendable]
+            }
+            return (css, fonts)
+        }
+        guard let (css, fonts) = await withTaskCancellationHandler(operation: {
+            await resources.value
+        }, onCancel: { resources.cancel() }),
+              !Task.isCancelled, accountIsCurrent(),
+              managedFontRequest == request,
+              managedFontDocumentBinding == request.binding,
+              sharedReaderFontAsset == request.asset,
+              readerFontAvailabilityRevisionProvider() == request.revision else { return }
+
+        let fontValues = readerFontCSSValues(horizontalFamily: readerFontFamilyName)
+        let routedFamilies = Dictionary(uniqueKeysWithValues: asset.supportedFamilyNames.map {
+            ($0, asset.cssFontFaceFamilyName(for: $0))
+        })
+        installed = (try? await evaluateReaderDocumentJavaScript(
+            """
+            const root = document.documentElement;
+            if (!root) return false;
+            const prior = globalThis.manabiReaderEmbeddedFontResources;
+            if (prior?.root === root && BigInt(prior.revision) > BigInt(fontRevision)) return false;
+            const urls = [];
+            let css = stylesheet;
+            try {
+                for (const font of fonts) {
+                    const bytes = Uint8Array.from(atob(font.base64), byte => byte.charCodeAt(0));
+                    const url = URL.createObjectURL(new Blob([bytes], { type: font.mimeType }));
+                    urls.push(url);
+                    for (const source of font.sourceURLs) {
+                        const fragment = source.indexOf('#');
+                        css = css.replaceAll(source, fragment < 0 ? url : url + source.slice(fragment));
+                    }
+                }
+                const href = URL.createObjectURL(new Blob([css], { type: 'text/css' }));
+                urls.push(href);
+                const previousStyle = document.getElementById('mnb-custom-fonts-inline');
+                const previousLegacyBlob = globalThis.manabiReaderFontCSSBlobURL;
+                const style = document.createElement('link');
+                style.id = 'mnb-custom-fonts-inline';
+                style.rel = 'stylesheet';
+                style.href = href;
+                style.dataset.mnbFontSource = 'managed-blob';
+                style.dataset.mnbFontRevision = fontRevision;
+                const installation = { root, revision: fontRevision, urls };
+                const ownsStyle = () => globalThis.manabiReaderEmbeddedFontResources === installation
+                    && document.documentElement === root && style.isConnected;
+                style.addEventListener('load', async () => {
+                    if (!ownsStyle()) return;
+                    const family = routedFamilies[root.dataset.mnbInjectedFontFamily];
+                    if (family && document.fonts?.load) {
+                        try { await document.fonts.load('1em ' + JSON.stringify(family), '日本語'); } catch (_) {}
+                    }
+                    if (!ownsStyle()) return;
+                    try { globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('managed-font-refresh'); } catch (_) {}
+                    window.dispatchEvent(new Event('resize'));
+                }, { once: true });
+                const setFamily = family => {
+                    const selected = family || horizontalFamily;
+                    style.dataset.mnbInjectedFontFamily = selected;
+                    root.dataset.mnbInjectedFontFamily = selected;
+                    return style;
+                };
+                globalThis.manabiHorizontalFontFamilyName = horizontalFamily;
+                globalThis.manabiVerticalFontFamilyName = verticalFamily;
+                root.dataset.mnbHorizontalFontFamily = horizontalFamily;
+                root.dataset.mnbVerticalFontFamily = verticalFamily;
+                for (const element of [root, document.body]) {
+                    element?.style.setProperty('--mnb-content-font', horizontalCSS);
+                    element?.style.setProperty('--mnb-content-vertical-font', verticalCSS);
+                }
+                setFamily(document.body?.dataset.mnbWritingDirection === 'vertical'
+                    ? verticalFamily : horizontalFamily);
+                if (previousStyle) previousStyle.replaceWith(style);
+                else (document.head || root).appendChild(style);
+                globalThis.manabiReaderEmbeddedFontResources = installation;
+                globalThis.manabiReaderFontCSSBlobURL = href;
+                globalThis.manabiReaderFontCSSText = css;
+                globalThis.manabiReaderFontInjectionMode = 'managed-blob';
+                globalThis.manabiEnsureReaderFontStyle = setFamily;
+                root.dataset.mnbFontInjected = '1';
+                for (const previousURL of prior?.urls ?? []) URL.revokeObjectURL(previousURL);
+                if (!prior && previousStyle?.href === previousLegacyBlob && previousLegacyBlob) {
+                    URL.revokeObjectURL(previousLegacyBlob);
+                }
+                try { globalThis.manabiApplyDirectionalInjectedFont?.(); } catch (_) {}
+                return true;
+            } catch (_) {
+                for (const url of urls) URL.revokeObjectURL(url);
+                return false;
+            }
+            """,
+            arguments: [
+                "stylesheet": css, "fonts": fonts, "fontRevision": revision,
+                "horizontalFamily": fontValues.horizontalFamily, "verticalFamily": fontValues.verticalFamily,
+                "routedFamilies": routedFamilies,
+                "horizontalCSS": asset.cssFontFamilyList(for: fontValues.horizontalFamily),
+                "verticalCSS": asset.cssFontFamilyList(for: fontValues.verticalFamily),
+            ],
+            scriptCaller: scriptCaller,
+            requiring: request.binding
+        )) as? Bool == true
+    }
+
     func injectSharedFontIfNeeded(
         scriptCaller: WebViewScriptCaller,
         pageURL: URL,
@@ -2015,6 +2182,7 @@ public class ReaderModeViewModel: ObservableObject {
                     const root = document.documentElement;
                     if (!root) return;
                     if (pending) {
+                        if (root.dataset.mnbFontReady === '1') return;
                         root.dataset.mnbFontPending = '1';
                         root.dataset.mnbFontReady = '0';
                     } else {
@@ -2028,7 +2196,8 @@ public class ReaderModeViewModel: ObservableObject {
                 };
                 const resolveInitialStylesheetURL = (desiredFamily) => {
                     const family = desiredFamily || 'YuKyokasho';
-                    return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family));
+                    return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family))
+                        + '&revision=' + encodeURIComponent(fontRevision);
                 };
                 const ensureReaderFontStyle = (desiredFamily) => {
                     const root = document.documentElement;
@@ -2045,7 +2214,7 @@ public class ReaderModeViewModel: ObservableObject {
                         style.rel = 'stylesheet';
                         (document.head || document.documentElement).appendChild(style);
                     }
-                    style.href = stylesheetURL;
+                    if (style.href !== stylesheetURL) style.href = stylesheetURL;
                     style.dataset.mnbInjectedFontFamily = family;
                     style.dataset.mnbFontSource = 'local-scheme';
                     root.dataset.mnbInjectedFontFamily = family;
@@ -2154,6 +2323,7 @@ public class ReaderModeViewModel: ObservableObject {
                     "horizontalFontFamily": fontValues.horizontalFamily,
                     "verticalFontFamily": fontValues.verticalFamily,
                     "routedFontFamilies": routedFontFamilies,
+                    "fontRevision": String(readerFontAvailabilityRevisionProvider()),
                 ],
                 duplicateInMultiTargetFrames: true,
                 scriptCaller: scriptCaller,
@@ -2163,6 +2333,15 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         guard !pageURL.isReaderURLLoaderURL else {
+            return
+        }
+        if let bindingToken, bindingToken == managedFontDocumentBinding,
+           ["http", "https"].contains(pageURL.scheme?.lowercased() ?? ""),
+           let asset = sharedReaderFontAsset, asset.enablesRuntimeResourceDelivery {
+            await refreshEmbeddedManagedFonts(
+                .init(binding: bindingToken, revision: readerFontAvailabilityRevisionProvider(), asset: asset),
+                scriptCaller: scriptCaller, accountIsCurrent: accountIsCurrent
+            )
             return
         }
         guard let blobPayload = readerModeSharedFontBlobPayloadCache.payload(

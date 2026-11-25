@@ -295,6 +295,70 @@ private func sharedReaderFontHTTPResponse(
     )
 }
 
+/// Builds the same face definitions for the local scheme and generated pages.
+/// The source URL carries the current font availability revision.
+private func sharedReaderFontFaceCSS(
+    for sourceURL: URL, asset: SharedReaderFontAsset, requiringFamily requestedFamily: String
+) -> String? {
+    guard let fontURL = sharedReaderFontFontURL(for: sourceURL, asset: asset) else { return nil }
+    var fontFaceRules: [String] = []
+    for supportedFamilyName in asset.supportedFamilyNames {
+        let source: String
+        if asset.enablesRuntimeResourceDelivery {
+            guard let postScriptName = asset.systemFontNames[supportedFamilyName],
+                  let resourceURL = sharedReaderFontFontURL(
+                      for: sourceURL, asset: asset, postScriptName: postScriptName
+                  ),
+                  sharedReaderFontRuntimeResource(postScriptName: postScriptName) != nil else {
+                // A missing vertical face must not hide an installed horizontal
+                // face, but a request for the missing face itself must fail.
+                if supportedFamilyName == requestedFamily { return nil }
+                continue
+            }
+            // Publish only exact installed faces. An unavailable vertical face
+            // must not prevent the horizontal face from being used; requests
+            // for missing faces still fail at the stylesheet or byte endpoint.
+            let formatHint = sharedReaderFontRuntimeResource(postScriptName: postScriptName)
+                .map { " format(\"\($0.format)\")" } ?? ""
+            source = "url(\"\(resourceURL.absoluteString)\")" + formatHint
+        } else if let postScriptName = asset.systemFontNames[supportedFamilyName] {
+            source = "local('\(postScriptName)')"
+        } else {
+            source = "url(\"\(fontURL.absoluteString)\") format(\"\(asset.format)\")"
+        }
+        fontFaceRules.append("""
+        @font-face {
+          font-family: '\(asset.cssFontFaceFamilyName(for: supportedFamilyName))';
+          font-weight: 400 700;
+          font-style: normal;
+          src: \(source);
+          font-display: swap;
+        }
+        """)
+    }
+    return fontFaceRules.joined(separator: "\n")
+}
+
+/// Supplies system-managed font files for a native-generated Reader document.
+/// Each collection is read once even when both faces refer to the same file.
+public func sharedReaderFontDocumentResources(
+    asset: SharedReaderFontAsset, sourceURL: URL
+) -> [(base64: String, mimeType: String, sourceURLs: [String])] {
+    guard asset.enablesRuntimeResourceDelivery else { return [] }
+    var files: [URL: (mimeType: String, sourceURLs: [String])] = [:]
+    for family in asset.supportedFamilyNames {
+        guard let postScriptName = asset.systemFontNames[family],
+              let source = sharedReaderFontFontURL(for: sourceURL, asset: asset, postScriptName: postScriptName),
+              let file = sharedReaderFontRuntimeResource(postScriptName: postScriptName) else { continue }
+        files[file.url, default: (file.mimeType, [])].sourceURLs.append(source.absoluteString)
+    }
+    return files.compactMap { entry -> (base64: String, mimeType: String, sourceURLs: [String])? in
+        let (fileURL, resource) = entry
+        guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else { return nil }
+        return (data.base64EncodedString(), resource.mimeType, resource.sourceURLs)
+    }
+}
+
 public func sharedReaderFontResponse(
     for requestURL: URL,
     asset: SharedReaderFontAsset?
@@ -312,10 +376,10 @@ public func sharedReaderFontResponse(
 
     switch route {
     case .stylesheet(let familyName):
-        let supportsFamily = asset.supportsFamily(familyName)
-        let fontURL = sharedReaderFontFontURL(for: requestURL, asset: asset)
-        guard supportsFamily,
-              let fontURL else {
+        guard asset.supportsFamily(familyName),
+              let fontFaces = sharedReaderFontFaceCSS(
+                  for: requestURL, asset: asset, requiringFamily: familyName
+              ) else {
             let response = sharedReaderFontHTTPResponse(
                 url: requestURL,
                 statusCode: 404,
@@ -325,43 +389,6 @@ public func sharedReaderFontResponse(
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
 
-        // Keep CSS literals and joining on String rather than imported SQL overloads.
-        var fontFaceRules: [String] = []
-        for supportedFamilyName in asset.supportedFamilyNames {
-            let source: String
-            if asset.enablesRuntimeResourceDelivery {
-                guard let postScriptName = asset.systemFontNames[supportedFamilyName],
-                      let resourceURL = sharedReaderFontFontURL(
-                          for: requestURL, asset: asset, postScriptName: postScriptName
-                      ) else {
-                    let response = sharedReaderFontHTTPResponse(
-                        url: requestURL, statusCode: 404, contentType: "text/plain", textEncodingName: "utf-8"
-                    )
-                    return SharedReaderFontServedResponse(response: response, data: Data())
-                }
-                // Publish both logical routes while downloads are in flight.
-                // Each byte request validates its own exact installed face and
-                // returns 404 until ready; an unavailable vertical face must not
-                // prevent the horizontal face from being used.
-                let formatHint = sharedReaderFontRuntimeResource(postScriptName: postScriptName)
-                    .map { " format(\"\($0.format)\")" } ?? ""
-                source = "url(\"\(resourceURL.absoluteString)\")" + formatHint
-            } else if let postScriptName = asset.systemFontNames[supportedFamilyName] {
-                source = "local('\(postScriptName)')"
-            } else {
-                source = "url(\"\(fontURL.absoluteString)\") format(\"\(asset.format)\")"
-            }
-            fontFaceRules.append("""
-            @font-face {
-              font-family: '\(asset.cssFontFaceFamilyName(for: supportedFamilyName))';
-              font-weight: 400 700;
-              font-style: normal;
-              src: \(source);
-              font-display: swap;
-            }
-            """)
-        }
-        let fontFaces = fontFaceRules.joined(separator: "\n")
         let horizontalFontList = asset.cssFontFamilyList(for: asset.horizontalFamilyName)
         let verticalFontList = asset.cssFontFamilyList(for: asset.verticalFamilyName)
         let css = """

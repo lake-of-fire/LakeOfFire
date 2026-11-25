@@ -69,18 +69,40 @@ final class SystemManagedReaderFontTests: XCTestCase {
             systemFontNames: ["YuKyokasho": "Helvetica", "YuKyokasho Yoko": missing],
             horizontalFamilyName: "YuKyokasho", verticalFamilyName: "YuKyokasho Yoko",
             enablesRuntimeResourceDelivery: true)
-        let url = URL(string: "internal://local/manabi-fonts.css?family=YuKyokasho")!
+        let url = URL(string: "internal://local/manabi-fonts.css?family=YuKyokasho&revision=7")!
         let stylesheet = try XCTUnwrap(sharedReaderFontResponse(for: url, asset: asset))
         XCTAssertEqual(stylesheet.response.statusCode, 200)
         let routes = try fontRoutes(in: String(decoding: stylesheet.data, as: UTF8.self))
+        XCTAssertEqual(routes.count, 1, "An unavailable vertical face must not block horizontal delivery")
         let available = try XCTUnwrap(routes.first { $0.fragment == "Helvetica" })
-        let unavailable = try XCTUnwrap(routes.first { $0.fragment == missing })
+        XCTAssertNil(routes.first { $0.fragment == missing })
         let availableResponse = try XCTUnwrap(sharedReaderFontResponse(for: available, asset: asset))
         XCTAssertEqual(availableResponse.response.statusCode, 200)
         XCTAssertFalse(availableResponse.data.isEmpty)
+
+        let verticalStylesheetURL = URL(
+            string: "internal://local/manabi-fonts.css?family=YuKyokasho%20Yoko&revision=7"
+        )!
+        let verticalStylesheet = try XCTUnwrap(
+            sharedReaderFontResponse(for: verticalStylesheetURL, asset: asset)
+        )
+        XCTAssertEqual(verticalStylesheet.response.statusCode, 404)
+        let encodedMissing = Data(missing.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let unavailable = URL(
+            string: "internal://local/manabi-fonts/system-\(encodedMissing)?revision=7#\(missing)"
+        )!
         let unavailableResponse = try XCTUnwrap(sharedReaderFontResponse(for: unavailable, asset: asset))
         XCTAssertEqual(unavailableResponse.response.statusCode, 404)
         XCTAssertTrue(unavailableResponse.data.isEmpty, "CoreText fallback is not the requested font")
+
+        let embedded = sharedReaderFontDocumentResources(asset: asset, sourceURL: url)
+        XCTAssertEqual(embedded.count, 1)
+        let face = try XCTUnwrap(embedded.first)
+        XCTAssertEqual(Data(base64Encoded: face.base64), availableResponse.data)
+        XCTAssertEqual(face.sourceURLs, [available.absoluteString])
     }
 
     @MainActor
