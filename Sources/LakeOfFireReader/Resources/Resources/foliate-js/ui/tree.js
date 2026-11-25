@@ -12,7 +12,7 @@ const createExpanderIcon = () => {
     return svg
 }
 
-const createTOCItemElement = (list, map, onclick) => {
+const createTOCItemElement = (list, map, onclick, onExpansionChanged) => {
     let count = 0
     const makeID = () => `toc-element-${count++}`
     const createItem = ({ label, href, subitems }, depth = 0) => {
@@ -41,7 +41,9 @@ const createTOCItemElement = (list, map, onclick) => {
                 event.preventDefault()
                 event.stopPropagation()
                 const expanded = a.getAttribute('aria-expanded')
+                const focused = document.activeElement
                 a.setAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true')
+                onExpansionChanged(focused)
             }
             a.prepend(expander)
             const ol = document.createElement('ol')
@@ -62,7 +64,7 @@ export const createTOCView = (toc, onclick) => {
     $toc.setAttribute('role', 'tree')
     const list = []
     const map = new Map()
-    const createItem = createTOCItemElement(list, map, onclick)
+    const createItem = createTOCItemElement(list, map, onclick, focused => onExpansionChanged(focused))
     $toc.replaceChildren(...toc.map(item => createItem(item)))
 
     const isTreeItem = item => item?.getAttribute('role') === 'treeitem'
@@ -73,43 +75,53 @@ export const createTOCView = (toc, onclick) => {
         }
     }
 
-    let currentItem, currentVisibleParent
-    $toc.addEventListener('focusout', () => {
-        if (!currentItem) return
-        // reset parent focus from last time
-        if (currentVisibleParent) currentVisibleParent.tabIndex = -1
-        // if current item is visible, let it have the focus
-        if (currentItem.offsetParent) {
-            currentItem.tabIndex = 0
-            return
-        }
-        // current item is hidden; give focus to the nearest visible parent
-        for (const item of getParents(currentItem)) {
-            if (item.offsetParent) {
-                item.tabIndex = 0
-                currentVisibleParent = item
-                break
-            }
-        }
+    let currentItem, tabStop
+    const setTabStop = item => {
+        if (tabStop) tabStop.tabIndex = -1
+        tabStop = item
+        if (tabStop) tabStop.tabIndex = 0
+    }
+    const visibleItemOrParent = item => {
+        if (item?.offsetParent) return item
+        if (item) for (const parent of getParents(item))
+            if (parent.offsetParent) return parent
+        // Keep an entry point even before mounting or while the sidebar is hidden.
+        return list[0]
+    }
+    const updateTabStop = () => {
+        const focused = document.activeElement
+        const item = isTreeItem(focused) && $toc.contains(focused)
+            ? focused : currentItem
+        setTabStop(visibleItemOrParent(item))
+    }
+    const onExpansionChanged = focused => {
+        if (isTreeItem(focused) && $toc.contains(focused) && !focused.offsetParent) {
+            const visible = visibleItemOrParent(focused)
+            setTabStop(visible)
+            // Collapsing a branch must not strand focus on its hidden descendant.
+            if (visible?.offsetParent) visible.focus()
+        } else updateTabStop()
+    }
+    setTabStop(list[0])
+
+    $toc.addEventListener('focusin', ({ target }) => {
+        if (isTreeItem(target)) setTabStop(target)
+    })
+    $toc.addEventListener('focusout', ({ relatedTarget }) => {
+        if (!$toc.contains(relatedTarget))
+            setTabStop(visibleItemOrParent(currentItem))
     })
 
     const setCurrentHref = href => {
+        currentItem?.removeAttribute('aria-current')
+        currentItem = map.get(href)
         if (currentItem) {
-            currentItem.removeAttribute('aria-current')
-            currentItem.tabIndex = -1
+            for (const item of getParents(currentItem))
+                item.setAttribute('aria-expanded', 'true')
+            currentItem.setAttribute('aria-current', 'page')
+            currentItem.scrollIntoView({ behavior: 'smooth', block: 'center' })
         }
-        const el = map.get(href)
-        if (!el) {
-            currentItem = list[0]
-            if (currentItem) currentItem.tabIndex = 0
-            return
-        }
-        for (const item of getParents(el))
-            item.setAttribute('aria-expanded', 'true')
-        el.setAttribute('aria-current', 'page')
-        el.tabIndex = 0
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        currentItem = el
+        updateTabStop()
     }
 
     const acceptNode = node => isTreeItem(node) && node.offsetParent
@@ -138,6 +150,7 @@ export const createTOCView = (toc, onclick) => {
                 if (currentTarget.getAttribute('aria-expanded') === 'true')
                     currentTarget.setAttribute('aria-expanded', 'false')
                 else getParents(currentTarget).next()?.value?.focus()
+                updateTabStop()
                 stop = true
                 break
             case 'ArrowRight':
@@ -145,6 +158,7 @@ export const createTOCView = (toc, onclick) => {
                     getIter(currentTarget).nextNode()?.focus()
                 else if (currentTarget.getAttribute('aria-owns'))
                     currentTarget.setAttribute('aria-expanded', 'true')
+                updateTabStop()
                 stop = true
                 break
             case 'Home':

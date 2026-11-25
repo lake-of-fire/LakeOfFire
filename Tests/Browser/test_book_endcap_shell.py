@@ -174,6 +174,38 @@ class BookEndcapShellTests(unittest.TestCase):
         # Reverse registration closes the browser before its Playwright runtime.
         cls.addClassCleanup(cls.browser.close)
 
+    def test_sidebar_marks_relocated_chapter_and_its_only_tab_stop(self):
+        page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:location.origin+"/fixture.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        page.evaluate('reader.view.goTo(reader.view.book.toc[1].href)')
+        wait_for_reader(page, """reader.view.lastLocation?.tocItem?.href === reader.view.book.toc[1].href
+            && document.querySelectorAll('#toc-view [role="treeitem"]').length === 2""")
+        self.assertTrue(page.evaluate('reader.openSideBar()'))
+        current = page.locator('#toc-view [aria-current="page"]')
+        tab_stop = page.locator('#toc-view [role="treeitem"][tabindex="0"]')
+        self.assertEqual(current.all_text_contents(), ['Last Chapter'])
+        self.assertEqual(tab_stop.all_text_contents(), ['Last Chapter'])
+
+        # Moving within the tree changes the keyboard entry, not the reading chapter.
+        tab_stop.focus()
+        page.keyboard.press('ArrowUp')
+        self.assertEqual(tab_stop.all_text_contents(), ['First Chapter'])
+        self.assertEqual(current.all_text_contents(), ['Last Chapter'])
+        page.locator('#side-bar-close-button').focus()
+        self.assertEqual(tab_stop.all_text_contents(), ['Last Chapter'])
+
+        page.evaluate('reader.closeSideBar()')
+        page.evaluate('reader.view.goTo(reader.view.book.toc[0].href)')
+        wait_for_reader(page, 'reader.view.lastLocation?.tocItem?.href === reader.view.book.toc[0].href')
+        self.assertTrue(page.evaluate('reader.openSideBar()'))
+        self.assertEqual(current.all_text_contents(), ['First Chapter'])
+        self.assertEqual(tab_stop.all_text_contents(), ['First Chapter'])
+
     def test_css_layout_adaptation_preserves_selectors_and_scientific_dimensions(self):
         page = self.browser.new_page(viewport={'width': 390, 'height': 844})
         self.addCleanup(page.close)
