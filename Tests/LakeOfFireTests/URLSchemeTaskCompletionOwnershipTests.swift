@@ -1,6 +1,7 @@
 import XCTest
 @preconcurrency import WebKit
 import SwiftCloudDrive
+import SwiftSoup
 import ZIPFoundation
 @testable import LakeOfFireContent
 @testable import LakeOfFireFiles
@@ -94,7 +95,41 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
         XCTAssertTrue(task.failures.isEmpty)
         XCTAssertEqual(task.finishCount, 1)
         XCTAssertEqual(task.responses.count, 1)
-        XCTAssertEqual(task.responses.first?.mimeType, "text/html")
+        XCTAssertEqual(task.data.count, 1)
+        let response = try XCTUnwrap(task.responses.first)
+        let bytes = try XCTUnwrap(task.data.first)
+        XCTAssertEqual(response.mimeType, "text/html")
+        XCTAssertEqual(response.textEncodingName?.lowercased(), "utf-8")
+        XCTAssertEqual(response.expectedContentLength, Int64(bytes.count))
+        XCTAssertFalse(bytes.isEmpty)
+
+        let html = try XCTUnwrap(String(data: bytes, encoding: .utf8))
+        let document = try SwiftSoup.parse(html)
+        let declarations = try document.select("meta[name=color-scheme]")
+        XCTAssertEqual(declarations.count, 1)
+        XCTAssertEqual(try document.select("head > meta[name=color-scheme]").first()?.attr("content"), "light dark")
+        let body = try XCTUnwrap(document.body())
+        XCTAssertTrue(body.children().isEmpty)
+        XCTAssertEqual(try body.text(), "")
+    }
+
+    @MainActor
+    func testInternalDirectSnippetKeepsEmptyBootstrapResponse() throws {
+        let handler = InternalURLSchemeHandler()
+        let webView = WKWebView()
+        let url = try XCTUnwrap(ReaderContentLoader.snippetURL(key: "empty-bootstrap"))
+        let task = TestURLSchemeTask(request: URLRequest(url: url))
+
+        handler.webView(webView, start: task)
+
+        XCTAssertTrue(task.failures.isEmpty)
+        XCTAssertEqual(task.finishCount, 1)
+        XCTAssertEqual(task.responses.count, 1)
+        let response = try XCTUnwrap(task.responses.first)
+        XCTAssertEqual(response.mimeType, "text/html")
+        XCTAssertEqual(response.expectedContentLength, 0)
+        XCTAssertNil(response.textEncodingName)
+        XCTAssertEqual(task.data, [Data()])
     }
 
     @MainActor
