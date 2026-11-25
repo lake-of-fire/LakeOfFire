@@ -1648,6 +1648,103 @@ final class FeedRefreshRegistry: @unchecked Sendable {
     }
 }
 
+/// Realm-free value snapshot of one parsed RSS item. FeedKit models stay on
+/// the parser callback executor; these immutable values cross into Realm.
+private struct RSSFeedEntrySnapshot: Sendable {
+    let compoundKey: String
+    let url: URL
+    let title: String
+    let author: String
+    let imageURL: URL?
+    let publicationDate: Date?
+    let content: Data?
+    let audioSubtitlesURL: URL?
+    let audioSubtitlesRoleRawValue: String?
+
+    init?(item: RSSFeedItem) {
+        guard let link = item.link,
+              let url = URL(string: link)
+                ?? link.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
+        else { return nil }
+
+        var imageURL: URL?
+        if let attributes = item.enclosure?.attributes, attributes.type?.hasPrefix("image/") ?? false {
+            if let rawURL = attributes.url { imageURL = URL(string: rawURL) }
+        } else if let mediaImageURL = item.media?.mediaContents?
+            .lazy.compactMap({ $0.attributes?.url })
+            .compactMap({ URL(string: $0) })
+            .first(where: { entryImageExtensions.contains($0.pathExtension.lowercased()) }) {
+            imageURL = mediaImageURL
+        }
+
+        let rawContent = item.content?.contentEncoded ?? item.description
+        let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let subtitlesURL = rawSubtitleHref.flatMap { rawValue in
+            guard !rawValue.isEmpty else { return nil }
+            return URL(string: rawValue)
+                ?? rawValue.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
+        }
+
+        var title = item.title
+        if let unescapedTitle = item.title?.unescapeHTML(), unescapedTitle.contains("<"),
+           let document = try? SwiftSoup.parse(unescapedTitle) {
+            do {
+                document.outputSettings().prettyPrint(pretty: false)
+                try collapseRubyTags(doc: document, restrictToReaderContentElement: false)
+                title = try document.text()
+            } catch { }
+        }
+        title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let compoundKey = FeedEntry.makePrimaryKey(url: url, html: rawContent) else { return nil }
+        self.compoundKey = compoundKey
+        self.url = url
+        self.title = title ?? ""
+        author = item.author ?? ""
+        self.imageURL = imageURL
+        publicationDate = item.pubDate ?? item.dublinCore?.dcDate
+        content = rawContent?.readerContentData
+        audioSubtitlesURL = subtitlesURL
+        audioSubtitlesRoleRawValue = subtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
+    }
+
+    func makeEntry(feedID: UUID, iconURL: URL, contentKind: ReaderContentKind) -> FeedEntry {
+        let entry = FeedEntry()
+        entry.compoundKey = compoundKey
+        entry.feedID = feedID
+        entry.url = url
+        entry.title = title
+        entry.author = author
+        entry.imageUrl = imageURL
+        entry.sourceIconURL = iconURL
+        entry.publicationDate = publicationDate
+        entry.content = content
+        entry.readerContentKindRawValue = contentKind.rawValue
+        entry.audioSubtitlesURL = audioSubtitlesURL
+        entry.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue
+        return entry
+    }
+
+    func makePayload(iconURL: URL, contentKind: ReaderContentKind, containsFullContent: Bool) -> FeedEntryPayload {
+        FeedEntryPayload(
+            url: url, title: title, author: author, imageUrl: imageURL,
+            sourceIconURL: iconURL, publicationDate: publicationDate,
+            readerContentKindRawValue: contentKind.rawValue,
+            feedEntryCollectionKey: nil, feedEntryCollectionScheme: nil,
+            feedEntryCollectionTerm: nil, feedEntryCollectionTitle: nil,
+            content: content, containsFullContent: containsFullContent,
+            voiceFrameUrl: nil, voiceAudioURL: nil, voiceAudioURLs: [],
+            audioSubtitlesURL: audioSubtitlesURL,
+            audioSubtitlesRoleRawValue: audioSubtitlesRoleRawValue,
+            redditTranslationsUrl: nil, redditTranslationsTitle: nil
+        )
+    }
+}
+
+@RealmBackgroundActor
+var rssFeedPersistBatchGateForTesting: (@Sendable (Int) async -> Void)? = nil
+
 public extension Feed {
     /// Call in the transaction that changes the URL or partially commits feed content.
     func retireFetchMetadata() {
@@ -1695,7 +1792,7 @@ public extension Feed {
 
     @MainActor
     private func persist(
-        rssItems: [RSSFeedItem],
+        snapshots: [RSSFeedEntrySnapshot],
         expectedRSSURL: URL,
         refreshLease: FeedRefreshLease,
         realmConfiguration: Realm.Configuration,
@@ -1705,116 +1802,101 @@ public extension Feed {
         let iconUrl = iconUrl
         let entryContentKind = entryContentKind
         let containsFullContent = rssContainsFullContent
+        let incomingIDs = deleteOrphans ? Set(snapshots.map(\.compoundKey)) : []
         try await { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            let existingEntries = Array(
-                realm.objects(FeedEntry.self)
-                    .where { $0.feedID == feedID }
-                    .filter { !$0.isDeleted }
-                    .map { $0 }
-            )
-            
-            let existingEntryIDs = existingEntries.map(\.compoundKey)
-            
-            var incomingIDs = [String]()
-            let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
-                // Existing escapes and fragment delimiters belong to the URL;
-                // apply the legacy escaping fallback only when parsing fails.
-                guard let link = item.link,
-                      let url = URL(string: link)
-                        ?? link.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
-                else { return nil }
-                var imageUrl: URL? = nil
-                if let enclosureAttribs = item.enclosure?.attributes, enclosureAttribs.type?.hasPrefix("image/") ?? false {
-                    if let imageUrlRaw = enclosureAttribs.url {
-                        imageUrl = URL(string: imageUrlRaw)
-                    }
-//                } else if let rawImageURL = item.media?.contents?
-//                    .lazy.compactMap({ $0.attributes?.url })
-//                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
-                } else if let mediaImageURL = item.media?.mediaContents?
-                    .lazy.compactMap({ $0.attributes?.url })
-                    .compactMap({ URL(string: $0) })
-                    .first(where: { entryImageExtensions.contains($0.pathExtension.lowercased()) })
-                {
-                    imageUrl = mediaImageURL
-                }
-                let content = item.content?.contentEncoded ?? item.description
-                let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let audioSubtitlesURL: URL? = rawSubtitleHref
-                    .flatMap { rawValue in
-                        guard !rawValue.isEmpty else { return nil }
-                        return URL(string: rawValue)
-                            ?? rawValue.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
-                    }
-                
-                var title = item.title
-                do {
-                    if let feedItemTitle = item.title?.unescapeHTML(), feedItemTitle.contains("<") {
-                        if let doc = try? SwiftSoup.parse(feedItemTitle) {
-                            doc.outputSettings().prettyPrint(pretty: false)
-                            try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
-                            title = try doc.text()
-                        }
-                    }
-                } catch { }
-                title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-//                
-//                if let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url, html: content)) {
-//                    if existingEntry.feedID == feedID && existingEntry.html == content && existingEntry.url == url && existingEntry.title == title ?? "" && existingEntry.author == item.author ?? "" && existingEntry.imageUrl == imageUrl && existingEntry.publicationDate == item.pubDate ?? item.dublinCore?.dcDate {
-//                        return exi
-//                    }
-//                }
-                
-                let feedEntry = FeedEntry()
-                feedEntry.feedID = feedID
-                feedEntry.html = content
-                feedEntry.url = url
-                feedEntry.title = title ?? ""
-                feedEntry.author = item.author ?? ""
-                feedEntry.imageUrl = imageUrl
-                feedEntry.sourceIconURL = iconUrl
-                feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
-                feedEntry.readerContentKind = entryContentKind
-                feedEntry.audioSubtitlesURL = audioSubtitlesURL
-                feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
-                feedEntry.updateCompoundKey()
-                incomingIDs.append(feedEntry.compoundKey)
-                return feedEntry
-            }
-            let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
-            // A prior attempt may have committed these entries but failed to mirror them.
-            // Replay the fetched body through the idempotent mirror writer, independently
-            // of the entry diff; only changed entries are written to the feed Realm.
-            let payloads = feedEntries.map { FeedEntryPayload(entry: $0, containsFullContent: containsFullContent) }
-            let didCommit: Bool
-            do {
+            let actor = RealmBackgroundActor.shared
+            let admission = actor.captureStorageAdmission(for: realmConfiguration)
+            let realm = try await actor.cachedRealm(for: realmConfiguration, storageAdmission: admission)
+            let batchSize = 128
+            var didCommitAnyBatch = false
+            let orphanIDs: [String]
+            if deleteOrphans {
                 await realm.asyncRefresh()
-                didCommit = try await realm.asyncWritePreservingOwnership {
-                    guard realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.rssUrl == expectedRSSURL else {
-                        return false
-                    }
-                    guard FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return false }
-                    realm.object(ofType: Feed.self, forPrimaryKey: feedID)?.retireFetchMetadata()
-                    let orphans = realm.objects(FeedEntry.self)
-                        .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
-                    if deleteOrphans {
-                        for orphan in orphans {
-                            orphan.isDeleted = true
-                            orphan.refreshChangeMetadata(explicitlyModified: true)
-                        }
-                    }
-                    for entry in entriesToPersist {
+                orphanIDs = realm.objects(FeedEntry.self)
+                    .where { $0.feedID == feedID && !$0.isDeleted }
+                    .compactMap { incomingIDs.contains($0.compoundKey) ? nil : $0.compoundKey }
+            } else {
+                orphanIDs = []
+            }
+
+            for start in stride(from: 0, to: snapshots.count, by: batchSize) {
+                let end = min(start + batchSize, snapshots.count)
+                let entries = snapshots[start..<end].map {
+                    $0.makeEntry(feedID: feedID, iconURL: iconUrl, contentKind: entryContentKind)
+                }
+                await realm.asyncRefresh()
+                guard admission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: realmConfiguration) }),
+                      let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+                      !feed.isDeleted, feed.rssUrl == expectedRSSURL,
+                      FeedRefreshRegistry.shared.isCurrent(refreshLease) else { throw CancellationError() }
+                let changedEntries = try await filterEntriesToPersist(realm: realm, entries: entries)
+                if didCommitAnyBatch && changedEntries.isEmpty {
+                    await Task.yield()
+                    continue
+                }
+                let didCommit = try await realm.asyncWritePreservingOwnership {
+                    guard admission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: realmConfiguration) }),
+                          let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+                          !feed.isDeleted, feed.rssUrl == expectedRSSURL,
+                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return false }
+                    if !didCommitAnyBatch { feed.retireFetchMetadata() }
+                    for entry in changedEntries {
                         if let existing = realm.object(ofType: FeedEntry.self, forPrimaryKey: entry.compoundKey) {
                             entry.createdAt = existing.createdAt
                         }
                     }
-                    realm.add(entriesToPersist, update: .modified)
+                    realm.add(changedEntries, update: .modified)
                     return true
                 }
+                guard didCommit else { throw CancellationError() }
+                didCommitAnyBatch = true
+                if end < snapshots.count {
+                    await rssFeedPersistBatchGateForTesting?(end)
+                    await Task.yield()
+                }
             }
-            for payload in didCommit ? payloads : [] {
+
+            // An empty or malformed body also has to retire stale validators.
+            if !didCommitAnyBatch {
+                await realm.asyncRefresh()
+                let didCommit = try await realm.asyncWritePreservingOwnership {
+                    guard admission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: realmConfiguration) }),
+                          let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+                          !feed.isDeleted, feed.rssUrl == expectedRSSURL,
+                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return false }
+                    feed.retireFetchMetadata()
+                    return true
+                }
+                guard didCommit else { throw CancellationError() }
+            }
+
+            // Preserve all old entries until the incoming snapshot is complete.
+            let orphanTimestamp = Date()
+            for start in stride(from: 0, to: orphanIDs.count, by: batchSize) {
+                let keys = Array(orphanIDs[start..<min(start + batchSize, orphanIDs.count)])
+                let didCommit = try await realm.asyncWritePreservingOwnership {
+                    guard admission.matchesCurrentStorageIdentity({ actor.realmCacheKey(for: realmConfiguration) }),
+                          let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID),
+                          !feed.isDeleted, feed.rssUrl == expectedRSSURL,
+                          FeedRefreshRegistry.shared.isCurrent(refreshLease) else { return false }
+                    let orphans = realm.objects(FeedEntry.self).where {
+                        $0.feedID == feedID && !$0.isDeleted && $0.compoundKey.in(keys)
+                    }
+                    // Mutating this predicate's results requires a stable batch snapshot.
+                    for orphan in Array(orphans) {
+                        orphan.isDeleted = true
+                        try orphan.refreshChangeMetadataThrowing(explicitlyModified: true, at: orphanTimestamp)
+                    }
+                    return true
+                }
+                guard didCommit else { throw CancellationError() }
+                await Task.yield()
+            }
+
+            for snapshot in snapshots {
+                let payload = snapshot.makePayload(
+                    iconURL: iconUrl, contentKind: entryContentKind, containsFullContent: containsFullContent
+                )
                 try await syncRelatedReaderContent(
                     with: payload, sourceRealm: realm, expectedRSSURL: expectedRSSURL,
                     refreshLease: refreshLease
@@ -2145,6 +2227,8 @@ public extension Feed {
                                     "stage=feed.fetch.parsed feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=rss items=\(items.count)"
                                 )
                             }
+                            let snapshots = items.reversed().compactMap(RSSFeedEntrySnapshot.init(item:))
+                            let itemCount = items.count
                             Task { @MainActor in
                                 do {
                                     guard !Task.isCancelled, !self.isInvalidated, self.rssUrl == requestedRSSURL,
@@ -2152,7 +2236,7 @@ public extension Feed {
                                         throw CancellationError()
                                     }
                                     try await self.persist(
-                                        rssItems: items,
+                                        snapshots: snapshots,
                                         expectedRSSURL: requestedRSSURL,
                                         refreshLease: refreshLease,
                                         realmConfiguration: realmConfiguration,
@@ -2171,7 +2255,7 @@ public extension Feed {
                                     )
                                     if shouldLogNiponica {
                                         logNiponica(
-                                            "stage=feed.fetch.persisted feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=rss items=\(items.count)"
+                                            "stage=feed.fetch.persisted feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=rss items=\(itemCount)"
                                         )
                                     }
                                     continuation.resume(returning: ())
@@ -2325,7 +2409,7 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
     return differentEntries
 }
 
-struct FeedEntryPayload {
+struct FeedEntryPayload: Sendable {
     let url: URL
     let title: String
     let author: String
