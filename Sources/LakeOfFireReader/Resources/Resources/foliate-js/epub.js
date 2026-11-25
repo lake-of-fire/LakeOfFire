@@ -310,6 +310,24 @@ const getMetadata = opf => {
     } = childGetter(opf, NS.OPF)
     const $metadata = $(opf.documentElement, 'metadata')
     const els = Array.from($metadata.children)
+    const refinementsByID = new Map()
+    for (const el of els) {
+        const reference = el.getAttribute('refines')
+        if (!reference?.startsWith('#')) continue
+        let id
+        // XML parsing leaves URL fragments encoded. Decode once, without
+        // normalizing or decoding the literal XML ID being referenced.
+        try { id = decodeURIComponent(reference.slice(1)) }
+        catch (error) {
+            if (!(error instanceof URIError)) throw error
+            continue
+        }
+        if (!id) continue
+        const refinements = refinementsByID.get(id)
+        if (refinements) refinements.push(el)
+        else refinementsByID.set(id, [el])
+    }
+    const activeValues = new Set()
     const getValue = (obj, el) => {
         if (!el) return null
         const {
@@ -317,25 +335,33 @@ const getMetadata = opf => {
         } = obj
         const value = getElementText(el)
         if (!props.length && !attrs.length) return value
-        const id = el.getAttribute('id')
-        const refines = id ? els.filter(filterAttribute('refines', '#' + id)) : []
-        return Object.fromEntries([
-                ['value', value]
-            ]
-            .concat(props.map(prop => {
-                const {
-                    many,
-                    recursive
-                } = prop
-                const name = typeof prop === 'string' ? prop : prop.name
-                const filter = filterAttribute('property', name)
-                const subobj = recursive ? obj : prop
-                return [camel(name), many ?
-                    refines.filter(filter).map(el => getValue(subobj, el)) :
-                    getValue(subobj, refines.find(filter))
+        activeValues.add(el)
+        try {
+            const id = el.getAttribute('id')
+            // Invalid duplicate IDs can expose collection cycles. Omit only
+            // this path's back-edges, retaining other roots and refinements.
+            const refines = (refinementsByID.get(id) ?? [])
+                .filter(el => !activeValues.has(el))
+            return Object.fromEntries([
+                    ['value', value]
                 ]
-            }))
-            .concat(attrs.map(attr => [camel(attr), el.getAttribute(attr)])))
+                .concat(props.map(prop => {
+                    const {
+                        many,
+                        recursive
+                    } = prop
+                    const name = typeof prop === 'string' ? prop : prop.name
+                    const filter = filterAttribute('property', name)
+                    const subobj = recursive ? obj : prop
+                    return [camel(name), many ?
+                        refines.filter(filter).map(el => getValue(subobj, el)) :
+                        getValue(subobj, refines.find(filter))
+                    ]
+                }))
+                .concat(attrs.map(attr => [camel(attr), el.getAttribute(attr)])))
+        } finally {
+            activeValues.delete(el)
+        }
     }
     const arr = els.filter(filterAttribute('refines', null))
     const metadata = Object.fromEntries(METADATA.map(obj => {
@@ -1431,6 +1457,13 @@ ${doc.querySelector('parsererror').innerText}`)
         metadata?.creator?.map(mapContributor('author'))
             ?.concat(metadata?.contributor?.map?.(mapContributor('contributor')))
             ?.forEach(([keys, value]) => keys.forEach(key => {
+                if (key === 'publisher' && typeof this.metadata.publisher === 'string'
+                    && this.metadata.publisher) {
+                    this.metadata.publisher = [{
+                        name: this.metadata.publisher,
+                        sortAs: metadata.publisher?.fileAs,
+                    }]
+                }
                 if (this.metadata[key]) this.metadata[key].push(value)
                 else this.metadata[key] = [value]
             }))
