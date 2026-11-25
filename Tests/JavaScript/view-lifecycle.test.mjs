@@ -410,6 +410,64 @@ test('SVG links use the owned navigation path and prefer unnamespaced href', asy
     }
 })
 
+test('dynamic SVG XLink uses the latest external destination and honors cancellation and unload', async () => {
+    const renderer = new FakeRenderer()
+    const originalRendererFactory = globalThis.__viewRendererFactory
+    const originalOpen = Object.getOwnPropertyDescriptor(globalThis, 'open')
+    const view = new View()
+    const anchor = new FakeAnchor(null, { namespaceURI: SVG_NAMESPACE })
+    const doc = makeLoadedDocument(anchor)
+    const book = makeLinkedBook('first', 0)
+    book.sections[0].resolveHref = href => new URL(href, doc.location.href).href
+    book.isExternal = href => href.startsWith('https:')
+    const canceled = 'https://example.invalid/canceled'
+    const accepted = 'https://example.invalid/latest#target'
+    const unloaded = 'https://example.invalid/unloaded'
+    const opened = []
+    const delivered = []
+    view.addEventListener('external-link', event => {
+        delivered.push([event.detail.a, event.detail.href, event.cancelable])
+        if (event.detail.href === canceled) event.preventDefault()
+    })
+    const click = () => {
+        const event = new Event('click', { cancelable: true })
+        anchor.dispatchEvent(event)
+        return event.defaultPrevented
+    }
+
+    globalThis.__viewRendererFactory = () => renderer
+    globalThis.open = (...args) => { opened.push(args) }
+    try {
+        assert.equal(await view.open(book), true)
+        const detail = { doc, index: 0, location: doc.location.href }
+        renderer.dispatchEvent(new CustomEvent('load', { detail }))
+        assert.equal(click(), false)
+
+        anchor.xlinkHref = canceled
+        assert.equal(click(), true)
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(opened, [])
+
+        anchor.xlinkHref = accepted
+        assert.equal(click(), true)
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(opened, [[accepted, '_blank']])
+
+        anchor.xlinkHref = unloaded
+        assert.equal(click(), true)
+        renderer.dispatchEvent(new CustomEvent('document-unload', { detail }))
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(delivered, [canceled, accepted, unloaded].map(href => [anchor, href, true]))
+        assert.deepEqual(opened, [[accepted, '_blank']])
+        assert.deepEqual(renderer.goToCalls, [])
+    } finally {
+        if (originalOpen) Object.defineProperty(globalThis, 'open', originalOpen)
+        else delete globalThis.open
+        globalThis.__viewRendererFactory = originalRendererFactory
+        view.close()
+    }
+})
+
 test('reopening View prevents a detached old document from navigating the replacement book', async () => {
     const firstRenderer = new FakeRenderer()
     const secondRenderer = new FakeRenderer()
