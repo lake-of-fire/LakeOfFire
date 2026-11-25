@@ -5,8 +5,8 @@ import LakeOfFireCore
 @testable import LakeOfFireReader
 @testable import SwiftUIWebView
 
-/// The router, caller, frame messages and command execution are real. Only the
-/// platform play promise is held to expose retirement/cancellation interleavings.
+/// The router, caller, frame messages and command execution are real. The
+/// fixture can hold a play promise or a validation reply to expose cancellation.
 @MainActor
 private final class MediaRouterWebKitFixture: NSObject, WKScriptMessageHandler {
     let webView: WKWebView
@@ -20,6 +20,7 @@ private final class MediaRouterWebKitFixture: NSObject, WKScriptMessageHandler {
     var frame: WKFrameInfo?
     var playDidStart: (() -> Void)?
     var cleanupDidComplete: (() -> Void)?
+    var holdValidationReply: (@MainActor () async -> Void)?
 
     override init() {
         webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
@@ -30,6 +31,10 @@ private final class MediaRouterWebKitFixture: NSObject, WKScriptMessageHandler {
             guard let self else { throw CancellationError() }
             let result = try await self.webView.callAsyncJavaScript(source,
                 arguments: arguments?.mapValues { $0 as Any } ?? [:], in: frame, contentWorld: world ?? .page)
+            if arguments?["expectedSource"] != nil, let hold = self.holdValidationReply {
+                self.holdValidationReply = nil
+                await hold()
+            }
             if arguments?["operation"] as? String == "cancel" {
                 let completed = self.cleanupDidComplete
                 self.cleanupDidComplete = nil
@@ -140,6 +145,25 @@ final class ReaderWebMediaPlaybackRouterTests: XCTestCase {
         XCTAssertEqual(source.nativeOptionalRequestHeaders, source.requestHeaders)
         let generic = ReaderMediaSourceCandidate(url: source.url, requestHeaders: source.requestHeaders)
         XCTAssertTrue(generic.nativeOptionalRequestHeaders.isEmpty)
+    }
+
+    func testCancelledValidationReplyKeepsCurrentOwnerRegistered() async throws {
+        let (fixture, owner) = try await makeFixture()
+        let ready = expectation(description: "WebKit validation reply ready")
+        let (release, continuation) = AsyncStream<Void>.makeStream()
+        fixture.holdValidationReply = {
+            ready.fulfill()
+            for await _ in release { }
+        }
+        let pending = Task { await fixture.router.validate(owner: owner) }
+        await fulfillment(of: [ready], timeout: 5)
+        pending.cancel()
+        continuation.finish()
+        let cancelled = await pending.value
+        XCTAssertFalse(cancelled)
+        XCTAssertTrue(fixture.router.isCurrent(owner: owner))
+        let fresh = await fixture.router.validate(owner: owner)
+        XCTAssertTrue(fresh)
     }
 
     private func verifyRetirement(_ kind: String) async throws {

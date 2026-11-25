@@ -2,7 +2,9 @@ const doc = document
 const reply = value => JSON.stringify(value)
 const failure = error => reply({ status: 'error', error })
 const validID = typeof transferID === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(transferID)
-if (!validID || !['open', 'read', 'close'].includes(operation)) return failure('invalidRequest')
+const owned = operation !== null && typeof operation === 'object'
+const action = owned ? operation.kind : operation
+if (!validID || !['open', 'read', 'close'].includes(action) || (owned && action === 'close')) return failure('invalidRequest')
 if (!doc.__manabiTranscriptBlobTransfers) doc.__manabiTranscriptBlobTransfers = new Map()
 const transfers = doc.__manabiTranscriptBlobTransfers
 // Closed tokens cannot be reopened by an already queued native invocation.
@@ -14,17 +16,6 @@ const retire = () => {
   if (closed.size < 1024) closed.add(transferID)
   else doc.__manabiTranscriptBlobSealed = true
 }
-const capture = doc.__manabiTranscriptCapture
-const expected = [
-  typeof expectedDocumentID === 'string' ? expectedDocumentID : null,
-  typeof expectedMediaIdentity === 'string' ? expectedMediaIdentity : null,
-  typeof expectedDocumentURL === 'string' ? expectedDocumentURL : null,
-  typeof expectedMediaURL === 'string' ? expectedMediaURL : null
-]
-const sameExpected = record => record.expected.every((value, index) => value === expected[index])
-const current = value => document === doc && value && value.documentID === expectedDocumentID
-  && value.mediaIdentity === expectedMediaIdentity && value.documentURL === expectedDocumentURL
-  && value.mediaURL === expectedMediaURL
 const dispose = async record => {
   record.closed = true
   record.controller.abort()
@@ -49,7 +40,7 @@ const stop = async record => {
   await dispose(record)
   if (transfers.get(transferID) === record) transfers.delete(transferID)
 }
-if (operation === 'close') {
+if (action === 'close') {
   retire()
   const record = transfers.get(transferID)
   if (record) {
@@ -57,11 +48,34 @@ if (operation === 'close') {
   }
   return reply({ status: 'ok', transferID })
 }
+const selection = owned ? operation.selection : null
+const ownedSelection = owned ? Object.freeze({
+  scriptDocumentID: selection?.scriptDocumentID,
+  tagID: selection?.tagID,
+  sourceURL: selection?.sourceURL
+}) : null
+const captureOwned = doc.__manabiTranscriptCaptureOwned
+const capture = ownedSelection
+  ? withContext => captureOwned?.(ownedSelection, withContext)
+  : doc.__manabiTranscriptCapture
+const expected = [
+  typeof expectedDocumentID === 'string' ? expectedDocumentID : null,
+  typeof expectedMediaIdentity === 'string' ? expectedMediaIdentity : null,
+  typeof expectedDocumentURL === 'string' ? expectedDocumentURL : null,
+  typeof expectedMediaURL === 'string' ? expectedMediaURL : null,
+  ...(ownedSelection ? [ownedSelection.scriptDocumentID, ownedSelection.tagID, ownedSelection.sourceURL] : [])
+]
+const sameExpected = record => record.expected.length === expected.length
+  && record.expected.every((value, index) => value === expected[index])
+const current = value => document === doc && value && value.documentID === expectedDocumentID
+  && value.mediaIdentity === expectedMediaIdentity && value.documentURL === expectedDocumentURL
+  && value.mediaURL === expectedMediaURL
 if (!expected.every(value => typeof value === 'string' && value.length > 0)
+    || (ownedSelection && ownedSelection.sourceURL !== expectedMediaURL)
     || !Number.isSafeInteger(maximumByteCount) || maximumByteCount <= 0 || maximumByteCount > 536870912
     || !Number.isSafeInteger(chunkByteCount) || chunkByteCount <= 0 || chunkByteCount > 262144) return failure('invalidRequest')
 let record = transfers.get(transferID)
-if (operation === 'open') {
+if (action === 'open') {
   if (closed.has(transferID)) return failure('cancelled')
   if (doc.__manabiTranscriptBlobSealed || transfers.size >= 16 || record) return failure('busy')
   if (!current(capture?.())) return failure('staleSelection')
@@ -84,7 +98,7 @@ const work = async () => {
   }
   try {
     check()
-    if (operation === 'open') {
+    if (action === 'open') {
       const response = await capture((snapshot, view) => {
         if (!current(snapshot)) return null
         const pageHidden = () => {

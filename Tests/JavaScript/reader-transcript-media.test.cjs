@@ -36,7 +36,8 @@ function fixture({ cues = [], captionURL = null, pageURL = 'https://example.com/
     const evaluate = new vm.Script(`(async function(${Object.keys(args).join(',')}) {\n${source}\n})`).runInContext(context)
     return evaluate.call(context, ...Object.values(args))
   }
-  const capture = async () => JSON.parse(await run(snapshotSource));
+  const capture = async selection => JSON.parse(await run(snapshotSource,
+    selection === undefined ? {} : { selection }))
   const captions = snapshot => run(captionsSource, {
     expectedDocumentID: snapshot.documentID,
     expectedMediaIdentity: snapshot.mediaIdentity,
@@ -57,6 +58,18 @@ test('capture selects loaded cues without fetching and preserves source identity
   assert.equal(await f.captions(first), first.webVTT);
   assert.equal(f.fetches(), 0);
 });
+
+test('legacy snapshot ignores page globals with the selector name', async () => {
+  const f = fixture()
+  const expected = await f.capture()
+  const selection = { scriptDocumentID: 'other-document', tagID: 'other-tag', sourceURL: 'blob:https://elsewhere.example/media' }
+  f.context.selection = selection
+  assert.deepEqual(await f.capture(), expected)
+  vm.runInContext('let selection = ' + JSON.stringify(selection), f.context)
+  assert.deepEqual(await f.capture(), expected)
+  const unexpected = vm.runInContext('(async function(selection, extra) {\n' + snapshotSource + '\n})', f.context)
+  assert.equal(await unexpected(selection, true), 'null')
+})
 
 test('saved-first capture leaves remote captions unfetched until requested', async () => {
   const f = fixture({ captionURL: 'https://example.com/captions.vtt' });
@@ -459,6 +472,44 @@ test('candidate order is main then frames in DOM order, with playing media prefe
   f.media.paused = false;
   assert.match((await captureMedia(f)).webVTT, /Main/);
 });
+
+test('owned capture selects the exact paused media across accessible documents', async () => {
+  const f = fixture({ cues: [captionCue('Playing main')] })
+  const child = frameFixture(f, { cues: [captionCue('Paused owner')] })
+  f.frames.push(child.frame)
+  const sourceURL = 'blob:https://example.com/shared'
+  const selection = { scriptDocumentID: 'child-script-document', tagID: 'paused-owner', sourceURL }
+  f.media.currentSrc = sourceURL
+  f.media.paused = false
+  f.context.__manabiReaderMediaDocumentID = 'main-script-document'
+  f.media.__manabiReaderMediaTagID = selection.tagID
+  child.view.__manabiReaderMediaDocumentID = selection.scriptDocumentID
+  child.media.currentSrc = sourceURL
+  child.media.__manabiReaderMediaTagID = selection.tagID
+  f.context.selection = { ...selection }
+
+  assert.match((await f.capture()).webVTT, /Playing main/)
+  const owned = await f.capture(selection)
+  assert.match(owned.webVTT, /Paused owner/)
+  assert.equal(owned.mediaURL, sourceURL)
+  assert.equal(owned.documentURL, f.context.location.href)
+  assert.equal(owned.mediaDocumentURL, child.view.location.href)
+
+  const other = { ...child.media, __manabiReaderMediaTagID: 'other-element', paused: false }
+  child.nodes.unshift(other)
+  assert.equal((await f.capture(selection)).mediaIdentity, owned.mediaIdentity)
+  other.__manabiReaderMediaTagID = selection.tagID
+  assert.equal(await f.capture(selection), null, 'duplicate physical matches are ambiguous')
+  other.__manabiReaderMediaTagID = 'other-element'
+  child.media.currentSrc = 'blob:https://example.com/replacement'
+  assert.equal(await f.capture(selection), null, 'the original element cannot supply a replacement source')
+  child.media.currentSrc = sourceURL
+  child.media.isConnected = false
+  assert.equal(await f.capture(selection), null, 'a different node with the same source cannot replace the owner')
+  delete f.document.__manabiTranscriptCaptureOwned
+  assert.equal(await f.capture(selection), null, 'a missing owned hook never uses generic capture')
+  assert.match((await f.capture()).webVTT, /Playing main/)
+})
 
 test('same-URL child replacement preserves root document but rejects old capture and accepts fresh', async () => {
   const f = fixture();
