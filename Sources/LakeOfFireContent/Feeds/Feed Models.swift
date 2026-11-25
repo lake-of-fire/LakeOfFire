@@ -1680,7 +1680,7 @@ private struct RSSFeedEntrySnapshot: Sendable {
         let rawContent = item.content?.contentEncoded ?? item.description
         let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let subtitlesURL = rawSubtitleHref.flatMap { rawValue in
+        let subtitlesURL: URL? = rawSubtitleHref.flatMap { rawValue -> URL? in
             guard !rawValue.isEmpty else { return nil }
             return URL(string: rawValue)
                 ?? rawValue.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
@@ -1728,16 +1728,8 @@ private struct RSSFeedEntrySnapshot: Sendable {
 
     func makePayload(iconURL: URL, contentKind: ReaderContentKind, containsFullContent: Bool) -> FeedEntryPayload {
         FeedEntryPayload(
-            url: url, title: title, author: author, imageUrl: imageURL,
-            sourceIconURL: iconURL, publicationDate: publicationDate,
-            readerContentKindRawValue: contentKind.rawValue,
-            feedEntryCollectionKey: nil, feedEntryCollectionScheme: nil,
-            feedEntryCollectionTerm: nil, feedEntryCollectionTitle: nil,
-            content: content, containsFullContent: containsFullContent,
-            voiceFrameUrl: nil, voiceAudioURL: nil, voiceAudioURLs: [],
-            audioSubtitlesURL: audioSubtitlesURL,
-            audioSubtitlesRoleRawValue: audioSubtitlesRoleRawValue,
-            redditTranslationsUrl: nil, redditTranslationsTitle: nil
+            snapshot: self, iconURL: iconURL,
+            contentKind: contentKind, containsFullContent: containsFullContent
         )
     }
 }
@@ -2453,6 +2445,36 @@ struct FeedEntryPayload: Sendable {
             ?? (entry.audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
         redditTranslationsUrl = entry.redditTranslationsUrl
         redditTranslationsTitle = entry.redditTranslationsTitle
+    }
+}
+
+private extension FeedEntryPayload {
+    init(
+        snapshot: RSSFeedEntrySnapshot,
+        iconURL: URL,
+        contentKind: ReaderContentKind,
+        containsFullContent: Bool
+    ) {
+        url = snapshot.url
+        title = snapshot.title
+        author = snapshot.author
+        imageUrl = snapshot.imageURL
+        sourceIconURL = iconURL
+        publicationDate = snapshot.publicationDate
+        readerContentKindRawValue = contentKind.rawValue
+        feedEntryCollectionKey = nil
+        feedEntryCollectionScheme = nil
+        feedEntryCollectionTerm = nil
+        feedEntryCollectionTitle = nil
+        content = snapshot.content
+        self.containsFullContent = containsFullContent
+        voiceFrameUrl = nil
+        voiceAudioURL = nil
+        voiceAudioURLs = []
+        audioSubtitlesURL = snapshot.audioSubtitlesURL
+        audioSubtitlesRoleRawValue = snapshot.audioSubtitlesRoleRawValue
+        redditTranslationsUrl = nil
+        redditTranslationsTitle = nil
     }
 }
 
