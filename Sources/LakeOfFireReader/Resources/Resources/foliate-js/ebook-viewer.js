@@ -99,6 +99,26 @@ const manabiBlankNavigationMoveThreshold = 12;
 const manabiSyntheticTouchMouseDistanceThreshold = 24;
 const lastPositionRestoreCoordinator = new LatestRestoreTransactionCoordinator();
 
+// Forwarded iframe taps are posted by the viewer, so use its physical Document.
+const touchPostingDocument = window.document
+const currentTouchPostingDocumentClock = () => {
+    if (window.document !== touchPostingDocument) return null
+    try {
+        const stamp = readerDocumentStartedAtMs(window)
+        return Number.isFinite(stamp) && stamp > 0 ? stamp : null
+    } catch {
+        return null
+    }
+}
+const postViewerTouchStart = payload => {
+    const documentStartedAtMs = currentTouchPostingDocumentClock()
+    if (documentStartedAtMs === null) return
+    window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+        ...payload,
+        documentStartedAtMs,
+    })
+}
+
 const resetRestoreTransactionGlobals = ({ clearHandled = false } = {}) => {
     globalThis.__manabiRequestedRestoreFraction = null;
     globalThis.__manabiRestoreInProgress = false;
@@ -1628,12 +1648,12 @@ const recordPageTurnNavigationIntent = (direction, _source, _details = {}) => {
 
 const requestLookupCloseForPageMotion = (reason, _details = {}) => {
     try {
-        window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+        postViewerTouchStart({
             touchedEntryWithElementId: null,
             wasAlreadySelected: false,
             lookupCloseReason: reason,
             touchstartAtMs: Date.now(),
-        });
+        })
     } catch (_error) {}
 };
 
@@ -9632,6 +9652,7 @@ class Reader {
             return (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold);
         };
         const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
+            if (currentTouchPostingDocumentClock() === null) return
             if (shouldSuppressMainDocumentSyntheticMouseBlankTap(event)) {
                 return;
             }
@@ -9648,14 +9669,14 @@ class Reader {
                     }
                     : null;
             }
-            window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+            postViewerTouchStart({
                 touchedEntryWithElementId: null,
                 wasAlreadySelected: false,
                 touchstartAtMs,
                 touchstartEventType: event.type,
                 ebookNavigationHidden,
                 source,
-            });
+            })
         };
         const clearPendingMainDocumentBlankNavigationTouch = () => {
             pendingMainDocumentBlankNavigationTouch = null;
@@ -11411,6 +11432,7 @@ class Reader {
                 return null;
             };
             const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
+                if (currentTouchPostingDocumentClock() === null) return
                 const target = event.target;
                 const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
                 const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-m, m-s, m-t, .m-m, .m-sentence, ruby, rt');
@@ -11450,14 +11472,14 @@ class Reader {
                     } else {
                         globalThis.__manabiPendingContentDocumentBlankNavigationEcho = null;
                     }
-                    window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+                    postViewerTouchStart({
                         touchedEntryWithElementId: null,
                         wasAlreadySelected: false,
                         touchstartAtMs,
                         touchstartEventType: event.type,
                         ebookNavigationHidden,
                         source,
-                    });
+                    })
                 }
             };
             const handleBlankPointerTouchStart = (event) => {
@@ -11494,6 +11516,7 @@ class Reader {
                 if (blankPointerMovedPastTapThreshold(event, pending)) {
                     return;
                 }
+                if (currentTouchPostingDocumentClock() === null) return
                 const point = blankPointerPoint(event);
                 const endX = point?.screenX ?? point?.clientX ?? null;
                 const endY = point?.screenY ?? point?.clientY ?? null;
