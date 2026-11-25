@@ -685,11 +685,21 @@ internal func readerContentPublicationDateFallback(for url: URL) async -> String
 
 @MainActor
 internal func readerContentPublicationDateFallback(
-    for content: any ReaderContentProtocol
+    for content: any ReaderContentProtocol,
+    renderGeneration: UUID? = nil,
+    loadURLFallback: @MainActor (URL) async -> String? = {
+        await readerContentPublicationDateFallback(for: $0)
+    }
 ) async -> String? {
-    if !(content is HistoryRecord),
+    // Full-content history mirrors already carry the publication date and
+    // display preference from the feed record that supplied the saved body.
+    // Use that snapshot before discovering other records across the Realms.
+    if !(content is HistoryRecord) || content.rssContainsFullContent,
        (content.displayPublicationDate || content.isPhysicalMedia),
        let publicationDate = content.publicationDate {
+        ReaderArticleRenderTrace.record(
+            "Reader Publication Date From Record", url: content.url, generation: renderGeneration
+        )
         return formattedReaderContentPublicationDate(
             ReaderContentPublicationDateSnapshot(
                 publicationDate: publicationDate,
@@ -698,7 +708,10 @@ internal func readerContentPublicationDateFallback(
             )
         )
     }
-    return await readerContentPublicationDateFallback(for: content.url)
+    ReaderArticleRenderTrace.record(
+        "Reader Publication Date Related Lookup Start", url: content.url, generation: renderGeneration
+    )
+    return await loadURLFallback(content.url)
 }
 
 internal func buildCanonicalReadabilityHTML(
@@ -3453,7 +3466,9 @@ public class ReaderModeViewModel: ObservableObject {
                 if let readerPublicationDateLoader {
                     publicationDateFallback = await readerPublicationDateLoader(resolvedContentURL)
                 } else {
-                    publicationDateFallback = await readerContentPublicationDateFallback(for: content)
+                    publicationDateFallback = await readerContentPublicationDateFallback(
+                        for: content, renderGeneration: renderGeneration
+                    )
                 }
                 ReaderArticleRenderTrace.record("Reader Publication Date Resolved", url: contentURL, generation: renderGeneration)
                 guard ownsContent() else { return }
