@@ -536,42 +536,77 @@ public class BookLibraryViewModel: ObservableObject {
                 publicationDate: publication.metadata.published,
                 coverURL: coverURL,
                 downloadURL: acquisitionLink?.url(relativeTo: url),
-                summary: publication.metadata.description ?? publication.metadata.subtitle
+                summary: publication.metadata.description ?? publication.metadata.subtitle,
+                catalogIdentifier: publication.metadata.identifier
             )
         }
     }
 
     static func fetchPublications(from url: URL, session: URLSession = .shared) async -> ([Publication], String?) {
-        var nextURL = url
-        var visited = Set<URL>()
+        switch await fetchCatalogPage(.first(url), session: session) {
+        case let .page(page): return (page.publications, nil)
+        case let .failure(message): return ([], message)
+        case .cycle: return ([], BookCatalogPageLoad.cycleMessage)
+        case .cancelled: return ([], nil)
+        }
+    }
+
+    static func fetchCatalogPage(
+        _ request: BookCatalogPageRequest,
+        session: URLSession = .shared
+    ) async -> BookCatalogPageLoad {
+        let isContinuation: Bool
+        var nextURL: URL
+        var visited: Set<URL>
+        switch request {
+        case let .first(url):
+            nextURL = url
+            visited = []
+            isContinuation = false
+        case let .next(url, previousDocuments):
+            nextURL = url
+            visited = previousDocuments
+            isContinuation = true
+        }
+
         while true {
             do {
                 try Task.checkCancellation()
                 let requestURL = catalogDocumentIdentity(nextURL)
-                guard visited.insert(requestURL).inserted else {
-                    return ([], "The catalog links back to a document that was already opened.")
-                }
+                guard visited.insert(requestURL).inserted else { return .cycle }
                 let document = try await OPDSParser.parseURL(url: requestURL, session: session)
                 try Task.checkCancellation()
                 let documentURL = catalogDocumentIdentity(document.documentURL)
                 if documentURL != requestURL, !visited.insert(documentURL).inserted {
-                    return ([], "The catalog links back to a document that was already opened.")
+                    return .cycle
                 }
-                if let mapped = mappedPublications(in: document, relativeTo: documentURL) {
-                    return (mapped, nil)
+                let mapped = mappedPublications(in: document, relativeTo: documentURL)
+                if mapped != nil || isContinuation {
+                    // The request owns one continuation response, including an
+                    // empty page. Only the initial load follows All Books links.
+                    let continuation = document.feed?.links.first(withRel: .next)?.url(relativeTo: documentURL)
+                    let next = continuation.flatMap { continuationURL -> URL? in
+                        let url = catalogDocumentIdentity(continuationURL)
+                        let scheme = url.scheme?.lowercased()
+                        return (scheme == "http" || scheme == "https") && url.host != nil
+                            && !visited.contains(url) ? url : nil
+                    }
+                    return .page(BookCatalogPage(
+                        publications: mapped ?? [], nextURL: next, visited: visited
+                    ))
                 }
                 guard let allBooksLink = document.feed?.navigation.first(where: {
                     $0.title?.hasPrefix("All Books") == true
                 }) else {
-                    return ([], "No publications or navigable links found")
+                    return .failure("No publications or navigable links found")
                 }
                 guard let allBooksURL = allBooksLink.url(relativeTo: documentURL) else {
-                    return ([], "Invalid 'All Books' URL")
+                    return .failure("Invalid 'All Books' URL")
                 }
                 nextURL = allBooksURL
             } catch {
-                if Task.isCancelled || error is CancellationError { return ([], nil) }
-                return ([], "Failed to fetch data: \(error.localizedDescription)")
+                if Task.isCancelled || error is CancellationError { return .cancelled }
+                return .failure("Failed to fetch data: \(error.localizedDescription)")
             }
         }
     }
@@ -768,5 +803,6 @@ public struct Publication: Identifiable, Hashable {
     public var coverURL: URL?
     public var downloadURL: URL?
     public var summary: String?
+    var catalogIdentifier: String? = nil
     public var hasContentAudio = false
 }
