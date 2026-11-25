@@ -79,6 +79,35 @@ test('EPUB CFI assertions recover the original spine entry after its ordinal cha
     assert.equal(f.book.resolveCFI('epubcfi(/6/4[spine-0])').index, -1)
 })
 
+test('EPUB CFI point and range restore the intended occurrence of a repeated spine item', async t => {
+    const f = makeURIFixture({ names: ['repeated.xhtml'], spineIDRefs: ['c0', 'missing', 'c0'] })
+    t.after(f.close)
+    await f.book.init()
+
+    assert.deepEqual(f.book.sections.map(section => section.id), [f.path('repeated.xhtml'), f.path('repeated.xhtml')])
+    assert.equal(f.book.resolveCFI(f.book.sections[0].cfi).index, 0)
+    assert.equal(f.book.resolveCFI(f.book.sections[1].cfi).index, 1)
+
+    const text = { nodeType: 3, nodeValue: 'repeated', children: [] }
+    const doc = xml(el('html', ns.xhtml, {}, [el('body', ns.xhtml, {}, [text])]))
+    const cases = [
+        ['epubcfi(/6/2[spine-2]!/2/1:2)', 2, 2],
+        ['epubcfi(/6/2[spine-2]!/2,/1:1,/1:4)', 1, 4],
+    ]
+    for (const [cfi, start, end] of cases) {
+        const boundaries = []
+        const range = {
+            setStart: (node, offset) => boundaries.push(['start', node, offset]),
+            setEnd: (node, offset) => boundaries.push(['end', node, offset]),
+        }
+        doc.createRange = () => range
+        const resolved = f.book.resolveCFI(cfi)
+        assert.equal(resolved.index, 1, cfi)
+        assert.equal(resolved.anchor(doc), range, cfi)
+        assert.deepEqual(boundaries, [['start', text, start], ['end', text, end]], cfi)
+    }
+})
+
 test('EPUB CFI navigation preserves ordinal fallback for legacy and out-of-spine assertions', async t => {
     const f = makeURIFixture({
         names: ['first.xhtml', 'second.xhtml'],
