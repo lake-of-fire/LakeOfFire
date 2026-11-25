@@ -560,9 +560,10 @@ public class BookLibraryViewModel: ObservableObject {
                 if let mapped = mappedPublications(in: document, relativeTo: documentURL) {
                     return (mapped, nil)
                 }
-                guard let allBooksLink = document.feed?.navigation.first(where: {
-                    $0.title?.hasPrefix("All Books") == true
-                }) else {
+                let isAllBooksLink: (LakeOfFireOPDS.Link) -> Bool = { $0.title?.hasPrefix("All Books") == true }
+                guard let feed = document.feed,
+                      let allBooksLink = feed.navigation.first(where: isAllBooksLink)
+                        ?? feed.groups.lazy.flatMap(\.navigation).first(where: isAllBooksLink) else {
                     return ([], "No publications or navigable links found")
                 }
                 guard let allBooksURL = allBooksLink.url(relativeTo: documentURL) else {

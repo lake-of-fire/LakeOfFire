@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import LakeOfFireReader
 
@@ -287,4 +288,114 @@ final class BookLibraryCatalogQueuedAdmissionTests: XCTestCase {
         XCTAssertEqual(requests, 2)
         XCTAssertEqual(viewModel.editorsPicks.map(\.title), ["request-2"])
     }
+}
+
+@MainActor
+final class BookLibraryCatalogNavigationTests: XCTestCase {
+    func testFollowsFirstGroupedAllBooksLinkInCatalogOrder() async {
+        let (publications, error) = await fetch("grouped-index")
+        XCTAssertEqual(publications.map(\.title), ["Grouped book"])
+        XCTAssertEqual(publications.first?.downloadURL?.absoluteString, "https://book-catalog.example/catalog/book.epub")
+        XCTAssertNil(error)
+    }
+
+    func testTopLevelAllBooksLinkWinsOverGroupedLink() async {
+        let (publications, error) = await fetch("mixed-index")
+        XCTAssertEqual(publications.map(\.title), ["Top-level book"])
+        XCTAssertNil(error)
+    }
+
+    func testUnrelatedGroupedNavigationDoesNotSelectAPublication() async {
+        let (publications, error) = await fetch("unmatched-index")
+        XCTAssertTrue(publications.isEmpty)
+        XCTAssertEqual(error, "No publications or navigable links found")
+    }
+
+    func testGroupedAllBooksLinkCannotReopenTheSameDocument() async {
+        let finished = XCTestExpectation(description: "Grouped catalog cycle was resolved")
+        let fetchTask = Task {
+            let (publications, error) = await fetch("cyclic-index")
+            finished.fulfill()
+            return (publications.isEmpty, error)
+        }
+        let result = await XCTWaiter.fulfillment(of: [finished], timeout: 5)
+        XCTAssertEqual(result, .completed)
+        if result != .completed {
+            fetchTask.cancel()
+            _ = await fetchTask.value
+            return
+        }
+        let (isEmpty, error) = await fetchTask.value
+        XCTAssertTrue(isEmpty)
+        XCTAssertEqual(error, "The catalog links back to a document that was already opened.")
+    }
+
+    private func fetch(_ path: String) async -> ([Publication], String?) {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BookLibraryCatalogURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let url = URL(string: "https://book-catalog.example/catalog/\(path)")!
+        return await BookLibraryViewModel.fetchPublications(from: url, session: session)
+    }
+}
+
+private final class BookLibraryCatalogURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "book-catalog.example"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let collections: String
+        switch url.lastPathComponent {
+        case "grouped-index":
+            collections = """
+            "groups":[
+                {"metadata":{"title":"Browse"},"navigation":[{"title":"Featured","href":"top-books"}]},
+                {"metadata":{"title":"Books"},"navigation":[{"title":"All Books (full catalog)","href":"group-books"}]},
+                {"metadata":{"title":"Other"},"navigation":[{"title":"All Books (other)","href":"top-books"}]}
+            ]
+            """
+        case "mixed-index":
+            collections = """
+            "navigation":[{"title":"All Books","href":"top-books"}],
+            "groups":[{"metadata":{"title":"Books"},"navigation":[{"title":"All Books","href":"group-books"}]}]
+            """
+        case "unmatched-index":
+            collections = """
+            "groups":[{"metadata":{"title":"Browse"},"navigation":[{"title":"Featured","href":"group-books"}]}]
+            """
+        case "cyclic-index":
+            collections = """
+            "groups":[{"metadata":{"title":"Books"},"navigation":[{"title":"All Books","href":"#books"}]}]
+            """
+        case "group-books", "top-books":
+            let title = url.lastPathComponent == "group-books" ? "Grouped book" : "Top-level book"
+            collections = """
+            "publications":[{"metadata":{"title":"\(title)"},
+             "links":[{"rel":"acquisition","type":"application/epub+zip","href":"book.epub"}]}]
+            """
+        default:
+            client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
+            return
+        }
+        let json = """
+        {"metadata":{"title":"Catalog"},
+         "links":[{"rel":"self","type":"application/opds+json","href":"\(url.lastPathComponent)"}],
+         \(collections)}
+        """
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "application/opds+json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(json.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
