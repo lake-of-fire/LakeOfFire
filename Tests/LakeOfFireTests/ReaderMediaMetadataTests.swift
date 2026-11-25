@@ -6,6 +6,7 @@ import RealmSwift
 import RealmSwiftGaps
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
+@testable import SwiftUIWebView
 
 @MainActor
 private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
@@ -45,6 +46,39 @@ private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
 }
 
 final class ReaderMediaMetadataTests: XCTestCase {
+    @MainActor
+    func testPreparedCommitForDifferentContentUsesItsOwnRecordedPresentation() async throws {
+        let model = ReaderMediaPlayerViewModel()
+        let original = HistoryRecord()
+        original.url = URL(string: "https://example.invalid/old-article")!
+        original.updateCompoundKey()
+        original.voiceAudioURL = URL(string: "https://example.invalid/old.m4a")!
+        original.autoOpenMediaPlayer = true
+        var state = WebViewState.empty
+        state.pageURL = original.url
+        try await model.onNavigationCommitted(content: original, newState: state)
+        XCTAssertTrue(model.isMediaPlayerPresented)
+        model.closePlaybackPresentation()
+
+        let replacement = HistoryRecord()
+        replacement.url = URL(string: "https://example.invalid/new-article")!
+        replacement.updateCompoundKey()
+        let replacementAudio = URL(string: "https://example.invalid/new.m4a")!
+        replacement.voiceAudioURL = replacementAudio
+        replacement.autoOpenMediaPlayer = true
+        state.pageURL = replacement.url
+        model.applyPreparedArticleCommit(content: replacement, newState: state)
+
+        XCTAssertEqual(model.audioURLs, [replacementAudio])
+        XCTAssertTrue(model.isMediaPlayerPresented)
+
+        // A later authoritative same-article commit must still adopt a new queue.
+        let updatedAudio = URL(string: "https://example.invalid/updated.m4a")!
+        replacement.voiceAudioURL = updatedAudio
+        try await model.onNavigationCommitted(content: replacement, newState: state)
+        XCTAssertEqual(model.audioURLs, [updatedAudio])
+    }
+
     @MainActor
     func testNonfiniteReadAloudSeeksPreserveQueuePreparationAndPlayback() throws {
         for value in [Double.nan, .infinity, -.infinity] {

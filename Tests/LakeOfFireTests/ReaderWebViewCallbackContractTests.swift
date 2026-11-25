@@ -77,13 +77,15 @@ private func makeReaderCallbackLibraryConfiguration() -> Realm.Configuration {
     return configuration
 }
 
-@MainActor
-private func makeReaderWebViewHandlerFixture() -> (
+private typealias ReaderWebViewHandlerFixture = (
     handler: ReaderWebViewHandler,
     taskManager: NavigationTaskManager,
     readerContent: ReaderContent,
     readerModeViewModel: ReaderModeViewModel
-) {
+)
+
+@MainActor
+private func makeReaderWebViewHandlerFixture() -> ReaderWebViewHandlerFixture {
     let taskManager = NavigationTaskManager()
     let readerContent = ReaderContent()
     let readerModeViewModel = ReaderModeViewModel()
@@ -1019,6 +1021,159 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
             timeout: 1
         )
         await fulfillment(of: [pendingURLCalled], timeout: 0.05)
+    }
+
+
+    func testPreparedArticleKeepsRecordedPresentationAndOnlyReplacesUsableAudio() async throws {
+        let articleURL = URL(string: "https://example.invalid/recorded-article")!
+        let originalAudio = URL(string: "https://example.invalid/first.m4a")!
+        let replacementAudio = URL(string: "https://example.invalid/next.m4a")!
+
+        for remainsOpen in [false, true] {
+            for preparedAudio in [nil, replacementAudio] as [URL?] {
+                let fixture = makeReaderWebViewHandlerFixture()
+                let (realm, record) = try savedRecordedArticle(at: articleURL, audioURL: originalAudio)
+                let media = fixture.handler.readerMediaPlayerViewModel
+                var state = WebViewState.empty
+                state.pageURL = articleURL
+                fixture.readerContent.pageURL = articleURL
+                fixture.readerContent.content = record
+                configureRecordedArticleCallbacks(fixture)
+                try await fixture.handler.handleNavigationCommitted(state: state)
+                XCTAssertTrue(media.isMediaPlayerPresented)
+                XCTAssertEqual(media.audioURLs, [originalAudio])
+                if !remainsOpen { media.closePlaybackPresentation() }
+
+                try await dispatchPreparedRecordedArticle(fixture, at: articleURL)
+                try realm.write {
+                    record.voiceAudioURL = preparedAudio
+                    // Auto-open is the prior persisted preference. A prepared
+                    // handoff still owes the user's current panel choice.
+                    record.autoOpenMediaPlayer = !remainsOpen
+                }
+                fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+                fixture.handler.onNavigationCommitted(state: state)
+                try await XCTUnwrap(fixture.taskManager.onNavigationCommittedTask).value
+                XCTAssertEqual(media.audioURLs, [preparedAudio ?? originalAudio])
+                XCTAssertEqual(media.isMediaPlayerPresented, remainsOpen)
+
+                // An ordinary navigation to the same URL is authoritative. An
+                // empty source there must clear the retained prepared audio.
+                try realm.write { record.voiceAudioURL = nil }
+                fixture.handler.navigator.load(URLRequest(url: articleURL))
+                // A URL-only render expectation cannot keep recorded audio.
+                fixture.readerModeViewModel.expectSyntheticReaderLoaderCommit(for: articleURL)
+                fixture.handler.onNavigationCommitted(state: state)
+                try await XCTUnwrap(fixture.taskManager.onNavigationCommittedTask).value
+                XCTAssertTrue(media.audioURLs.isEmpty)
+                XCTAssertFalse(media.isMediaPlayerPresented)
+            }
+        }
+    }
+
+    func testSuspendedCommitCannotConsumeSuccessorPreparedArticleAtSameURL() async throws {
+        let articleURL = URL(string: "https://example.invalid/recorded-replacement")!
+        let originalAudio = URL(string: "https://example.invalid/first.m4a")!
+        let replacementAudio = URL(string: "https://example.invalid/next.m4a")!
+        for startsWithPreparedData in [false, true] {
+            let fixture = makeReaderWebViewHandlerFixture()
+            let (realm, record) = try savedRecordedArticle(at: articleURL, audioURL: originalAudio)
+            let media = fixture.handler.readerMediaPlayerViewModel
+            var state = WebViewState.empty
+            state.pageURL = articleURL
+            fixture.readerContent.pageURL = articleURL
+            fixture.readerContent.content = record
+            let mode = fixture.readerModeViewModel
+            let navigator = fixture.handler.navigator
+            let evaluationGate = ReaderCallbackGate()
+            let beganModeEvaluation = expectation(description: "old commit reached its first mode evaluation")
+            var holdNextEvaluation = false
+            configureRecordedArticleCallbacks(fixture, beforeEvaluation: {
+                guard holdNextEvaluation else { return }
+                holdNextEvaluation = false
+                beganModeEvaluation.fulfill()
+                await evaluationGate.wait()
+            })
+            try await fixture.handler.handleNavigationCommitted(state: state)
+            media.closePlaybackPresentation()
+            if startsWithPreparedData {
+                try await dispatchPreparedRecordedArticle(fixture, at: articleURL)
+            }
+            let originalIdentity = navigator.issuedDataNavigationIdentity
+            holdNextEvaluation = true
+            fixture.handler.onNavigationCommitted(state: state)
+            let obsoleteCommit = try XCTUnwrap(fixture.taskManager.onNavigationCommittedTask)
+            addTeardownBlock { @MainActor in
+                await evaluationGate.release()
+                _ = try? await obsoleteCommit.value
+            }
+            await fulfillment(of: [beganModeEvaluation], timeout: 5)
+
+            mode.cancelReaderModeLoad()
+            let successorIdentity = try await dispatchPreparedRecordedArticle(fixture, at: articleURL)
+            XCTAssertNotEqual(successorIdentity, originalIdentity)
+            try realm.write { record.voiceAudioURL = replacementAudio }
+            await evaluationGate.release()
+            do {
+                try await obsoleteCommit.value
+                XCTFail("An obsolete callback must not publish media or consume the successor")
+            } catch is CancellationError {}
+            XCTAssertEqual(mode.expectedSyntheticReaderLoaderURL, articleURL)
+            XCTAssertEqual(media.audioURLs, [originalAudio])
+            XCTAssertFalse(media.isMediaPlayerPresented)
+
+            fixture.handler.onDocumentContextInvalidated(state: state, reason: .navigationCommitted)
+            fixture.handler.onNavigationCommitted(state: state)
+            try await XCTUnwrap(fixture.taskManager.onNavigationCommittedTask).value
+            XCTAssertNil(mode.expectedSyntheticReaderLoaderURL)
+            XCTAssertEqual(media.audioURLs, [replacementAudio])
+            XCTAssertFalse(media.isMediaPlayerPresented)
+        }
+    }
+
+    private func savedRecordedArticle(at url: URL, audioURL: URL) throws -> (Realm, HistoryRecord) {
+        let (realm, record) = try cachedHistoryRecord(url: url)
+        try realm.write {
+            record.title = "Recorded article"
+            record.html = "<p>Recorded article.</p>"
+            record.isReaderModeByDefault = true
+            record.rssContainsFullContent = true
+            record.voiceAudioURL = audioURL
+            record.autoOpenMediaPlayer = true
+        }
+        return (realm, record)
+    }
+
+    private func configureRecordedArticleCallbacks(
+        _ fixture: ReaderWebViewHandlerFixture,
+        beforeEvaluation: @escaping @MainActor @Sendable () async -> Void = {}
+    ) {
+        fixture.handler.readerViewModel = ReaderCallbackViewModel(
+            realmConfiguration: makeReaderCallbackLibraryConfiguration(), systemScripts: []
+        )
+        fixture.handler.scriptCaller.installBinding(
+            ownedBy: UUID(), asyncCaller: { _, _, _, _ in
+                await beforeEvaluation()
+                return .init(nil)
+            }, unsafeCaller: nil, snapshotCapture: nil, coordinateOriginInWindow: { nil }
+        )
+        let mode = fixture.readerModeViewModel
+        mode.navigator = fixture.handler.navigator
+        mode.sharedFontCSSBase64Provider = { nil }
+        mode.readerPublicationDateLoader = { _ in nil }
+        mode.processHTMLBytes = { bytes, _ in bytes }
+    }
+
+    @discardableResult
+    private func dispatchPreparedRecordedArticle(
+        _ fixture: ReaderWebViewHandlerFixture, at url: URL
+    ) async throws -> WebViewNavigator.IssuedDataNavigationIdentity {
+        let mode = fixture.readerModeViewModel
+        mode.readabilityContent = "<html><body><div id='reader-content'><p>Recorded article.</p></div></body></html>"
+        mode.showReaderView(readerContent: fixture.readerContent, scriptCaller: fixture.handler.scriptCaller)
+        await mode.waitForReaderModeRender(for: url)
+        XCTAssertEqual(mode.expectedSyntheticReaderLoaderURL, url)
+        return try XCTUnwrap(fixture.handler.navigator.issuedDataNavigationIdentity)
     }
 
     func testPreparedDocumentURLAnnouncementPreservesRenderSelectionUntilPhysicalCommit() async throws {

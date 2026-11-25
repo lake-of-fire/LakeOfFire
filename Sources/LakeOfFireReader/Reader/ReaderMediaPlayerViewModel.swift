@@ -87,6 +87,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private let readAloudController: ReaderReadAloudController
     private let readAloudVoiceResolver: (String, String) -> AVSpeechSynthesisVoice?
     private var currentContentKey: String?
+    private weak var committedMediaContent: (any ReaderContentProtocol)?
     private var currentContentURL: URL?
     private var ttsUtterances = [ReaderTTSUtterance]()
     private var ttsSentenceIdentifierToIndex = [String: Int]()
@@ -317,14 +318,38 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
+        applyNavigationCommit(content: content, newState: newState)
+    }
+
+    func applyPreparedArticleCommit(content: any ReaderContentProtocol, newState: WebViewState) {
+        applyNavigationCommit(content: content, newState: newState, isPreparedArticle: true)
+    }
+
+    private func applyNavigationCommit(
+        content: any ReaderContentProtocol, newState: WebViewState, isPreparedArticle: Bool = false
+    ) {
         let incomingContentKey = content.compoundKey
+        let supportsRecordedAudio = !newState.pageURL.isNativeReaderView
+            && newState.pageURL.host != nil && !newState.pageURL.isFileURL
+        if isPreparedArticle, supportsRecordedAudio, playbackSource == .recordedAudio,
+           committedMediaContent === content, currentContentKey == incomingContentKey,
+           currentContentURL?.matchesReaderURL(content.url) == true {
+            // Processing may expose a new recording, but omission on this
+            // handoff does not remove the recording or replay auto-open.
+            let voiceAudioURLs = content.resolvedVoiceAudioURLs
+            if !voiceAudioURLs.isEmpty, voiceAudioURLs != audioURLs {
+                audioURLs = voiceAudioURLs
+            }
+            return
+        }
+        committedMediaContent = content
         if currentContentKey != incomingContentKey {
             currentContentKey = incomingContentKey
             resetPlaybackStateForIncomingContent()
         }
         currentContentURL = content.url
         let voiceAudioURLs = content.resolvedVoiceAudioURLs
-        if !newState.pageURL.isNativeReaderView, newState.pageURL.host != nil, !newState.pageURL.isFileURL {
+        if supportsRecordedAudio {
             if voiceAudioURLs != audioURLs {
                 audioURLs = voiceAudioURLs
             }

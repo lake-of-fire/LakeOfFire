@@ -2407,6 +2407,19 @@ public class ReaderModeViewModel: ObservableObject {
         )
     }
 
+    // URL-only expectations can preserve render state, but only an issued data
+    // navigation that survived WebKit's native commit can preserve playback.
+    func preparedReaderDataNavigationIdentity(
+        for url: URL, navigator: WebViewNavigator
+    ) -> WebViewNavigator.IssuedDataNavigationIdentity? {
+        guard let dispatched = expectedSyntheticReaderNavigation,
+              dispatched.navigator === navigator,
+              navigator.isCurrent(dispatched.intent),
+              let expectedURL = authoritativeSyntheticReaderLoaderURL,
+              urlsMatchWithoutHashForHotfix(expectedURL, url) else { return nil }
+        return dispatched.intent
+    }
+
     /// Classify before NavigationTaskManager can reserve or defer a selection.
     /// The exact native URL intent can be delivered again after semantic commit
     /// consumes the expectation; a distinct same-document intent cannot inherit it.
@@ -3805,9 +3818,29 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator
     ) async throws {
-        try await handleNavigationCommitted(readerContent: readerContent, newState: newState,
-                                            scriptCaller: scriptCaller, navigator: navigator,
-                                            isSameDocumentNavigation: false)
+        _ = try await handleNavigationCommitted(
+            readerContent: readerContent, newState: newState,
+            scriptCaller: scriptCaller, navigator: navigator, isSameDocumentNavigation: false
+        )
+    }
+
+    @MainActor
+    func commitReaderDocument(
+        readerContent: ReaderContent,
+        newState: WebViewState,
+        scriptCaller: WebViewScriptCaller,
+        navigator: WebViewNavigator,
+        preparedDataNavigation: WebViewNavigator.IssuedDataNavigationIdentity?
+    ) async throws -> WebViewNavigator.IssuedDataNavigationIdentity? {
+        try await handleNavigationCommitted(
+            readerContent: readerContent, newState: newState,
+            scriptCaller: scriptCaller, navigator: navigator, isSameDocumentNavigation: false,
+            validatePreparedDataNavigation: { currentIdentity in
+                // A callback awaiting mode work cannot consume a same-URL
+                // preparation dispatched after the physical commit.
+                guard currentIdentity == preparedDataNavigation else { throw CancellationError() }
+            }
+        )
     }
 
     @MainActor
@@ -3817,9 +3850,10 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator
     ) async throws {
-        try await handleNavigationCommitted(readerContent: readerContent, newState: newState,
-                                            scriptCaller: scriptCaller, navigator: navigator,
-                                            isSameDocumentNavigation: true)
+        _ = try await handleNavigationCommitted(
+            readerContent: readerContent, newState: newState,
+            scriptCaller: scriptCaller, navigator: navigator, isSameDocumentNavigation: true
+        )
     }
 
     @MainActor
@@ -3828,8 +3862,9 @@ public class ReaderModeViewModel: ObservableObject {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller,
         navigator: WebViewNavigator,
-        isSameDocumentNavigation: Bool
-    ) async throws {
+        isSameDocumentNavigation: Bool,
+        validatePreparedDataNavigation: ((WebViewNavigator.IssuedDataNavigationIdentity?) throws -> Void)? = nil
+    ) async throws -> WebViewNavigator.IssuedDataNavigationIdentity? {
         ReaderSnippetFinalDocumentDiagnostics.record("commit-start", contentURL: newState.pageURL)
         // A cancelled or retired callback has no authority to clear the
         // successor's captured HTML, frame, or loading state.
@@ -3850,7 +3885,7 @@ public class ReaderModeViewModel: ObservableObject {
                 for: newState.pageURL,
                 readerContent: readerContent
             )
-            return
+            return nil
         }
         try Task.checkCancellation()
         
@@ -3887,7 +3922,7 @@ public class ReaderModeViewModel: ObservableObject {
            hasRenderedReadabilityContent,
            urlsMatchWithoutHashForHotfix(canonicalNavigationURL, committedURL),
            lastRenderedURL?.matchesReaderURL(committedURL) == true {
-            return
+            return nil
         }
 
         ReaderSnippetFinalDocumentDiagnostics.record("font-injection-start", contentURL: newState.pageURL)
@@ -3915,8 +3950,13 @@ public class ReaderModeViewModel: ObservableObject {
         }
         try requireCurrentDocument()
 
+        let preparedDataNavigation = isSameDocumentNavigation ? nil : preparedReaderDataNavigationIdentity(
+            for: newState.pageURL, navigator: navigator
+        )
+        try validatePreparedDataNavigation?(preparedDataNavigation)
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
-            return
+            try requireCurrentDocument()
+            return preparedDataNavigation
         }
 
         // Retire a replaced preparation without withdrawing a dispatched HTML
@@ -3949,7 +3989,7 @@ public class ReaderModeViewModel: ObservableObject {
         if newState.pageURL.isReaderURLLoaderURL {
             let duplicateLoaderRender = shouldSkipDuplicateLoaderRender(for: committedURL)
             if duplicateLoaderRender.skip {
-                return
+                return nil
             }
             let activeReaderFileManager = readerFileManager ?? .shared
             let html: String?
@@ -3990,6 +4030,7 @@ public class ReaderModeViewModel: ObservableObject {
                 navigator.load(URLRequest(url: committedURL))
             }
         }
+        return nil
     }
     
     @MainActor
