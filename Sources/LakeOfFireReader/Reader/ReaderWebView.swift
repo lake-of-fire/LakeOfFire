@@ -127,8 +127,11 @@ final class ReaderWebViewHandler {
         }
     }
 
-    func handleNavigationCommitted(state: WebViewState, selectionIntent: WebViewURLTransitionIntent? = nil,
-                                   urlChangeContext: URLChangeContext? = nil) async throws {
+    func handleNavigationCommitted(
+        state: WebViewState, selectionIntent: WebViewURLTransitionIntent? = nil,
+        urlChangeContext: URLChangeContext? = nil,
+        preparedDataNavigation: WebViewNavigator.IssuedDataNavigationIdentity? = nil
+    ) async throws {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
         try Task.checkCancellation()
@@ -183,16 +186,22 @@ final class ReaderWebViewHandler {
             )
             try Task.checkCancellation()
             guard ownsLoadedSelection() else { throw CancellationError() }
+            let committedPreparedDataNavigation: WebViewNavigator.IssuedDataNavigationIdentity?
             if let urlChangeContext {
                 try requireCurrentURLChange(urlChangeContext)
+                committedPreparedDataNavigation = nil
                 try await readerModeViewModel.onSameDocumentURLChanged(
                     readerContent: readerContent, newState: state,
                     scriptCaller: scriptCaller, navigator: navigator
                 )
             } else {
-                try await readerModeViewModel.onNavigationCommitted(
+                if let preparedDataNavigation, !navigator.isCurrent(preparedDataNavigation) {
+                    throw CancellationError()
+                }
+                committedPreparedDataNavigation = try await readerModeViewModel.commitReaderDocument(
                     readerContent: readerContent, newState: state,
-                    scriptCaller: scriptCaller, navigator: navigator
+                    scriptCaller: scriptCaller, navigator: navigator,
+                    preparedDataNavigation: preparedDataNavigation
                 )
             }
             try Task.checkCancellation()
@@ -202,10 +211,17 @@ final class ReaderWebViewHandler {
                   currentContent.url.matchesReaderURL(state.pageURL) else {
                 throw CancellationError()
             }
-            try await readerMediaPlayerViewModel.onNavigationCommitted(
-                content: currentContent,
-                newState: state
-            )
+            guard committedPreparedDataNavigation == preparedDataNavigation else {
+                throw CancellationError()
+            }
+            if let preparedDataNavigation {
+                guard navigator.isCurrent(preparedDataNavigation) else { throw CancellationError() }
+                readerMediaPlayerViewModel.applyPreparedArticleCommit(content: currentContent, newState: state)
+            } else {
+                try await readerMediaPlayerViewModel.onNavigationCommitted(
+                    content: currentContent, newState: state
+                )
+            }
             try Task.checkCancellation()
         } catch is CancellationError {
             ReaderSnippetFinalDocumentDiagnostics.record("commit-cancelled", contentURL: state.pageURL)
@@ -275,10 +291,15 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationCommitted(state: WebViewState) {
+        let preparedDataNavigation = readerModeViewModel.preparedReaderDataNavigationIdentity(
+            for: state.pageURL, navigator: navigator
+        )
         readerContent.withdrawSelectionIntent()
         navigationTaskManager.startOnNavigationCommitted {
             do {
-                try await self.handleNavigationCommitted(state: state)
+                try await self.handleNavigationCommitted(
+                    state: state, preparedDataNavigation: preparedDataNavigation
+                )
             } catch {
                 if !Task.isCancelled { self.readerContent.withdrawSelectionIntent() }
                 throw error
