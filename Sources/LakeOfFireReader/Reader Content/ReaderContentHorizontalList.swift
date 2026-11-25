@@ -77,6 +77,8 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     }
 
     var body: some View {
+        let accessibilityTitle = content.titleForDisplay
+
         Button {
             let selection = content.compoundKey
             let currentPageURL = readerContent.pageURL
@@ -136,6 +138,10 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .environment(
+                    \.readerContentRowOwnsAccessibilityLabel,
+                    !accessibilityTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
             }
             .applyStackListGroupBoxStyle(.automatic, defaultIsGrouped: stackListStyle == .grouped)
             .stackListGroupBoxContentInsets(ReaderContentHorizontalListLayout.groupBoxContentInsets)
@@ -143,7 +149,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         }
         .buttonStyle(.borderless)
         .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
-        .accessibilityLabel(content.titleForDisplay)
+        .accessibilityLabel(accessibilityTitle)
         .tint(.secondary)
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
