@@ -99,6 +99,44 @@ public final class BookmarkStatusCache: ObservableObject {
     }
 }
 
+struct BookmarkActionPresentation {
+    struct Request: Equatable {
+        let id: UUID
+        let contentKey: String
+    }
+
+    private var current: Request?
+    private(set) var failure: Request?
+
+    mutating func begin(contentKey: String) -> Request {
+        let request = Request(id: UUID(), contentKey: contentKey)
+        current = request
+        failure = nil
+        return request
+    }
+
+    @discardableResult
+    mutating func recordFailure(
+        _ error: Error, for request: Request, currentContentKey: String?
+    ) -> Bool {
+        guard !(error is CancellationError),
+              current == request,
+              request.contentKey == currentContentKey else { return false }
+        failure = request
+        return true
+    }
+
+    mutating func acknowledge(_ request: Request) {
+        guard failure == request else { return }
+        failure = nil
+    }
+
+    mutating func retire() {
+        current = nil
+        failure = nil
+    }
+}
+
 public struct BookmarkButton<C: ReaderContentProtocol>: View {
     var width: CGFloat? = nil
     var height: CGFloat? = nil
@@ -107,21 +145,49 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
     var hiddenIfUnbookmarked = false
     
     @Environment(\.isEnabled) private var isEnabled
-    
+    @State private var actionPresentation = BookmarkActionPresentation()
     @ObservedObject private var bookmarkStatusCache = BookmarkStatusCache.shared
     
     private var showBookmarkExists: Bool {
         return isEnabled && bookmarkStatusCache.isBookmarked(readerContent)
     }
+
+    private var actionContentKey: String? {
+        guard isEnabled, !readerContent.isInvalidated else { return nil }
+        return readerContent.compoundKey
+    }
     
     public var body: some View {
+        let presentedFailure = actionPresentation.failure
+        let presentsFailure = Binding(
+            get: {
+                guard let presentedFailure else { return false }
+                return actionPresentation.failure == presentedFailure
+                    && presentedFailure.contentKey == actionContentKey
+            },
+            set: { isPresented in
+                if !isPresented, let presentedFailure {
+                    actionPresentation.acknowledge(presentedFailure)
+                }
+            }
+        )
         Button {
+            guard let actionContentKey else { return }
+            let request = actionPresentation.begin(contentKey: actionContentKey)
             Task { @MainActor in
                 guard !readerContent.isInvalidated else { return }
-                // The result describes this transaction; a later toggle may
-                // already have changed it while follow-up history work awaited.
-                // Realm observation publishes the current canonical status.
-                _ = try await readerContent.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
+                do {
+                    // Realm observation owns the label, including when a later
+                    // toggle changes the status during the history follow-up.
+                    _ = try await readerContent.toggleBookmark(
+                        realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration
+                    )
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    actionPresentation.recordFailure(
+                        error, for: request, currentContentKey: self.actionContentKey
+                    )
+                }
             }
         } label: {
             BookmarkMenuLabel(isBookmarked: showBookmarkExists)
@@ -140,6 +206,15 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
         .accessibilityIdentifier("ReaderBookmark.Toggle")
         .opacity(hiddenIfUnbookmarked ? (showBookmarkExists ? 1 : 0) : 1)
         .allowsHitTesting(hiddenIfUnbookmarked ? showBookmarkExists : true)
+        .alert("Couldn’t Finish Updating Save for Later", isPresented: presentsFailure) {
+            Button("OK") {
+                if let presentedFailure { actionPresentation.acknowledge(presentedFailure) }
+            }
+        } message: {
+            Text("Check whether this page is saved before changing its bookmark again.")
+        }
+        .onChange(of: actionContentKey) { _ in actionPresentation.retire() }
+        .onDisappear { actionPresentation.retire() }
         .task { @MainActor in
             bookmarkStatusCache.startIfNeeded()
         }
@@ -168,8 +243,9 @@ public struct CurrentWebViewBookmarkButton: View {
     @EnvironmentObject private var readerContent: ReaderContent
     
     public var body: some View {
-        if let content = readerContent.content {
+        if let content = readerContent.content, !content.isInvalidated {
             AnyView(content.bookmarkButtonView(width: width, height: height, iconOnly: iconOnly))
+                .id(content.compoundKey)
                 .disabled(readerContent.isReaderProvisionallyNavigating || readerContent.pageURL.isNativeReaderView)
         }
     }
