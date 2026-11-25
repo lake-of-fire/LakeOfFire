@@ -275,6 +275,9 @@ final class ReaderWebViewHandler {
     }
 
     func onNavigationCommitted(state: WebViewState) {
+        readerModeViewModel.bindManagedFontsToPreparedReaderDocument(
+            pageURL: state.pageURL, scriptCaller: scriptCaller, navigator: navigator
+        )
         readerContent.withdrawSelectionIntent()
         navigationTaskManager.startOnNavigationCommitted {
             do {
