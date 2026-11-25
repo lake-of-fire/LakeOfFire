@@ -1499,7 +1499,8 @@ fileprivate func isFeedUnchanged(
 }
 
 fileprivate func isSuccessfulFeedRefreshStatus(_ statusCode: Int) -> Bool {
-    (200..<400).contains(statusCode)
+    // An unsolicited partial response cannot validate the cached feed.
+    statusCode != 206 && (200..<400).contains(statusCode)
 }
 
 fileprivate func getRssData(
@@ -1598,7 +1599,8 @@ fileprivate func getRssData(
             return .notModified(metadata: getMetadata)
         }
         throw FeedError.downloadFailed
-    case 200..<300:
+    case 200..<300 where getHTTPResponse.statusCode != 206:
+        // Refresh requires a complete feed, even if a partial body parses.
         return .fetched(data, documentURL: getHTTPResponse.url ?? rssUrl, metadata: getMetadata)
     case 300..<400:
         if shouldLogNiponica {
