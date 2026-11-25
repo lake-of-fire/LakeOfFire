@@ -1184,7 +1184,8 @@ const computeRawSectionWritingDirection = async (
             finish(null);
             return;
         }
-        timeout = setTimeout(() => finish(null), 1200);
+        // An expired probe can retry. A completed probe can cache a null hint.
+        timeout = setTimeout(() => finish(undefined), 1200)
         const finishWithRawText = async () => {
             if (!isCurrent() || signal?.aborted || typeof loadText !== 'function') return false;
             try {
@@ -1258,7 +1259,7 @@ const computeRawSectionWritingDirection = async (
 };
 
 function makeReplaceURL(sourceURL, loadText = null, { isCurrent = () => true, packageSessionID = null } = {}) {
-    const rawSectionWritingDirectionCache = createOwnedAsyncCache();
+    const rawSectionWritingDirectionCache = createOwnedAsyncCache({ shouldRemember: value => value !== undefined })
     let destroyed = false;
     const isActive = () => !destroyed && isCurrent();
     const replaceURL = async (href, mediaType) => {

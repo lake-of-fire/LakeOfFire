@@ -211,6 +211,104 @@ class BookEndcapShellTests(unittest.TestCase):
         self.assertEqual(result['writingMode'], 'horizontal-tb')
         self.assertEqual(result['breakBefore'], 'always')
 
+    def test_native_writing_direction_retries_after_timeout(self):
+        with zipfile.ZipFile(BytesIO(make_epub())) as archive:
+            entries = {path: archive.read(path).decode('utf-8') for path in archive.namelist()}
+        retry_path = 'OPS/writing-retry.xhtml'
+        no_signal_path = 'OPS/writing-none.xhtml'
+        entries[retry_path] = prepared_chapter('writing-retry').replace(
+            '</head>', '<style>body { writing-mode: vertical-lr }</style></head>')
+        entries[no_signal_path] = prepared_chapter('writing-none')
+        entries['OPS/book.opf'] = entries['OPS/book.opf'].replace(
+            '</manifest>',
+            '<item id="writing-retry" href="writing-retry.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="writing-none" href="writing-none.xhtml" media-type="application/xhtml+xml"/>'
+            '</manifest>').replace(
+            '</spine>', '<itemref idref="writing-retry" linear="no"/>'
+            '<itemref idref="writing-none" linear="no"/></spine>')
+
+        page = self.browser.new_page(viewport={'width': 390, 'height': 844})
+        self.addCleanup(page.close)
+        page.add_init_script(BRIDGE)
+        page.add_init_script('(() => {\nconst entries = ' + json.dumps(entries) + '\n' + '''
+            const fetchOriginal = window.fetch.bind(window)
+            const encoder = new TextEncoder()
+            const reads = window.directionEntryReads = Object.create(null)
+            window.directionEntryAborts = 0
+            window.fetch = (input, options) => {
+                const url = new URL(typeof input === 'string' ? input : input.url, location.href)
+                if (url.protocol !== 'ebook:') return fetchOriginal(input, options)
+                if (url.pathname === '/entries') {
+                    const listing = Object.entries(entries).map(([path, source]) => ({
+                        path, size: encoder.encode(source).length,
+                    }))
+                    return Promise.resolve(new Response(JSON.stringify({entries: listing}), {
+                        headers: {'Content-Type': 'application/json'},
+                    }))
+                }
+                if (url.pathname !== '/entry') return fetchOriginal(input, options)
+                const path = url.searchParams.get('subpath')
+                const source = entries[path]
+                if (source == null) return Promise.resolve(new Response(null, {status: 404}))
+                const count = reads[path] = (reads[path] ?? 0) + 1
+                if (path === 'OPS/writing-retry.xhtml' && count === 1) {
+                    return new Promise((_, reject) => {
+                        options.signal.addEventListener('abort', () => {
+                            window.directionEntryAborts += 1
+                            reject(options.signal.reason)
+                        }, {once: true})
+                    })
+                }
+                return Promise.resolve(new Response(source, {
+                    headers: {'Content-Type': 'application/xhtml+xml; charset=utf-8'},
+                }))
+            }
+            // Chromium lacks the app's ebook: scheme handler. Supply only its
+            // frame transport here, leaving the real Blob/CSS probe untouched.
+            const src = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src')
+            Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+                ...src,
+                set(value) {
+                    const url = new URL(value, location.href)
+                    if (url.protocol === 'ebook:' && (url.pathname === '/processed-section'
+                        || url.searchParams.get('directionProbe') === '1')) {
+                        const source = entries[url.searchParams.get('subpath')]
+                        value = URL.createObjectURL(new Blob([source ?? ''], {type: 'text/html'}))
+                    }
+                    src.set.call(this, value)
+                },
+            })
+        })()''')
+        page.goto(f'http://127.0.0.1:{self.server.server_port}/load/viewer-assets/foliate-js/ebook-viewer.html')
+        wait_for_reader(page, 'typeof window.loadEBook === "function"')
+        page.evaluate('loadEBook({url:"ebook://ebook/load/local/Books/direction-probe.epub",layoutMode:"paginated"})')
+        wait_for_reader(page, 'reader?.initialDisplaySettled === true')
+        result = page.evaluate('''async ([retryPath, noSignalPath]) => {
+            const sections = reader.view.book.sections
+            async function writingHint(path) {
+                const section = sections.find(item => item.id === path)
+                try {
+                    const url = new URL(await section.load())
+                    return [url.searchParams.get('mnbWritingDirection'), url.searchParams.get('mnbWritingMode')]
+                } finally {
+                    section.unload()
+                }
+            }
+            const first = await writingHint(retryPath)
+            const retry = await writingHint(retryPath)
+            const cached = await writingHint(retryPath)
+            const noSignal = [await writingHint(noSignalPath), await writingHint(noSignalPath)]
+            return {first, retry, cached, noSignal, aborts: directionEntryAborts,
+                retryReads: directionEntryReads[retryPath], noSignalReads: directionEntryReads[noSignalPath]}
+        }''', [retry_path, no_signal_path])
+        self.assertEqual(result['first'], [None, None])
+        self.assertEqual(result['aborts'], 1)
+        self.assertEqual(result['retry'], ['vertical', 'vertical-lr'])
+        self.assertEqual(result['cached'], result['retry'])
+        self.assertEqual(result['retryReads'], 2)
+        self.assertEqual(result['noSignal'], [[None, None], [None, None]])
+        self.assertEqual(result['noSignalReads'], 1)
+
     def test_search_cfis_target_processed_structure_from_raw_archive(self):
         processed = {f'OPS/{name}.xhtml': prepared_chapter(name) for name in ['one', 'two']}
         def raw_chapter(name):
