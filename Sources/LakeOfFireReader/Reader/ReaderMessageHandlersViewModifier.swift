@@ -592,6 +592,46 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                 }
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
+                let reason = payload["reason"] as? String
+                if source == "nonEBookDocumentScroll" {
+                    let request = message.frameInfo.request
+                    guard message.frameInfo.isMainFrame,
+                          let binding = message.javaScriptBindingToken,
+                          scriptCaller.currentJavaScriptBindingToken == binding,
+                          reason == "documentScrollBottom" || reason == "documentScrollUp"
+                            || reason == "documentScrollUpFromObservedBottom",
+                          let messageURL = request.url ?? request.mainDocumentURL,
+                          urlsMatchWithoutHash(messageURL, readerContent.pageURL)
+                            || urlsMatchWithoutHash(messageURL, readerContent.cachedContentURL)
+                            || urlsMatchWithoutHash(messageURL, readerContent.content?.url) else {
+                        return
+                    }
+                    let change = ReaderNavigationVisibilityChange(
+                        shouldHide: shouldHide,
+                        reason: reason,
+                        source: source,
+                        direction: direction
+                    )
+                    if let navigationVisibilityWillChangeHandler {
+                        navigationVisibilityWillChangeHandler(change)
+                    } else if reason != "documentScrollUp" {
+                        // Standalone Reader hosts still receive the ordinary
+                        // reveal at arrival and at an unclaimed upward crossing.
+                        setHideNavigationDueToScroll(
+                            shouldHide,
+                            reason: reason,
+                            source: source,
+                            direction: direction
+                        )
+                    }
+                    lastNavigationVisibilityEvent = .init(
+                        timestamp: Date(),
+                        shouldHide: shouldHide,
+                        source: source,
+                        direction: direction
+                    )
+                    return
+                }
                 if source == "toolbar.blankTap" {
                     navigationVisibilityWillChangeHandler?(
                         ReaderNavigationVisibilityChange(
