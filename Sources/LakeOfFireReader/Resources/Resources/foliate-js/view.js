@@ -96,6 +96,7 @@ const SEARCH_BLOCK_ELEMENTS = new Set([
     'section', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul',
 ])
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
+const XLINK_NAMESPACE = 'http://www.w3.org/1999/xlink'
 const IGNORED_SVG_ELEMENTS = new Set(['title', 'desc', 'metadata', 'defs', 'symbol'])
 const isSearchBlock = element => {
     const name = element.localName?.toLowerCase()
@@ -507,11 +508,13 @@ export class View extends HTMLElement {
         if (!scope) return
         const { book } = this
         const section = book.sections[index]
-        for (const a of doc.querySelectorAll('a[href]'))
+        for (const a of doc.querySelectorAll('a'))
             this.#listenInDocumentScope(scope, a, 'click', e => {
                 if (!this.#isDocumentScopeCurrent(scope)) return
+                const href_ = a.getAttribute('href') ?? (a.namespaceURI === SVG_NAMESPACE
+                    ? a.getAttributeNS(XLINK_NAMESPACE, 'href') : null)
+                if (href_ == null) return
                 e.preventDefault()
-                const href_ = a.getAttribute('href')
                 const href = section?.resolveHref?.(href_) ?? href_
                 if (book?.isExternal?.(href))
                     Promise.resolve(this.#emit('external-link', { a, href }, true))

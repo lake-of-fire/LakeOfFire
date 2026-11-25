@@ -53,3 +53,35 @@ export async function runSVGResourceReferences() {
     } finally { loader.destroy() }
 }
 
+export async function runSVGNavigationReferences() {
+    const xlinkNS = 'http://www.w3.org/1999/xlink'
+    const section = { href: 'OPS/art.svg', mediaType: 'image/svg+xml' }
+    const chapter = { href: 'OPS/chapter.xhtml', mediaType: 'application/xhtml+xml' }
+    const authoredLink = 'chapter.xhtml#target'
+    const source = `<s:svg xmlns:s="http://www.w3.org/2000/svg" xmlns:xl="${xlinkNS}">
+      <s:a id="modern" href="${authoredLink}"><s:text>Next</s:text></s:a>
+      <s:a id="legacy" xl:href="${authoredLink}"><s:text>Next</s:text></s:a>
+    </s:svg>`
+    const texts = new Map([
+        [section.href, source],
+        [chapter.href, '<html xmlns="http://www.w3.org/1999/xhtml"><body id="target">Next chapter</body></html>'],
+    ])
+    const reads = []
+    const loader = new Loader({
+        resources: { manifest: [section, chapter] },
+        loadText: async href => { reads.push(href); return texts.get(href) },
+        loadBlob: async () => { throw new Error('Unexpected binary archive read') },
+    })
+    try {
+        const url = await loader.loadItem(section)
+        const output = await (await fetch(url)).text()
+        const doc = new DOMParser().parseFromString(output, 'image/svg+xml')
+        check(!doc.querySelector('parsererror'), 'Rewritten SVG remains valid XML')
+        check(doc.getElementById('modern').getAttribute('href') === authoredLink,
+            'Modern SVG cross-section navigation stays authored')
+        check(doc.getElementById('legacy').getAttributeNS(xlinkNS, 'href') === authoredLink,
+            'Legacy SVG cross-section navigation stays authored')
+        check(!reads.includes(chapter.href), 'Rendering an SVG page must not load its navigation target')
+    } finally { loader.destroy() }
+}
+
