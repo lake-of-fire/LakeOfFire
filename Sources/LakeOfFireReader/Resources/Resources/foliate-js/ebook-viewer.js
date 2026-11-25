@@ -998,6 +998,9 @@ const makeReplaceText = ({
         let neutralHTML;
         try {
             const processedResult = await cache.getOrCreate(cacheKey, run);
+            if (forSearch && nativeSource && processedResult?.isAuthoritativelyProcessed !== true) {
+                throw new Error(`Native EPUB search requires authoritative processed structure: ${href}`)
+            }
             neutralHTML = processedResult?.html ?? null;
         } catch (error) {
             if (!isActive()) return null;
