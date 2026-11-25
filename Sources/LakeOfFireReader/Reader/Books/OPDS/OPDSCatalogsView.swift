@@ -139,6 +139,15 @@ struct OPDSCatalogsView: View {
     
     var body: some View {
         List {
+            if let errorMessage = viewModel.errorMessage {
+                Section {
+                    Text(errorMessage)
+                        .foregroundStyle(.red)
+                    Button("Dismiss Error") {
+                        viewModel.errorMessage = nil
+                    }
+                }
+            }
             ForEach(viewModel.catalogs) { catalog in
                 Button(catalog.title) {
                     showingCatalogDetail = catalog

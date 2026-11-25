@@ -288,4 +288,82 @@ final class OPDSDocumentBoundaryTests: XCTestCase {
         XCTAssertEqual(result.publications.first?.metadata.authors.map(\.name), ["Catalog Writer"])
     }
 
+    func testOPDS1PrefersFullAcquisitionAndUsesDeclaredEPUBTypeForSignedURL() throws {
+        let redirect = URL(string: "https://mirror.example/redirect/catalog.atom")!
+        let xml = """
+        <feed xmlns="\(atom)"><title>Catalog</title>
+          <entry xml:base="../downloads/"><title>Book</title>
+            <link rel="\(acquisition)/open-access" href="open.epub"/>
+            <link rel="\(acquisition)" href="https://[broken" type="application/epub+zip"/>
+            <link rel="\(acquisition)" href="ftp://mirror.example/book.epub" type="application/epub+zip"/>
+            <link rel="\(acquisition)" href="misleading.epub" type="application/pdf"/>
+            <link xml:base="delivery/" rel="\(acquisition)" href="book.bin?key=a%2Fb+%2523&amp;sig=%26%3D"
+                  type="Application/EPUB+ZIP; profile=book"/>
+          </entry>
+        </feed>
+        """
+        let publication = try XCTUnwrap(parse(xml, responseURL: redirect).feed?.publications.first)
+        let epub = try XCTUnwrap(publication.downloadAcquisition(relativeTo: base, requiresEPUB: true))
+        XCTAssertEqual(epub.url.absoluteString, "https://mirror.example/downloads/delivery/book.bin?key=a%2Fb+%2523&sig=%26%3D")
+        XCTAssertEqual(epub.mediaType, "application/epub+zip")
+
+        let anyFormat = try XCTUnwrap(publication.downloadAcquisition(relativeTo: base, requiresEPUB: false))
+        XCTAssertEqual(anyFormat.url.absoluteString, "https://mirror.example/downloads/misleading.epub")
+    }
+
+    func testOPDS1EmptyAndFragmentAcquisitionsCannotDownloadTheCatalog() throws {
+        let result = try feed("""
+        <entry><title>Empty</title><link rel="\(acquisition)" href="" type="application/epub+zip"/></entry>
+        <entry><title>Fragment</title><link rel="\(acquisition)/open-access" href="#cover" type="application/epub+zip"/></entry>
+        <entry><title>Browse</title><link rel="subsection" href="#shelf" type="application/atom+xml"/></entry>
+        """)
+        XCTAssertEqual(result.publications.map(\.metadata.title), ["Empty", "Fragment"])
+        for publication in result.publications {
+            XCTAssertNil(publication.downloadAcquisition(relativeTo: base, requiresEPUB: true), publication.metadata.title)
+            XCTAssertNil(publication.downloadAcquisition(relativeTo: base, requiresEPUB: false), publication.metadata.title)
+        }
+        XCTAssertEqual(result.navigation.first?.href, "https://catalog.example/opds/catalog.atom#shelf")
+    }
+
+    func testOPDS2SkipsRestrictedAndNonResourceAcquisitionsBeforeOpenAccess() throws {
+        let redirect = URL(string: "https://mirror.example/opds/feed.json")!
+        let response = URLResponse(url: redirect, mimeType: "application/opds+json",
+                                   expectedContentLength: -1, textEncodingName: nil)
+        let json = """
+        {
+          "metadata": {"title": "Catalog"},
+          "navigation": [{"title": "Browse", "href": "#shelf", "rel": "subsection"}],
+          "publications": [{"metadata": {"title": "Book"}, "links": [
+            {"href": "", "rel": "\(acquisition)", "type": "application/epub+zip"},
+            {"href": "#cover", "rel": "\(acquisition)", "type": "application/epub+zip"},
+            {"href": "sample.epub", "rel": ["\(acquisition)", "\(acquisition)/sample"]},
+            {"href": "buy.epub", "rel": ["\(acquisition)", "\(acquisition)/buy"]},
+            {"href": "borrow.epub", "rel": ["\(acquisition)", "\(acquisition)/borrow"]},
+            {"href": "subscribe.epub", "rel": ["\(acquisition)", "\(acquisition)/subscribe"]},
+            {"href": "wrong.epub", "rel": "\(acquisition)/open-access", "type": "application/pdf"},
+            {"href": "book.EPUB?token=x%2Fy+%2520", "rel": "\(acquisition)/open-access", "type": "application/octet-stream"}
+          ]}]
+        }
+        """
+        let result = try XCTUnwrap(OPDS2Parser.parse(jsonData: Data(json.utf8), url: base, response: response).feed)
+        let publication = try XCTUnwrap(result.publications.first)
+        let epub = try XCTUnwrap(publication.downloadAcquisition(relativeTo: base, requiresEPUB: true))
+        XCTAssertEqual(epub.url.absoluteString, "https://mirror.example/opds/book.EPUB?token=x%2Fy+%2520")
+        XCTAssertNil(epub.mediaType)
+
+        let anyFormat = try XCTUnwrap(publication.downloadAcquisition(relativeTo: base, requiresEPUB: false))
+        XCTAssertEqual(anyFormat.url.absoluteString, "https://mirror.example/opds/wrong.epub")
+        XCTAssertEqual(result.navigation.first?.href, "https://mirror.example/opds/feed.json#shelf")
+    }
+
+    func testUntypedEPUBAcquisitionRequiresAnEPUBPathSuffix() throws {
+        let publication = Publication(metadata: Metadata(title: "Book"), links: [
+            Link(href: "download?file=book.epub", rel: .opdsAcquisition),
+            Link(href: "book.epub?signature=a%2Fb", rel: .opdsAcquisition)
+        ])
+        let epub = try XCTUnwrap(publication.downloadAcquisition(relativeTo: base, requiresEPUB: true))
+        XCTAssertEqual(epub.url.absoluteString, "https://catalog.example/opds/book.epub?signature=a%2Fb")
+        XCTAssertNil(epub.mediaType)
+    }
+
 }

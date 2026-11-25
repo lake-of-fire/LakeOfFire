@@ -138,38 +138,44 @@ struct BookGridCell: View {
     let author: String?
     let publicationDate: Date?
     let downloadURL: URL?
+    let downloadMediaType: String?
     var onSelected: ((Bool) -> Void)? = nil
     
-    @State private var downloadable: Downloadable?
+    @State private var prepared: (identity: BookDownloadIdentity, value: Downloadable)?
     //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     
-    init(imageURL: URL?, title: String, author: String?, publicationDate: Date?, downloadURL: URL?, onSelected: ((Bool) -> Void)? = nil) {
+    init(
+        imageURL: URL?, title: String, author: String?, publicationDate: Date?, downloadURL: URL?,
+        downloadMediaType: String? = nil, onSelected: ((Bool) -> Void)? = nil
+    ) {
         self.imageURL = imageURL
         self.title = title
         self.author = author
         self.publicationDate = publicationDate
         self.downloadURL = downloadURL
+        self.downloadMediaType = downloadMediaType
         self.onSelected = onSelected
     }
     
     var body: some View {
+        let download = BookDownloadIdentity(url: downloadURL, name: title, mediaType: downloadMediaType)
         VStack(alignment: .leading, spacing: 0) {
-            if let downloadable = downloadable {
-                DownloadableBookGridCell(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate, onSelected: onSelected, downloadable: downloadable)
+            if let prepared, prepared.identity == download {
+                DownloadableBookGridCell(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate, onSelected: onSelected, downloadable: prepared.value)
+                    .id(download)
             } else {
                 BookGridCellContent(imageURL: imageURL, title: title, author: author, publicationDate: publicationDate, onSelected: onSelected)
             }
         }
-        .task { @MainActor in
-            await refreshDownloadable()
-        }
-    }
-    
-    private func refreshDownloadable() async {
-        if let downloadURL = downloadURL {
-            if downloadable?.url != downloadURL || downloadable?.name != title {
-                downloadable = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: title)
-            }
+        .task(id: download) { @MainActor in
+            guard !Task.isCancelled else { return }
+            prepared = nil
+            guard let url = download.url else { return }
+            let result = try? await ReaderFileManager.shared.downloadable(
+                url: url, name: download.name, mediaType: download.mediaType
+            )
+            guard !Task.isCancelled, let result else { return }
+            prepared = (download, result)
         }
     }
 }

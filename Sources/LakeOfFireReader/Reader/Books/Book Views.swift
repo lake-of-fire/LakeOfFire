@@ -51,7 +51,8 @@ struct HorizontalBooks: View {
                         title: publication.title,
                         author: publication.author,
                         publicationDate: publication.publicationDate,
-                        downloadURL: isDownloadable ? publication.downloadURL : nil
+                        downloadURL: isDownloadable ? publication.downloadURL : nil,
+                        downloadMediaType: publication.downloadMediaType
                     ) { wasAlreadyDownloaded in
                         onSelected?(publication, wasAlreadyDownloaded)
                     }
@@ -81,18 +82,22 @@ struct BookListRow: View {
     var onSelected: (@MainActor (Bool, BookLibraryViewModel.OpenSelection) async -> Void)? = nil
     var onNavigateToReader: (() -> Void)? = nil
 
-    @State private var downloadable: Downloadable?
+    @State private var prepared: (identity: BookDownloadIdentity, value: Downloadable)?
 
     var body: some View {
+        let download = BookDownloadIdentity(
+            url: publication.downloadURL, name: publication.title, mediaType: publication.downloadMediaType
+        )
         Group {
-            if let downloadable {
+            if let prepared, prepared.identity == download {
                 DownloadableBookListRow(
                     publication: publication,
                     selectionOwner: selectionOwner,
                     onSelected: onSelected,
                     onNavigateToReader: onNavigateToReader,
-                    downloadable: downloadable
+                    downloadable: prepared.value
                 )
+                .id(download)
             } else {
                 StaticBookListRow(publication: publication)
             }
@@ -102,18 +107,15 @@ struct BookListRow: View {
         .listRowInsets(.init())
         .listRowBackground(Color.clear)
         .listRowSeparatorIfAvailable(.hidden)
-        .task { @MainActor in
-            await refreshDownloadable()
-        }
-    }
-
-    private func refreshDownloadable() async {
-        guard let downloadURL = publication.downloadURL else {
-            downloadable = nil
-            return
-        }
-        if downloadable?.url != downloadURL || downloadable?.name != publication.title {
-            downloadable = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: publication.title)
+        .task(id: download) { @MainActor in
+            guard !Task.isCancelled else { return }
+            prepared = nil
+            guard let url = download.url else { return }
+            let result = try? await ReaderFileManager.shared.downloadable(
+                url: url, name: download.name, mediaType: download.mediaType
+            )
+            guard !Task.isCancelled, let result else { return }
+            prepared = (download, result)
         }
     }
 }

@@ -115,6 +115,59 @@ final class ReaderFileLibraryBoundaryTests: XCTestCase {
         try Data(text.utf8).write(to: destination)
     }
 
+    func testDeclaredEPUBDownloadsRouteAsBooksAndKeepSignedResourceIdentity() async throws {
+        try await withFixture { f in
+            ReaderFileManager.fileDestinationProcessors = [{ @Sendable url in
+                url.pathExtension.lowercased() == "epub" ? RootRelativePath(path: "books") : nil
+            }]
+            let sources = [
+                "https://example.com/download/42?signature=a%2Fb+%2523",
+                "https://example.com/download/42?signature=a%2fb+%2523",
+                "https://example.com/download.php?signature=a%2Fb+%2523",
+            ]
+            var destinations = Set<URL>()
+            for raw in sources {
+                let url = try XCTUnwrap(URL(string: raw))
+                let result = try await f.manager.downloadable(
+                    url: url, name: "Book", mediaType: "APPLICATION/EPUB+ZIP; charset=binary"
+                )
+                let download = try XCTUnwrap(result)
+                XCTAssertEqual(download.url.absoluteString, raw)
+                XCTAssertEqual(download.localDestination.lastPathComponent, url.lastPathComponent + ".epub")
+                XCTAssertEqual(download.localDestination.deletingLastPathComponent()
+                    .deletingLastPathComponent().deletingLastPathComponent(),
+                    f.library.appendingPathComponent("books", isDirectory: true))
+                destinations.insert(download.localDestination)
+            }
+            XCTAssertEqual(destinations.count, sources.count)
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: f.library.path).isEmpty)
+            XCTAssertTrue(f.realm.objects(ContentFile.self).isEmpty)
+            XCTAssertTrue(f.realm.objects(BigSyncPendingMutation.self).isEmpty)
+        }
+    }
+
+    func testImportedStagedEPUBUsesItsFormatInsteadOfTheExtensionlessRemoteURL() async throws {
+        try await withFixture { f in
+            ReaderFileManager.fileDestinationProcessors = [{ @Sendable url in
+                url.pathExtension.lowercased() == "epub" ? RootRelativePath(path: "books") : nil
+            }]
+            let source = f.root.appendingPathComponent("staged.epub")
+            try self.write("staged EPUB payload", to: source)
+            let remote = try XCTUnwrap(URL(string: "https://example.com/download/42?signature=a%2Fb+%2523"))
+            let result = try await f.manager.importFile(fileURL: source, fromDownloadURL: remote)
+            let readerURL = try XCTUnwrap(result)
+            let destination = f.library.appendingPathComponent("books/staged.epub")
+            XCTAssertEqual(try Data(contentsOf: destination), Data("staged EPUB payload".utf8))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: f.library.appendingPathComponent("staged.epub").path))
+            let importedBytes = try await f.manager.read(fileURL: readerURL)
+            XCTAssertEqual(importedBytes, Data("staged EPUB payload".utf8))
+            f.realm.refresh()
+            let record = try XCTUnwrap(f.realm.objects(ContentFile.self).where { !$0.isDeleted }.first)
+            XCTAssertEqual(record.url, readerURL)
+            XCTAssertFalse(try self.journalGeneration(f, record: record).isEmpty)
+        }
+    }
+
     func testCatalogBasenameCollisionCannotClaimAnotherDownloadsBytes() async throws {
         try await withFixture { f in
             let legacy = f.library.appendingPathComponent("book.txt")
