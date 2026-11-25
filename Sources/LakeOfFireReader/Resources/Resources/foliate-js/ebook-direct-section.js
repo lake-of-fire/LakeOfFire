@@ -9,3 +9,22 @@ export const processedSectionURLForHref = (sourceURL, href, writingDirection = n
     if (writingDirection?.writingMode) params.set('mnbWritingMode', writingDirection.writingMode)
     return `ebook://ebook/processed-section?${params.toString()}`
 }
+
+export const prepareWritingDirectionStylesheets = async ({
+    head, loadText, resolveArchivePath, signal, blobURLs,
+}) => {
+    const stylesheetLinks = Array.from(head.querySelectorAll?.('link[rel="stylesheet"][href]') ?? [])
+    for (const link of stylesheetLinks) {
+        if (signal?.aborted) return
+        const path = resolveArchivePath?.(link.getAttribute('href'))
+        if (!path) continue
+        try {
+            const css = await loadText?.(path, { signal })
+            if (signal?.aborted) return
+            if (!css) continue
+            const url = URL.createObjectURL(new Blob([css], { type: 'text/css' }))
+            blobURLs.push(url)
+            link.href = url
+        } catch (_error) {}
+    }
+}

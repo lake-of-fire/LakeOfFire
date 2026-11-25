@@ -42,6 +42,148 @@ internal extension URL {
     }
 }
 
+private func normalizedEbookNetworkPath(_ authored: String) -> String? {
+    let value = authored.trimmingCharacters(in: CharacterSet(charactersIn: " \t\n\r\u{000C}"))
+    guard value.hasPrefix("//") else { return nil }
+    let authorityAndPath = value.prefix { $0 != "?" && $0 != "#" }
+    let authority = authorityAndPath.dropFirst(2).prefix { $0 != "/" }
+    guard !authority.isEmpty, !authority.utf8.contains(0x20), !authorityAndPath.contains("\\"),
+          !authorityAndPath.utf8.contains(where: { $0 < 0x20 || $0 == 0x7f }) else { return nil }
+    let absolute = "https:" + value
+    // Older Foundation versions need spaces escaped for validation. WebKit
+    // still receives the authored path, query and fragment without reserialization.
+    let validationURL = "https:" + value.replacingOccurrences(of: " ", with: "%20")
+    guard let host = URL(string: validationURL)?.host, !host.isEmpty else { return nil }
+    return absolute
+}
+
+private func ebookSrcsetASCIIWhitespace(_ byte: UInt8) -> Bool {
+    byte == 0x20 || byte == 0x09 || byte == 0x0a || byte == 0x0c || byte == 0x0d
+}
+
+private func normalizedEbookSrcset(_ value: String) -> String? {
+    let input = value.utf8
+    var cursor = input.startIndex
+    var copiedThrough = cursor
+    var output: [UInt8] = []
+
+    // Find candidate URL tokens using the HTML srcset splitting/tokenizing rules.
+    // Leave descriptor validation to WebKit and copy every byte outside replaced URLs.
+    while cursor != input.endIndex {
+        while cursor != input.endIndex,
+              ebookSrcsetASCIIWhitespace(input[cursor]) || input[cursor] == 0x2c {
+            input.formIndex(after: &cursor)
+        }
+        guard cursor != input.endIndex else { break }
+        let urlStart = cursor
+        while cursor != input.endIndex, !ebookSrcsetASCIIWhitespace(input[cursor]) {
+            input.formIndex(after: &cursor)
+        }
+        var urlEnd = cursor
+        while urlEnd != urlStart, input[input.index(before: urlEnd)] == 0x2c {
+            input.formIndex(before: &urlEnd)
+        }
+        let url = input[urlStart..<urlEnd]
+        if url.starts(with: [0x2f, 0x2f]),
+           let normalized = normalizedEbookNetworkPath(String(decoding: url, as: UTF8.self)) {
+            output.append(contentsOf: input[copiedThrough..<urlStart])
+            output.append(contentsOf: normalized.utf8)
+            copiedThrough = urlEnd
+        }
+        if urlEnd != cursor { continue }
+
+        var inParentheses = false
+        while cursor != input.endIndex {
+            let byte = input[cursor]
+            input.formIndex(after: &cursor)
+            if inParentheses {
+                if byte == 0x29 { inParentheses = false }
+            } else if byte == 0x2c {
+                break
+            } else if byte == 0x28 {
+                inParentheses = true
+            }
+        }
+    }
+    guard copiedThrough != input.startIndex else { return nil }
+    output.append(contentsOf: input[copiedThrough..<input.endIndex])
+    return String(decoding: output, as: UTF8.self)
+}
+
+private func ebookResourceIsInInertOrForeignContent(_ element: Element, body: Element) -> Bool {
+    var ancestor = element.parent()
+    while let current = ancestor, current !== body {
+        let localName = current.tagName().split(separator: ":").last?.lowercased()
+        if localName == "template" || localName == "svg" || localName == "math" { return true }
+        ancestor = current.parent()
+    }
+    return false
+}
+
+private func normalizeEbookResourceAttribute(
+    _ attribute: String, on element: Element, using normalize: (String) -> String?
+) {
+    guard let value = try? element.attr(attribute), let normalized = normalize(value) else { return }
+    _ = try? element.attr(attribute, normalized)
+}
+
+private func ebookImageIsInInlineSVG(_ image: Element, body: Element) -> Bool {
+    let svgNamespace = "http://www.w3.org/2000/svg"
+    var ancestor: Element? = image
+    var foundSVGRoot = false
+    var declaredNamespace: String?
+    while let current = ancestor {
+        if current === body {
+            // The direct response is HTML, which also recognizes an unprefixed
+            // <svg> without an xmlns declaration.
+            return foundSVGRoot && (declaredNamespace ?? svgNamespace) == svgNamespace
+        }
+        let name = current.tagName().lowercased()
+        switch name {
+        case "template", "foreignobject", "desc", "title", "math":
+            return false
+        default:
+            break
+        }
+        if !foundSVGRoot {
+            if declaredNamespace == nil, current.hasAttr("xmlns") {
+                declaredNamespace = try? current.attr("xmlns")
+            }
+            foundSVGRoot = name == "svg"
+        }
+        ancestor = current.parent()
+    }
+    return false
+}
+
+private func normalizeEbookPassiveResourceURLs(in doc: SwiftSoup.Document) {
+    guard let body = doc.body(), let elements = try? body.select(
+        "img[src], img[srcset], audio[src], video[src], video[poster], " +
+        "audio > source[src], video > source[src], audio > track[src], video > track[src], picture > source[srcset]"
+    ) else { return }
+
+    for element in elements where !ebookResourceIsInInertOrForeignContent(element, body: body) {
+        switch element.tagName().lowercased() {
+        case "img":
+            normalizeEbookResourceAttribute("src", on: element, using: normalizedEbookNetworkPath)
+            normalizeEbookResourceAttribute("srcset", on: element, using: normalizedEbookSrcset)
+        case "video":
+            normalizeEbookResourceAttribute("src", on: element, using: normalizedEbookNetworkPath)
+            normalizeEbookResourceAttribute("poster", on: element, using: normalizedEbookNetworkPath)
+        case "source" where element.parent()?.tagName().lowercased() == "picture":
+            normalizeEbookResourceAttribute("srcset", on: element, using: normalizedEbookSrcset)
+        default:
+            normalizeEbookResourceAttribute("src", on: element, using: normalizedEbookNetworkPath)
+        }
+    }
+
+    guard let images = try? body.getElementsByTag("image") else { return }
+    for image in images where ebookImageIsInInlineSVG(image, body: body) {
+        let attribute = image.hasAttr("href") ? "href" : "xlink:href"
+        normalizeEbookResourceAttribute(attribute, on: image, using: normalizedEbookNetworkPath)
+    }
+}
+
 internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Document {
     // Apply visibility sentinels. In the ebook pipeline this must run after
     // reader tags are injected, so sentinels never split text before MeCab sees it.
@@ -154,7 +296,10 @@ public func ebookTextProcessor(
                 isCacheWarmer,
                 true,
                 contentFingerprint,
-                { $0 }
+                { document in
+                    normalizeEbookPassiveResourceURLs(in: document)
+                    return document
+                }
             )
             try Task.checkCancellation()
         }
@@ -169,6 +314,7 @@ public func ebookTextProcessor(
             if isXML {
                 doc?.outputSettings().escapeMode(.xhtml)
             }
+            if let doc { normalizeEbookPassiveResourceURLs(in: doc) }
         }
         
         guard var doc else {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { element as el, xmlDocument as xml } from './xml-fixture.mjs'
+import { prepareWritingDirectionStylesheets, processedSectionURLForHref } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-direct-section.js'
 
 globalThis.DOMParser = class {}
 const { TOCProgress } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/progress.js')
@@ -224,6 +225,222 @@ test('script resource references cannot confuse a percent-named file with its sp
     } finally { loader?.destroy(); f.close() }
 })
 
+test('stylesheet output retains external URI data without loading matching package paths', async () => {
+    const window = globalThis.window
+    globalThis.window = { innerWidth: 800, innerHeight: 600 }
+    const stylesheet = { href: 'OPS/style.css', mediaType: 'text/css' }
+    const manifest = [stylesheet,
+        { href: 'OPS/theme.css', mediaType: 'text/css' },
+        { href: 'OPS/image.png', mediaType: 'image/png' },
+    ]
+    const reads = [], blobs = []
+    const importHref = '//invalid.invalid/OPS/theme.css?key=a%2Bb#edition'
+    const imageHref = '//invalid.invalid/OPS/image.png?size=2#detail'
+    const escapedHref = '//assets.example/a%2Fb%5Cc.png?key=x%2By#detail'
+    const css = `@import "${importHref}" screen;\n`
+        + `.image { background: url(${imageHref}); mask: url('${escapedHref}') }`
+    const loader = new Loader({
+        resources: { manifest },
+        loadText: async href => {
+            reads.push(href)
+            return href === stylesheet.href ? css : ''
+        },
+        loadBlob: async href => {
+            blobs.push(href)
+            return new Blob(['archive asset'])
+        },
+    })
+    try {
+        const url = await loader.loadItem(stylesheet)
+        const rewritten = await (await fetch(url)).text()
+        assert.equal(rewritten, `@import "https:${importHref}" screen;\n`
+            + `.image { background: url("https:${imageHref}"); mask: url("https:${escapedHref}") }`)
+        assert.deepEqual(reads, [stylesheet.href])
+        assert.deepEqual(blobs, [])
+    } finally {
+        loader.destroy()
+        globalThis.window = window
+    }
+})
+
+test('internal references preserve the fragment and validate the path before dot segments collapse', async () => {
+    const f = makeURIFixture({ names: ['chapter.xhtml'] })
+    let loader
+    try {
+        await f.book.init()
+        const section = f.book.sections[0]
+        assert.equal(section.resolveHref(`chapter.xhtml?edition=2#${encodedFragment}`),
+            `OPS/chapter.xhtml#${encodedFragment}`)
+        loader = new Loader({ resources: f.book.resources, loadBlob: f.loadBlob, replaceURL: f.book.replaceURL })
+        for (const href of ['#glyph', '?edition=2#glyph', 'blob:https://example.com/id#glyph']) {
+            assert.equal(await loader.loadHref(href, section.id), href)
+        }
+        for (const href of ['nested%2F/../chapter.xhtml', 'nested%5C/../chapter.xhtml',
+            'nested%2\nf/../chapter.xhtml', String.raw`\\invalid.invalid/OPS/chapter.xhtml`]) {
+            assert.throws(() => section.resolveHref(href), URIError)
+            assert.equal(await loader.loadHref(href, section.id), href)
+        }
+        assert.deepEqual(f.processed, [])
+        assert.deepEqual(f.blobs, [])
+    } finally { loader?.destroy(); f.close() }
+})
+
+test('srcset rewrites complete URL tokens and preserves candidate spacing and descriptors', async () => {
+    const directory = 'OPS/literal%20'
+    const chapter = `${directory}/chapter.xhtml`
+    const sharedPath = `${directory}/image#?%2F.png`
+    const alternatePath = `${directory}/alt,wide.png`
+    const spacedHref = 'page\u3000image.png'
+    const spacedPath = `${directory}/${spacedHref}`
+    const sharedHref = 'image%23%3F%252F.png'
+    const data = 'data:image/png;base64,a,b'
+    const external = '//invalid.invalid/OPS/pixel.png?sig=a%2Bb,more#part'
+    const owned = 'blob:https://example.com/owned'
+    const rejected = 'nested%2F/../would-read.png'
+    const authored = ` , ${sharedHref}?rev=2#glyph 1x,  ${data} 2x,\n ${external} 3x, `
+        + `${sharedHref} shape(1,//ignored), alt,wide.png,, ${spacedHref}\f1x\t , `
+        + `${rejected} 6x, ${owned} 4x, missing.png,other.png 5x`
+    const reads = []
+    const loader = new Loader({
+        resources: { manifest: [sharedPath, alternatePath, spacedPath, `${directory}/would-read.png`, 'OPS/pixel.png', owned]
+            .map(href => ({ href, mediaType: 'image/png' })) },
+        loadBlob: async href => {
+            reads.push(href)
+            return new Blob([href], { type: 'image/png' })
+        },
+    })
+    try {
+        const output = await loader.replaceSrcset(authored, chapter)
+        const [shared, repeated, alternate, spaced, unchanged] = output.match(/blob:[^#,\s]+/g)
+        assert.equal(shared, repeated)
+        assert.equal(unchanged, owned)
+        assert.equal(output, ` , ${shared}#glyph 1x,  ${data} 2x,\n https:${external} 3x, `
+            + `${shared} shape(1,//ignored), ${alternate},, ${spaced}\f1x\t , `
+            + `${rejected} 6x, ${owned} 4x, missing.png,other.png 5x`)
+        assert.deepEqual(reads, [sharedPath, alternatePath, spacedPath])
+        assert.equal(await (await fetch(shared)).text(), sharedPath)
+        assert.equal(await (await fetch(alternate)).text(), alternatePath)
+        assert.equal(await (await fetch(spaced)).text(), spacedPath)
+    } finally { loader.destroy() }
+})
+
+test('retired srcset work discards a held image read and stops before the next candidate', async () => {
+    const reads = []
+    const firstRead = Promise.withResolvers()
+    const response = Promise.withResolvers()
+    const lateImage = new Blob(['late image'])
+    const loader = new Loader({
+        resources: { manifest: ['OPS/first.png', 'OPS/second.png']
+            .map(href => ({ href, mediaType: 'image/png' })) },
+        loadBlob: href => {
+            reads.push(href)
+            firstRead.resolve()
+            return response.promise
+        },
+    })
+    const replacing = loader.replaceSrcset('first.png 1x, second.png 2x', 'OPS/chapter.xhtml')
+    try {
+        await firstRead.promise
+        loader.destroy()
+        response.resolve(lateImage)
+        assert.equal(await replacing, null)
+        assert.deepEqual(reads, ['OPS/first.png'])
+    } finally {
+        loader.destroy()
+        response.resolve(lateImage)
+        await replacing.catch(() => {})
+    }
+})
+
+test('direct section writing probe installs only the exact archived stylesheet', async () => {
+    const directory = 'OPS/literal%20'
+    const chapter = { href: `${directory}/chapter.xhtml`, mediaType: 'application/xhtml+xml' }
+    const stylePath = `${directory}/style#?%2F.css`
+    const css = 'body { writing-mode: vertical-rl }'
+    const entries = new Map([
+        [stylePath, css],
+        ['OPS/wrong.css', 'body { writing-mode: horizontal-tb }'],
+        [`${directory}/wrong.css`, 'body { writing-mode: horizontal-tb }'],
+    ])
+    const hrefs = [
+        'style%23%3F%252F.css?edition=2#theme',
+        '  //invalid.invalid/OPS/wrong.css?sig=a%2Bb#part ',
+        'https://invalid.invalid/OPS/wrong.css?sig=a%2Bb#part',
+        'nested%2F/../wrong.css',
+        'nested%5C/../wrong.css',
+        '?edition=2#theme',
+        '#theme',
+        'blob:https://example.com/stylesheet',
+    ]
+    const links = hrefs.map(href => ({
+        href,
+        getAttribute(name) { return name === 'href' ? this.href : null },
+    }))
+    const reads = [], blobURLs = []
+    const source = 'ebook://ebook/load/local/book.epub'
+    const loader = new Loader({
+        resources: { manifest: [chapter] },
+        replaceURL: async (href, _mediaType, resolveArchivePath) => {
+            await prepareWritingDirectionStylesheets({
+                head: { querySelectorAll: () => links },
+                loadText: async path => { reads.push(path); return entries.get(path) ?? null },
+                resolveArchivePath,
+                blobURLs,
+            })
+            return processedSectionURLForHref(source, href)
+        },
+    })
+
+    try {
+        const directURL = new URL(await loader.loadItem(chapter))
+        assert.equal(directURL.searchParams.get('subpath'), chapter.href)
+        assert.equal(directURL.searchParams.get('direct'), '1')
+        assert.deepEqual(reads, [stylePath])
+        assert.deepEqual(blobURLs, [links[0].href])
+        assert.equal(await (await fetch(links[0].href)).text(), css)
+        assert.deepEqual(links.slice(1).map(link => link.href), hrefs.slice(1))
+    } finally {
+        loader.destroy()
+        for (const url of blobURLs) URL.revokeObjectURL(url)
+    }
+})
+
+test('an aborted writing probe discards late stylesheet bytes and stops reading links', async () => {
+    const hrefs = ['first.css', 'second.css']
+    const links = hrefs.map(href => ({
+        href,
+        getAttribute(name) { return name === 'href' ? this.href : null },
+    }))
+    const controller = new AbortController()
+    const started = Promise.withResolvers()
+    const stylesheet = Promise.withResolvers()
+    const reads = [], blobURLs = []
+    const preparing = prepareWritingDirectionStylesheets({
+        head: { querySelectorAll: () => links },
+        resolveArchivePath: href => `OPS/${href}`,
+        loadText: (path, { signal }) => {
+            reads.push({ path, signal })
+            started.resolve()
+            return stylesheet.promise
+        },
+        signal: controller.signal,
+        blobURLs,
+    })
+
+    try {
+        await started.promise
+        controller.abort()
+        stylesheet.resolve('body { writing-mode: vertical-rl }')
+        await preparing
+        assert.deepEqual(reads.map(({ path }) => path), ['OPS/first.css'])
+        assert.equal(reads[0].signal, controller.signal)
+        assert.deepEqual(links.map(link => link.href), hrefs)
+        assert.deepEqual(blobURLs, [])
+    } finally {
+        for (const url of blobURLs) URL.revokeObjectURL(url)
+    }
+})
+
 // Only DOM storage and the renderer are doubles. EPUB, View link handling,
 // TOC click callbacks, navigation resolution and history run as shipped.
 class DOMElement extends EventTarget {
@@ -245,11 +462,20 @@ class Renderer extends DOMElement {
     destroy() {}
 }
 
-test('real View content links and TOC clicks reach the intended percent/reserved-name sections', async () => {
+const withViewLinks = async (hrefs, fixtureOptions, run) => {
     globalThis.HTMLElement = DOMElement
-    globalThis.ResizeObserver = class { observe() {}; unobserve() {}; disconnect() {} }
+    globalThis.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+    }
     globalThis.CSSStyleSheet = class { replaceSync() {} }
-    globalThis.CustomEvent = class extends Event { constructor(type, options = {}) { super(type, options); this.detail = options.detail } }
+    globalThis.CustomEvent = class extends Event {
+        constructor(type, options = {}) {
+            super(type, options)
+            this.detail = options.detail
+        }
+    }
     globalThis.customElements = { define() {} }
     globalThis.NodeFilter = { SHOW_ELEMENT: 1, SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8, FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3 }
     const renderer = new Renderer()
@@ -258,16 +484,15 @@ test('real View content links and TOC clicks reach the intended percent/reserved
         createTreeWalker: () => ({}),
     }
     const { View } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/view.js')
-    const { createTOCView } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ui/tree.js')
-    const f = makeURIFixture({ directory: 'OPS/literal%20' })
+    const f = makeURIFixture(fixtureOptions)
     const view = new View()
     try {
         await f.book.init()
         f.book.rendition.layout = 'pre-paginated'
         await view.open(f.book)
-        const anchors = filenames.map(name => {
+        const anchors = hrefs.map(href => {
             const anchor = new DOMElement()
-            anchor.setAttribute('href', `${encodeURIComponent(name)}#${encodedFragment}`)
+            anchor.setAttribute('href', href)
             return anchor
         })
         const doc = new EventTarget()
@@ -275,6 +500,14 @@ test('real View content links and TOC clicks reach the intended percent/reserved
         doc.location = { href: 'ebook://processed/chapter' }
         doc.querySelectorAll = selector => selector === 'a[href]' ? anchors : []
         renderer.dispatchEvent(new CustomEvent('load', { detail: { doc, index: 0, location: doc.location.href } }))
+        await run({ f, view, renderer, anchors })
+    } finally { view.close(); f.close() }
+}
+
+test('real View content links and TOC clicks reach the intended percent/reserved-name sections', async () => {
+    const { createTOCView } = await import('../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ui/tree.js')
+    const hrefs = filenames.map(name => `${encodeURIComponent(name)}#${encodedFragment}`)
+    await withViewLinks(hrefs, { directory: 'OPS/literal%20' }, async ({ f, view, renderer, anchors }) => {
         for (const [i, anchor] of anchors.entries()) {
             anchor.dispatchEvent(new Event('click', { cancelable: true }))
             await new Promise(resolve => setImmediate(resolve))
@@ -287,5 +520,56 @@ test('real View content links and TOC clicks reach the intended percent/reserved
             assert.equal((await jump)?.index, i)
             assert.equal(renderer.calls.at(-1)?.index, i)
         }
-    } finally { view.close(); f.close() }
+    })
+})
+
+test('real View hands complete external URIs to consumers and respects cancellation', async () => {
+    const cases = [
+        ['https://example.com/page?title=a%2Bb#part'],
+        ['mailto:reader@example.com?subject=Book#part'],
+        ['itms-apps://apps.apple.com/app/id123?mt=8#details'],
+        ['Web+Reader:book?edition=2#part'],
+        ['foo.bar:target?edition=2#part'],
+        ['blobster:target?edition=2#part'],
+        ['//example.com/a%2Fb%5Cc?token=x%2By#part', 'https://example.com/a%2Fb%5Cc?token=x%2By#part'],
+        ['//invalid.invalid/OPS/chapter.xhtml?edition=2#part', 'https://invalid.invalid/OPS/chapter.xhtml?edition=2#part'],
+        [' \t//invalid.invalid/OPS/chapter.xhtml?edition=3#part\n', 'https://invalid.invalid/OPS/chapter.xhtml?edition=3#part'],
+        ['Web+Reader:cancel?edition=2#part'],
+    ]
+    const expected = cases.map(([authored, resolved = authored]) => resolved)
+    const cancelled = expected.at(-1)
+    await withViewLinks(cases.map(([href]) => href), { names: ['chapter.xhtml'] }, async ({ f, view, renderer, anchors }) => {
+        const external = [], internal = [], opened = []
+        const open = globalThis.open
+        globalThis.open = (...args) => opened.push(args)
+        view.addEventListener('external-link', event => {
+            external.push(event.detail.href)
+            if (event.detail.href === cancelled) event.preventDefault()
+        })
+        view.addEventListener('link', event => internal.push(event.detail.href))
+        try {
+            for (const [i, anchor] of anchors.entries()) {
+                assert.equal(f.book.sections[0].resolveHref(anchor.getAttribute('href')), expected[i])
+                assert.equal(anchor.dispatchEvent(new Event('click', { cancelable: true })), false)
+            }
+            await new Promise(resolve => setImmediate(resolve))
+            assert.deepEqual(external, expected)
+            assert.deepEqual(opened, expected.slice(0, -1).map(href => [href, '_blank']))
+            assert.deepEqual(internal, [])
+            assert.deepEqual(renderer.calls, [])
+        } finally { globalThis.open = open }
+    })
+})
+
+test('EPUB scheme classification uses ASCII URI grammar and excludes only blob itself', () => {
+    const f = makeURIFixture()
+    try {
+        for (const href of ['A1+.-:target', 'blobster:target', 'blob+reader:target']) {
+            assert.equal(f.book.isExternal(href), true, href)
+        }
+        for (const href of ['blob:https://example.com/id', 'BLOB:https://example.com/id',
+            '1reader:target', 'reader_name:target', './A:B.xhtml', 'OPS/chapter.xhtml#part']) {
+            assert.equal(f.book.isExternal(href), false, href)
+        }
+    } finally { f.close() }
 })

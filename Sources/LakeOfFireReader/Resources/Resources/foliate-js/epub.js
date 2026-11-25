@@ -73,7 +73,12 @@ const childGetter = (doc, ns) => {
     }
 }
 
-const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
+const isExternal = uri => /^(?!blob:)[a-z][a-z\d+.-]*:/i.test(uri)
+
+const archiveURLBase = 'https://invalid.invalid/'
+const normalizeURLReference = url => url
+    .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '')
+    .replace(/[\t\n\r]/g, '')
 
 // Archive identities are raw names. URI references stay encoded until an
 // exact storage lookup; a literal "%20" must never become a space twice.
@@ -92,23 +97,50 @@ const uriToArchivePath = href => {
 // relativeTo is always a raw archive path, never an already encoded URI.
 const resolveURL = (url, relativeTo) => {
     if (isExternal(url)) return url
-    // Check before URL dot-segment normalization can discard the component.
-    if (/%(?:2f|5c)/i.test(splitInternalResourceReference(url).resourceHref))
-        throw new URIError('Encoded archive path separator')
-    const root = 'https://invalid.invalid/'
-    let obj
+    const reference = normalizeURLReference(url)
+    if (isExternal(reference) || /^blob:/i.test(reference)) return reference
     try {
-        obj = new URL(url, root + archivePathToURI(relativeTo))
+        // An authored authority is external even if it names the synthetic host.
+        if (reference.startsWith('//')) return new URL(reference, archiveURLBase).href
+        if (/^[\\/]{2}/.test(reference)) throw new URIError('Invalid archive URI reference')
+        // Check before URL dot-segment normalization can discard the component.
+        if (/%(?:2f|5c)/i.test(splitInternalResourceReference(reference).resourceHref))
+            throw new URIError('Encoded archive path separator')
+        const url = new URL(reference, archiveURLBase + archivePathToURI(relativeTo))
+        return `${archivePathToURI(decodeArchivePath(url.pathname.slice(1)))}${url.hash}`
     } catch (error) {
         if (error instanceof TypeError)
             throw new URIError('Invalid archive URI reference')
         throw error
     }
-    obj.search = ''
-    return obj.href.startsWith(root)
-        ? `${archivePathToURI(decodeArchivePath(obj.pathname.slice(1)))}${obj.hash}`
-        : obj.href
 }
+
+const resolveArchiveResourcePath = (href, base) => {
+    if (typeof href !== 'string') return null
+    const reference = normalizeURLReference(href)
+    if (!reference || /^[?#]/.test(reference)) return null
+    try {
+        const resolved = resolveURL(reference, base)
+        if (isExternal(resolved) || /^blob:/i.test(resolved)) return null
+        return uriToArchivePath(resolved)
+    } catch (error) {
+        if (error instanceof URIError) return null
+        throw error
+    }
+}
+
+const xmlStylesheetHref = data => {
+    // Consume quoted pseudo-attributes in order so text inside another value
+    // cannot be mistaken for the stylesheet href.
+    const attributes = /(?:^|[\t\n\r ]+)([^=\t\n\r "'<>]+)[\t\n\r ]*=[\t\n\r ]*(["'])(.*?)\2/gsy
+    for (const match of data.matchAll(attributes)) {
+        const [attribute, name, , value] = match
+        if (name === 'href') return { value, start: match.index + attribute.length - value.length - 1 }
+    }
+}
+
+const isSrcsetWhitespace = code => code === 0x20 || code === 0x09
+    || code === 0x0a || code === 0x0c || code === 0x0d
 
 const manabiEpubReaderLoadLog = (stage, payload = {}) => {
     try {
@@ -913,10 +945,15 @@ export class Loader {
     async loadHref(href, base, parents = []) {
         if (this.#destroyed) return null
         if (typeof href !== 'string' || !href || isExternal(href)) return href
-        const { resourceHref, fragment } = splitInternalResourceReference(href)
-        if (!resourceHref) return href
+        const reference = normalizeURLReference(href)
+        if (!reference || /^[?#]/.test(reference)) return href
+        let resolved
         let path
-        try { path = uriToArchivePath(resolveURL(resourceHref, base)) }
+        try {
+            resolved = resolveURL(href, base)
+            if (isExternal(resolved)) return resolved
+            path = uriToArchivePath(resolved)
+        }
         catch (error) {
             if (error instanceof URIError) return href
             throw error
@@ -924,7 +961,46 @@ export class Loader {
         const item = this.manifest.find(item => item.href === path)
         if (!item) return href
         const url = await this.loadItem(item, parents.concat(base))
+        const { fragment } = splitInternalResourceReference(href)
         return url && fragment ? `${url}${fragment}` : url
+    }
+    async replaceSrcset(value, base, parents = []) {
+        if (this.#destroyed) return null
+        let cursor = 0
+        let copiedThrough = 0
+        let result = ''
+
+        // Locate URL tokens using HTML's srcset splitting rules. The browser
+        // still validates the descriptors and selects a candidate.
+        while (cursor < value.length) {
+            while (cursor < value.length && (isSrcsetWhitespace(value.charCodeAt(cursor)) || value[cursor] === ','))
+                cursor += 1
+            if (cursor === value.length) break
+            const start = cursor
+            while (cursor < value.length && !isSrcsetWhitespace(value.charCodeAt(cursor))) cursor += 1
+            let end = cursor
+            while (end > start && value[end - 1] === ',') end -= 1
+            const href = value.slice(start, end)
+            if (!/^blob:/i.test(href)) {
+                const url = await this.loadHref(href, base, parents)
+                if (this.#destroyed) return null
+                if (url && url !== href) {
+                    result += value.slice(copiedThrough, start) + url
+                    copiedThrough = end
+                }
+            }
+            if (end !== cursor) continue
+
+            let inParentheses = false
+            while (cursor < value.length) {
+                const character = value[cursor++]
+                if (inParentheses) {
+                    if (character === ')') inParentheses = false
+                } else if (character === ',') break
+                else if (character === '(') inParentheses = true
+            }
+        }
+        return result + value.slice(copiedThrough)
     }
     async loadReplaced(item, parents = []) {
         if (this.#destroyed) return null
@@ -941,7 +1017,8 @@ export class Loader {
         })
         const parent = parents[parents.length - 1]
         if (this.replaceURL && [MIME.XHTML, MIME.HTML].includes(mediaType)) {
-            const directURL = await this.replaceURL(href, mediaType)
+            const directURL = await this.replaceURL(href, mediaType,
+                reference => resolveArchiveResourcePath(reference, href))
             if (this.#destroyed) return null
             if (!directURL) {
                 const error = new Error(`Direct processed section URL required for ${href}`)
@@ -1000,24 +1077,21 @@ export class Loader {
         if ([MIME.XHTML, MIME.HTML, MIME.SVG].includes(mediaType)) {
             const { doc, mediaType: effectiveMediaType } =
                 parseContentDocument(new DOMParser(), replacedStr, mediaType)
-            // replace hrefs in XML processing instructions
-            // this is mainly for SVGs that use xml-stylesheet
+            // Only top-level stylesheet instructions before the root apply.
             if ([MIME.XHTML, MIME.SVG].includes(effectiveMediaType)) {
-                let child = doc.firstChild
-                while (child instanceof ProcessingInstruction) {
-                    if (child.data) {
-                        const replacedData = await replaceSeries(child.data,
-                            /(?:^|\s*)(href\s*=\s*['"])([^'"]*)(['"])/i,
-                            (_, p1, p2, p3) => this.loadHref(p2, href, parents)
-                            .then(p2 => `${p1}${p2}${p3}`))
-                        child.replaceWith(doc.createProcessingInstruction(
-                            child.target, replacedData))
-                    }
-                    child = child.nextSibling
+                for (let child = doc.firstChild; child && child !== doc.documentElement; child = child.nextSibling) {
+                    if (!(child instanceof ProcessingInstruction) || child.target !== 'xml-stylesheet') continue
+                    const data = child.data
+                    const stylesheet = xmlStylesheetHref(data)
+                    if (!stylesheet) continue
+                    const { value, start } = stylesheet
+                    const url = await this.loadHref(value, href, parents)
+                    if (this.#destroyed) return null
+                    if (url && url !== value)
+                        child.data = data.slice(0, start) + url + data.slice(start + value.length)
                 }
             }
             // replace hrefs (excluding anchors)
-            // TODO: srcset?
             const replace = async (el, attr) => el.setAttribute(attr,
                 await this.loadHref(el.getAttribute(attr), href, parents))
             for (const el of doc.querySelectorAll('link[href]')) await replace(el, 'href')
@@ -1034,6 +1108,14 @@ export class Loader {
             })
             for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
             for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
+            for (const el of doc.querySelectorAll('img[srcset], picture > source[srcset]')) {
+                if (el.namespaceURI !== NS.XHTML
+                    || (el.localName === 'source' && el.parentElement?.namespaceURI !== NS.XHTML)) continue
+                const srcset = el.getAttribute('srcset')
+                const replacement = await this.replaceSrcset(srcset, href, parents)
+                if (replacement === null) return null
+                if (replacement !== srcset) el.setAttribute('srcset', replacement)
+            }
             // SVG 2 resource links use href; xlink:href is only the legacy form.
             // Navigation anchors and same-document fragment references stay authored.
             for (const el of doc.querySelectorAll('image[href], use[href], feImage[href]')) {

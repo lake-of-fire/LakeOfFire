@@ -749,10 +749,14 @@ private enum EbookResolvedPackageSource: Sendable {
         case let .bound(lease): return try lease.readNativeResource(subpath: subpath)
         }
     }
-    func mimeType(subpath: String, data: Data) throws -> ReaderPackageEntryResponseMetadata {
+    func mimeType(
+        subpath: String, data: Data, nativeResource: Bool
+    ) throws -> ReaderPackageEntryResponseMetadata {
         switch self {
         case let .legacy(source): return try source.mimeType(subpath: subpath, data: data)
-        case let .bound(lease): return try lease.metadata(subpath: subpath, data: data)
+        case let .bound(lease):
+            if nativeResource { return try lease.nativeResourceMetadata(subpath: subpath, data: data) }
+            return try lease.metadata(subpath: subpath, data: data)
         }
     }
 }
@@ -1185,7 +1189,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }
                     let metadata = try cachedSource.mimeType(
                         subpath: entryRequest.subpath,
-                        data: data
+                        data: data,
+                        nativeResource: pathBackedRequest != nil
                     )
                     let response = ebookHTTPResponse(
                         url: url,

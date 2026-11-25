@@ -83,8 +83,13 @@ def main() -> int:
                 map.textContent = JSON.stringify({ imports })
                 document.head.append(map)
                 try {
-                    const { runSVGResourceReferences } = await import(entries[0])
-                    const cases = [['SVG 2 packaged resource references', runSVGResourceReferences]]
+                    const { runSVGResourceReferences, runSVGStylesheetInstructions, runResponsiveImageReferences } =
+                        await import(entries[0])
+                    const cases = [
+                        ['SVG 2 packaged resource references', runSVGResourceReferences],
+                        ['SVG XML prolog stylesheet references', runSVGStylesheetInstructions],
+                        ['EPUB responsive image references', runResponsiveImageReferences],
+                    ]
                     const names = cases.map(([name]) => name)
                     if (!names.length || new Set(names).size !== names.length) {
                         throw new Error('Scenario roster is empty or has duplicate names')
