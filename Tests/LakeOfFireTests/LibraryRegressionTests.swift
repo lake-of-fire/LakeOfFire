@@ -1,6 +1,7 @@
 import BigSyncKit
 import RealmSwift
 @testable import RealmSwiftGaps
+import SwiftUIDownloads
 import XCTest
 @testable import LakeOfFireContent
 
@@ -314,9 +315,13 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         LibraryDataManager.realmConfiguration = replacementConfiguration
         let manager = LibraryDataManager()
         defer { manager.realmCancellables.forEach { $0.cancel() } }
-        await manager.importOPML(
+        let result = await manager.importOPMLWithResult(
             fileURLs: [firstURL, secondURL], realmConfiguration: capturedConfiguration
         )
+        XCTAssertEqual(result.totalFileCount, 2)
+        XCTAssertEqual(result.completedFileURLs, [firstURL, secondURL])
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertFalse(result.wasCancelled)
 
         for categoryID in [firstCategoryID, secondCategoryID] {
             XCTAssertNotNil(capturedRealm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
@@ -328,6 +333,75 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         }
         XCTAssertFalse(capturedRealm.objects(BigSyncPendingMutation.self).isEmpty)
         XCTAssertTrue(replacementRealm.objects(BigSyncPendingMutation.self).isEmpty)
+    }
+
+    @RealmBackgroundActor
+    func testMultiFileOPMLReportsMalformedFileAndCompletesRemainingFiles() async throws {
+        let configuration = makeOPMLConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let firstURL = directory.appendingPathComponent("first.opml")
+        let malformedURL = directory.appendingPathComponent("malformed.opml")
+        let bodylessURL = directory.appendingPathComponent("bodyless.opml")
+        let wrappedURL = directory.appendingPathComponent("wrapped.opml")
+        let lastURL = directory.appendingPathComponent("last.opml")
+        let firstCategoryID = UUID()
+        let lastCategoryID = UUID()
+        let firstFeedID = UUID()
+        let lastFeedID = UUID()
+        let validFiles = [
+            (url: firstURL, categoryID: firstCategoryID, feedID: firstFeedID, title: "First"),
+            (url: lastURL, categoryID: lastCategoryID, feedID: lastFeedID, title: "Last"),
+        ]
+        for file in validFiles {
+            let xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <opml version="2.0"><head/><body>
+              <outline text="\(file.title)" uuid="\(file.categoryID.uuidString)">
+                <outline text="\(file.title) feed" uuid="\(file.feedID.uuidString)" xmlUrl="https://example.com/\(file.title).xml"/>
+              </outline>
+            </body></opml>
+            """
+            try xml.write(to: file.url, atomically: true, encoding: .utf8)
+        }
+        try "<opml><body><outline></body></opml>"
+            .write(to: malformedURL, atomically: true, encoding: .utf8)
+        try "<opml version=\"2.0\"><head/></opml>"
+            .write(to: bodylessURL, atomically: true, encoding: .utf8)
+        try "<response><opml version=\"2.0\"><body/></opml></response>"
+            .write(to: wrappedURL, atomically: true, encoding: .utf8)
+
+        let result = await LibraryDataManager.shared.importOPMLWithResult(
+            fileURLs: [firstURL, malformedURL, bodylessURL, wrappedURL, lastURL],
+            realmConfiguration: configuration
+        )
+
+        XCTAssertEqual(result.totalFileCount, 5)
+        XCTAssertEqual(result.completedFileURLs, [firstURL, lastURL])
+        XCTAssertFalse(result.wasCancelled)
+        XCTAssertEqual(result.failures.map(\.fileURL), [malformedURL, bodylessURL, wrappedURL])
+        XCTAssertTrue(result.failures.allSatisfy { !$0.message.isEmpty })
+
+        let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+        XCTAssertEqual(Array(library.categoryIDs), [firstCategoryID, lastCategoryID])
+        XCTAssertEqual(realm.objects(FeedCategory.self).count, 2)
+        XCTAssertEqual(realm.objects(Feed.self).count, 2)
+        let generations = opmlJournalGenerations(in: realm)
+        XCTAssertNotNil(generations["LibraryConfiguration.\(library.id)"])
+        for file in validFiles {
+            XCTAssertEqual(realm.object(ofType: FeedCategory.self, forPrimaryKey: file.categoryID)?.title, file.title)
+            XCTAssertEqual(realm.object(ofType: Feed.self, forPrimaryKey: file.feedID)?.categoryID, file.categoryID)
+            XCTAssertNotNil(generations["FeedCategory.\(file.categoryID)"])
+            XCTAssertNotNil(generations["Feed.\(file.feedID)"])
+        }
     }
 
     @RealmBackgroundActor
@@ -423,8 +497,12 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         importTask.cancel()
         LibraryDataManager.realmConfiguration = replacementConfiguration
         await boundary.resume()
-        await importTask.value
+        let result = await importTask.value
         XCTAssertTrue(importTask.isCancelled)
+        XCTAssertTrue(result.wasCancelled)
+        XCTAssertEqual(result.totalFileCount, 2)
+        XCTAssertEqual(result.completedFileURLs, [firstURL])
+        XCTAssertTrue(result.failures.isEmpty)
         let completedFileURLs = await boundary.completedFileURLs
         XCTAssertEqual(completedFileURLs, [firstURL])
 
@@ -464,7 +542,7 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
 
         // The canceled operation has fully returned. A new operation on the same
         // manager can finish the remaining file using the captured Realm.
-        await manager.importOPML(fileURLs: [secondURL], realmConfiguration: capturedConfiguration)
+        let _: Void = await manager.importOPML(fileURLs: [secondURL], realmConfiguration: capturedConfiguration)
         XCTAssertNotNil(reopenedRealm.object(ofType: FeedCategory.self, forPrimaryKey: secondCategoryID))
         XCTAssertNotNil(reopenedRealm.object(ofType: Feed.self, forPrimaryKey: secondFeedID))
         XCTAssertNotNil(reopenedRealm.object(
@@ -549,6 +627,354 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         )
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: restoredRealm.objects(BigSyncPendingMutation.self)
             .map { ($0.recordName, $0.generation) }), generations)
+    }
+
+    @RealmBackgroundActor
+    func testOPMLImportPreservesDistinctSameTitleCatalogTrees() async throws {
+        let configuration = makeOPMLConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let manager = LibraryDataManager(observesChanges: false)
+        let source = try XCTUnwrap(URL(string: "https://example.invalid/same-title-catalog.opml"))
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("same-title-catalog-\(UUID().uuidString).opml")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let download = Downloadable(url: source, name: "Catalog", localDestination: fileURL)
+        let trees = [1, 2].map { index in
+            (categoryID: UUID(), directoryID: UUID(), nestedID: UUID(), feedID: UUID(),
+             feedURL: "https://example.invalid/feed-\(index).xml")
+        }
+        let categoryIDs = trees.map { $0.categoryID }
+        let outlines = trees.map { tree in
+            """
+            <outline text="Same category" title="Same category" uuid="\(tree.categoryID)">
+              <outline text="Directory" uuid="\(tree.directoryID)">
+                <outline text="Nested directory" uuid="\(tree.nestedID)">
+                  <outline text="Feed" uuid="\(tree.feedID)" type="rss" xmlUrl="\(tree.feedURL)"/>
+                </outline>
+              </outline>
+            </outline>
+            """
+        }
+        let xml = """
+        <opml version="2.0"><head/><body>
+        \(outlines.joined(separator: "\n"))
+        </body></opml>
+        """
+        try xml.write(to: fileURL, atomically: true, encoding: .utf8)
+        try await manager.importOPML(fileURL: fileURL, fromDownload: download, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+
+        let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+        XCTAssertEqual(Array(library.categoryIDs), categoryIDs)
+        XCTAssertEqual(realm.objects(FeedCategory.self).count, 2)
+        XCTAssertEqual(realm.objects(FeedDirectory.self).count, 4)
+        XCTAssertEqual(realm.objects(Feed.self).count, 2)
+        let journal = opmlJournalGenerations(in: realm)
+        XCTAssertNotNil(journal["LibraryConfiguration.\(library.id)"])
+        for tree in trees {
+            let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: tree.categoryID))
+            let directory = try XCTUnwrap(realm.object(ofType: FeedDirectory.self, forPrimaryKey: tree.directoryID))
+            let nested = try XCTUnwrap(realm.object(ofType: FeedDirectory.self, forPrimaryKey: tree.nestedID))
+            let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: tree.feedID))
+            XCTAssertEqual(category.title, "Same category")
+            XCTAssertEqual(category.getCollectionChildren()?.map(\.id), [tree.directoryID])
+            XCTAssertEqual(directory.getCollectionChildren()?.map(\.id), [tree.nestedID])
+            XCTAssertEqual(nested.getCollectionChildren()?.map(\.id), [tree.feedID])
+            XCTAssertEqual(directory.categoryID, tree.categoryID)
+            XCTAssertNil(directory.parentDirectoryID)
+            XCTAssertEqual(nested.categoryID, tree.categoryID)
+            XCTAssertEqual(nested.parentDirectoryID, tree.directoryID)
+            XCTAssertEqual(feed.categoryID, tree.categoryID)
+            XCTAssertEqual(feed.directoryID, tree.nestedID)
+            XCTAssertEqual(feed.rssUrl.absoluteString, tree.feedURL)
+            XCTAssertEqual(category.opmlURL, source)
+            XCTAssertEqual(directory.opmlURL, source)
+            XCTAssertEqual(nested.opmlURL, source)
+            XCTAssertNotNil(journal["FeedCategory.\(tree.categoryID)"])
+            XCTAssertNotNil(journal["FeedDirectory.\(tree.directoryID)"])
+            XCTAssertNotNil(journal["FeedDirectory.\(tree.nestedID)"])
+            XCTAssertNotNil(journal["Feed.\(tree.feedID)"])
+        }
+
+        try await manager.importOPML(fileURL: fileURL, fromDownload: download, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(Array(library.categoryIDs), categoryIDs)
+        XCTAssertEqual(opmlJournalGenerations(in: realm), journal)
+    }
+
+    @RealmBackgroundActor
+    func testMalformedDownloadedOPMLPreservesCatalogAndCompletionUntilValidEmptyBody() async throws {
+        let configuration = makeOPMLConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let originalConfiguration = LibraryDataManager.realmConfiguration
+        LibraryDataManager.realmConfiguration = configuration
+        defer { LibraryDataManager.realmConfiguration = originalConfiguration }
+        let manager = LibraryDataManager(observesChanges: false)
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("catalog-document-admission-\(UUID().uuidString).opml")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let source = try XCTUnwrap(URL(string: "https://example.invalid/catalog.opml"))
+        let otherSource = try XCTUnwrap(URL(string: "https://example.invalid/other-catalog.opml"))
+        let download = Downloadable(url: source, name: "Catalog", localDestination: fileURL)
+        let otherDownload = Downloadable(url: otherSource, name: "Other catalog", localDestination: fileURL)
+        let trees = [0, 1].map { _ in (categoryID: UUID(), directoryID: UUID(), feedID: UUID()) }
+        for (index, catalogDownload) in [download, otherDownload].enumerated() {
+            let tree = trees[index]
+            let xml = """
+            <opml version="2.0"><head/><body>
+              <outline text="Category \(index)" uuid="\(tree.categoryID)">
+                <outline text="Directory \(index)" uuid="\(tree.directoryID)">
+                  <outline text="Feed \(index)" uuid="\(tree.feedID)" type="rss" xmlUrl="https://example.invalid/feed-\(index).xml"/>
+                </outline>
+              </outline>
+            </body></opml>
+            """
+            try xml.write(to: fileURL, atomically: true, encoding: .utf8)
+            try await manager.importOPML(download: catalogDownload)
+        }
+        await realm.asyncRefresh()
+        let library = try XCTUnwrap(realm.objects(LibraryConfiguration.self).first)
+        let originalCategoryIDs = Array(library.categoryIDs)
+        let originalImportedAt = library.opmlLastImportedAt
+        let originalCompletedAt = await MainActor.run { download.finishedLoadingDuringCurrentLaunchAt }
+        let originalJournal = opmlJournalGenerations(in: realm)
+        XCTAssertEqual(originalCategoryIDs, trees.map(\.categoryID))
+        XCTAssertNotNil(originalImportedAt)
+        XCTAssertNotNil(originalCompletedAt)
+
+        let malformedDocuments = [
+            "<opml version=\"2.0\"><head/></opml>",
+            "<response><opml version=\"2.0\"><body/></opml></response>",
+            "<opml version=\"2.0\"><head/><body/><body/></opml>",
+            "<opml version=\"2.0\"><head/><outline text=\"Outside body\"/><body/></opml>",
+        ]
+        for xml in malformedDocuments {
+            try xml.write(to: fileURL, atomically: true, encoding: .utf8)
+            do {
+                // Exercise the automatic downloaded-catalog entry point, including
+                // its successful-import timestamp and per-download completion.
+                try await manager.importOPML(download: download)
+                XCTFail("Structurally invalid OPML must fail before catalog reconciliation: \(xml)")
+            } catch {
+                XCTAssertFalse(error.localizedDescription.isEmpty)
+            }
+            await realm.asyncRefresh()
+            XCTAssertEqual(Array(library.categoryIDs), originalCategoryIDs)
+            XCTAssertEqual(library.opmlLastImportedAt, originalImportedAt)
+            let completedAt = await MainActor.run { download.finishedLoadingDuringCurrentLaunchAt }
+            XCTAssertEqual(completedAt, originalCompletedAt)
+            XCTAssertEqual(opmlJournalGenerations(in: realm), originalJournal)
+            for (index, tree) in trees.enumerated() {
+                let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: tree.categoryID))
+                let directory = try XCTUnwrap(realm.object(ofType: FeedDirectory.self, forPrimaryKey: tree.directoryID))
+                let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: tree.feedID))
+                XCTAssertFalse(category.isDeleted)
+                XCTAssertFalse(directory.isDeleted)
+                XCTAssertFalse(feed.isDeleted)
+                XCTAssertEqual(category.opmlURL, index == 0 ? source : otherSource)
+                XCTAssertEqual(directory.opmlURL, category.opmlURL)
+                XCTAssertEqual(category.getCollectionChildren()?.map(\.id), [tree.directoryID])
+                XCTAssertEqual(directory.getCollectionChildren()?.map(\.id), [tree.feedID])
+                XCTAssertEqual(feed.categoryID, tree.categoryID)
+                XCTAssertEqual(feed.directoryID, tree.directoryID)
+            }
+        }
+
+        // An explicit empty body is still an authoritative, source-scoped catalog
+        // update. Rejection must not silently disable legitimate removals.
+        try "<opml version=\"2.0\"><head/><body/></opml>"
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+        try await manager.importOPML(download: download)
+        await realm.asyncRefresh()
+        XCTAssertNotNil(library.opmlLastImportedAt)
+        let completedAt = await MainActor.run { download.finishedLoadingDuringCurrentLaunchAt }
+        XCTAssertNotNil(completedAt)
+        let finalJournal = opmlJournalGenerations(in: realm)
+        for (index, tree) in trees.enumerated() {
+            XCTAssertEqual(realm.object(ofType: FeedCategory.self, forPrimaryKey: tree.categoryID)?.isDeleted, index == 0)
+            XCTAssertEqual(realm.object(ofType: FeedDirectory.self, forPrimaryKey: tree.directoryID)?.isDeleted, index == 0)
+            XCTAssertEqual(realm.object(ofType: Feed.self, forPrimaryKey: tree.feedID)?.isDeleted, index == 0)
+            for recordName in ["FeedCategory.\(tree.categoryID)", "FeedDirectory.\(tree.directoryID)", "Feed.\(tree.feedID)"] {
+                XCTAssertNotNil(originalJournal[recordName])
+                XCTAssertNotNil(finalJournal[recordName])
+                if index == 0 {
+                    XCTAssertNotEqual(finalJournal[recordName], originalJournal[recordName])
+                } else {
+                    XCTAssertEqual(finalJournal[recordName], originalJournal[recordName])
+                }
+            }
+        }
+    }
+
+    @RealmBackgroundActor
+    func testUnchangedOPMLDirectoryMovesWithItsCatalogSource() async throws {
+        let configuration = makeOPMLConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let manager = LibraryDataManager(observesChanges: false)
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("catalog-directory-source-\(UUID().uuidString).opml")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let oldSource = try XCTUnwrap(URL(string: "https://example.invalid/catalog-a.opml"))
+        let newSource = try XCTUnwrap(URL(string: "https://example.invalid/catalog-b.opml"))
+        let oldDownload = Downloadable(url: oldSource, name: "Original", localDestination: fileURL)
+        let newDownload = Downloadable(url: newSource, name: "Replacement", localDestination: fileURL)
+        let categoryID = UUID()
+        let directoryID = UUID()
+        let feedID = UUID()
+        let directoryRecord = "FeedDirectory.\(directoryID)"
+        let feedRecord = "Feed.\(feedID)"
+        let originalXML = """
+        <opml version="2.0"><head/><body>
+          <outline text="Category" uuid="\(categoryID)">
+            <outline text="Directory" uuid="\(directoryID)" markdownDescription="Retain this description">
+              <outline text="Feed" uuid="\(feedID)" type="rss" xmlUrl="https://example.invalid/feed.xml"/>
+            </outline>
+          </outline>
+        </body></opml>
+        """
+        try originalXML.write(to: fileURL, atomically: true, encoding: .utf8)
+        try await manager.importOPML(fileURL: fileURL, fromDownload: oldDownload, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+        let directory = try XCTUnwrap(realm.object(ofType: FeedDirectory.self, forPrimaryKey: directoryID))
+        let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: feedID))
+        XCTAssertEqual(category.opmlURL, oldSource)
+        XCTAssertEqual(directory.opmlURL, oldSource)
+        let originalJournal = opmlJournalGenerations(in: realm)
+        XCTAssertNotNil(originalJournal[directoryRecord])
+        XCTAssertNotNil(originalJournal[feedRecord])
+
+        try await manager.importOPML(fileURL: fileURL, fromDownload: newDownload, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(category.opmlURL, newSource)
+        XCTAssertEqual(directory.opmlURL, newSource)
+        XCTAssertEqual(directory.markdownDescription, "Retain this description")
+        let newJournal = opmlJournalGenerations(in: realm)
+        XCTAssertNotNil(newJournal[directoryRecord])
+        XCTAssertNotEqual(newJournal[directoryRecord], originalJournal[directoryRecord])
+        XCTAssertEqual(newJournal[feedRecord], originalJournal[feedRecord])
+
+        try await manager.importOPML(fileURL: fileURL, fromDownload: newDownload, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(opmlJournalGenerations(in: realm), newJournal)
+
+        let emptyXML = "<opml version=\"2.0\"><head/><body/></opml>"
+        try emptyXML.write(to: fileURL, atomically: true, encoding: .utf8)
+        try await manager.importOPML(fileURL: fileURL, fromDownload: oldDownload, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertFalse(category.isDeleted)
+        XCTAssertFalse(directory.isDeleted)
+        XCTAssertFalse(feed.isDeleted)
+        XCTAssertEqual(category.getCollectionChildren()?.map(\.id), [directoryID])
+        XCTAssertEqual(directory.getCollectionChildren()?.map(\.id), [feedID])
+        XCTAssertEqual(opmlJournalGenerations(in: realm), newJournal)
+
+        let removedTreeXML = """
+        <opml version="2.0"><head/><body>
+          <outline text="Category" uuid="\(categoryID)"/>
+        </body></opml>
+        """
+        try removedTreeXML.write(to: fileURL, atomically: true, encoding: .utf8)
+        try await manager.importOPML(fileURL: fileURL, fromDownload: newDownload, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertFalse(category.isDeleted)
+        XCTAssertTrue(directory.isDeleted)
+        XCTAssertTrue(feed.isDeleted)
+        XCTAssertEqual(category.getCollectionChildren()?.map(\.id), [])
+        let removalJournal = opmlJournalGenerations(in: realm)
+        XCTAssertNotNil(removalJournal[directoryRecord])
+        XCTAssertNotNil(removalJournal[feedRecord])
+        XCTAssertNotEqual(removalJournal[directoryRecord], newJournal[directoryRecord])
+        XCTAssertNotEqual(removalJournal[feedRecord], newJournal[feedRecord])
+
+        try await manager.importOPML(fileURL: fileURL, fromDownload: newDownload, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(opmlJournalGenerations(in: realm), removalJournal)
+    }
+
+    @RealmBackgroundActor
+    func testLocalOPMLDirectoryEditsKeepItsDownloadedCatalogSource() async throws {
+        let configuration = makeOPMLConfiguration()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        addTeardownBlock {
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
+        let manager = LibraryDataManager(observesChanges: false)
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("local-directory-edit-\(UUID().uuidString).opml")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let source = try XCTUnwrap(URL(string: "https://example.invalid/catalog.opml"))
+        let download = Downloadable(url: source, name: "Catalog", localDestination: fileURL)
+        let categoryID = UUID()
+        let directoryID = UUID()
+        let feedID = UUID()
+        let directoryRecord = "FeedDirectory.\(directoryID)"
+        let feedRecord = "Feed.\(feedID)"
+        func xml(directoryTitle: String) -> String {
+            """
+            <opml version="2.0"><head/><body>
+              <outline text="Category" uuid="\(categoryID)">
+                <outline text="\(directoryTitle)" uuid="\(directoryID)">
+                  <outline text="Feed" uuid="\(feedID)" type="rss" xmlUrl="https://example.invalid/feed.xml"/>
+                </outline>
+              </outline>
+            </body></opml>
+            """
+        }
+        try xml(directoryTitle: "Original").write(to: fileURL, atomically: true, encoding: .utf8)
+        try await manager.importOPML(fileURL: fileURL, fromDownload: download, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        let category = try XCTUnwrap(realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID))
+        let directory = try XCTUnwrap(realm.object(ofType: FeedDirectory.self, forPrimaryKey: directoryID))
+        let feed = try XCTUnwrap(realm.object(ofType: Feed.self, forPrimaryKey: feedID))
+        XCTAssertEqual(directory.opmlURL, source)
+        let originalJournal = opmlJournalGenerations(in: realm)
+
+        try await manager.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(directory.opmlURL, source)
+        XCTAssertEqual(opmlJournalGenerations(in: realm), originalJournal)
+
+        try xml(directoryTitle: "Edited").write(to: fileURL, atomically: true, encoding: .utf8)
+        try await manager.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(directory.title, "Edited")
+        XCTAssertEqual(category.opmlURL, source)
+        XCTAssertEqual(directory.opmlURL, source)
+        let editedJournal = opmlJournalGenerations(in: realm)
+        XCTAssertNotNil(editedJournal[directoryRecord])
+        XCTAssertNotEqual(editedJournal[directoryRecord], originalJournal[directoryRecord])
+        XCTAssertEqual(editedJournal[feedRecord], originalJournal[feedRecord])
+
+        try await manager.importOPML(fileURL: fileURL, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(opmlJournalGenerations(in: realm), editedJournal)
+
+        let removedTreeXML = """
+        <opml version="2.0"><head/><body>
+          <outline text="Category" uuid="\(categoryID)"/>
+        </body></opml>
+        """
+        try removedTreeXML.write(to: fileURL, atomically: true, encoding: .utf8)
+        try await manager.importOPML(fileURL: fileURL, fromDownload: download, realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertFalse(category.isDeleted)
+        XCTAssertTrue(directory.isDeleted)
+        XCTAssertTrue(feed.isDeleted)
+        let removalJournal = opmlJournalGenerations(in: realm)
+        XCTAssertNotNil(removalJournal[directoryRecord])
+        XCTAssertNotNil(removalJournal[feedRecord])
+        XCTAssertNotEqual(removalJournal[directoryRecord], editedJournal[directoryRecord])
+        XCTAssertNotEqual(removalJournal[feedRecord], editedJournal[feedRecord])
     }
 
     @RealmBackgroundActor
@@ -657,6 +1083,12 @@ final class LibraryRegressionTests: XCTestCase, @unchecked Sendable {
         try await LibraryDataManager.shared.importOPML(fileURL: fileURL, realmConfiguration: configuration)
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
             .map { ($0.recordName, $0.generation) }), generations)
+    }
+
+    @RealmBackgroundActor
+    private func opmlJournalGenerations(in realm: Realm) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: realm.objects(BigSyncPendingMutation.self)
+            .map { ($0.recordName, $0.generation) })
     }
 
     private func makeOPMLConfiguration() -> Realm.Configuration {

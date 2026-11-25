@@ -903,6 +903,14 @@ public class LibraryDataManager: NSObject {
         fileURLs: [URL],
         realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
     ) async {
+        _ = await importOPMLWithResult(fileURLs: fileURLs, realmConfiguration: realmConfiguration)
+    }
+
+    /// Continues past individual file errors and returns the outcome for the entire selection.
+    public func importOPMLWithResult(
+        fileURLs: [URL],
+        realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration
+    ) async -> OPMLImportResult {
         await importOPML(
             fileURLs: fileURLs,
             realmConfiguration: realmConfiguration,
@@ -912,22 +920,36 @@ public class LibraryDataManager: NSObject {
 
     // Keep the completed-file boundary observable without replacing the real
     // single-file importer or relying on Realm notification timing in tests.
+    @discardableResult
     func importOPML(
         fileURLs: [URL],
         realmConfiguration: Realm.Configuration,
         afterImportingFile: (@Sendable (URL) async -> Void)?
-    ) async {
+    ) async -> OPMLImportResult {
+        var completedFileURLs: [URL] = []
+        var failures: [OPMLImportResult.Failure] = []
+        var wasCancelled = false
         for fileURL in fileURLs {
             do {
                 try Task.checkCancellation()
                 try await importOPML(fileURL: fileURL, realmConfiguration: realmConfiguration)
+                completedFileURLs.append(fileURL)
                 await afterImportingFile?(fileURL)
             } catch is CancellationError {
-                return
+                wasCancelled = true
+                break
             } catch {
-                print("Failed to import OPML from local file \(fileURL.absoluteString). Error: \(error.localizedDescription)")
+                let message = error.localizedDescription
+                failures.append(.init(fileURL: fileURL, message: message))
+                print("Failed to import OPML from local file \(fileURL.absoluteString). Error: \(message)")
             }
         }
+        return OPMLImportResult(
+            totalFileCount: fileURLs.count,
+            completedFileURLs: completedFileURLs,
+            failures: failures,
+            wasCancelled: wasCancelled || Task.isCancelled
+        )
     }
     
     @RealmBackgroundActor
@@ -1399,9 +1421,18 @@ public class LibraryDataManager: NSObject {
                     }
                 }
             } else if category != nil, !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
+                let downloadURL = download?.url
                 if let uuid, let existingDirectory = realm.object(ofType: FeedDirectory.self, forPrimaryKey: uuid) {
                     directory = existingDirectory
-                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, directory: existingDirectory, categoryID: categoryID, parentDirectoryID: directoryID, ordinal: ordinal) {
+                    if Self.hasChanges(
+                        opml: opml,
+                        opmlEntry: opmlEntry,
+                        directory: existingDirectory,
+                        categoryID: categoryID,
+                        parentDirectoryID: directoryID,
+                        ordinal: ordinal,
+                        downloadURL: downloadURL
+                    ) {
                         try await realm.asyncWritePreservingOwnership {
                             try Self.applyAttributes(
                                 opml: opml,
@@ -1410,7 +1441,7 @@ public class LibraryDataManager: NSObject {
                                 categoryID: categoryID,
                                 parentDirectoryID: directoryID,
                                 ordinal: ordinal,
-                                downloadURL: download?.url
+                                downloadURL: downloadURL
                             )
                         }
                     }
@@ -1426,7 +1457,7 @@ public class LibraryDataManager: NSObject {
                             categoryID: categoryID,
                             parentDirectoryID: directoryID,
                             ordinal: ordinal,
-                            downloadURL: download?.url
+                            downloadURL: downloadURL
                         )
                         try await realm.asyncWritePreservingOwnership {
                             realm.add(directory, update: .modified)
@@ -1693,7 +1724,15 @@ public class LibraryDataManager: NSObject {
         }
     }
 
-    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, directory: FeedDirectory, categoryID: UUID?, parentDirectoryID: UUID?, ordinal: Int? = nil) -> Bool {
+    static func hasChanges(
+        opml: OPML,
+        opmlEntry: OPMLEntry,
+        directory: FeedDirectory,
+        categoryID: UUID?,
+        parentDirectoryID: UUID?,
+        ordinal: Int? = nil,
+        downloadURL: URL?
+    ) -> Bool {
         if opmlEntry.attributeUUIDValue("uuid") != directory.id {
             return true
         }
@@ -1716,6 +1755,10 @@ public class LibraryDataManager: NSObject {
         }
         let newOpmlOwnerName = opml.ownerName ?? directory.opmlOwnerName
         if directory.opmlOwnerName != newOpmlOwnerName {
+            return true
+        }
+        // A local import does not replace a downloaded catalog's ownership.
+        if let downloadURL, directory.opmlURL != downloadURL {
             return true
         }
         let newIconURL = opmlEntry.attributeStringValue("iconUrl").flatMap(URL.init(string:))
@@ -1777,7 +1820,7 @@ public class LibraryDataManager: NSObject {
             directory.opmlOwnerName = newOpmlOwnerName
             didChange = true
         }
-        if directory.opmlURL != downloadURL {
+        if let downloadURL, directory.opmlURL != downloadURL {
             directory.opmlURL = downloadURL
             didChange = true
         }
