@@ -183,6 +183,97 @@ public class FeedViewModel: ObservableObject {
     }
 }
 
+struct FeedInitialEntryNavigation {
+    struct Target: Equatable, Hashable {
+        let feedID: UUID
+        let entryID: String?
+    }
+
+    struct Mount: Hashable {
+        let target: Target
+        let id = UUID()
+
+        init(target: Target) {
+            self.target = target
+        }
+    }
+
+    private var currentMount: Mount?
+    private var target: Target?
+    private var isConsumed = false
+
+    mutating func mount(_ target: Target) -> Mount {
+        if self.target != target {
+            self.target = target
+            isConsumed = false
+        }
+        let mount = Mount(target: target)
+        currentMount = mount
+        return mount
+    }
+
+    mutating func unmount(_ mount: Mount) {
+        guard isCurrent(mount) else { return }
+        currentMount = nil
+    }
+
+    func isCurrent(_ mount: Mount) -> Bool {
+        currentMount == mount
+    }
+
+    func scrollEntryID(for mount: Mount) -> String? {
+        guard isCurrent(mount), !isConsumed else { return nil }
+        return mount.target.entryID
+    }
+
+    mutating func takeSelection(forLoadedEntry entryID: String, mount: Mount) -> String? {
+        guard scrollEntryID(for: mount) == entryID else { return nil }
+        isConsumed = true
+        return entryID
+    }
+
+    mutating func admitListSelection(_ entryID: String?, mount: Mount) -> Bool {
+        guard isCurrent(mount) else { return false }
+        if entryID != nil {
+            isConsumed = true
+        }
+        return true
+    }
+}
+
+private struct FeedInitialEntryMount<Content: View>: View {
+    let target: FeedInitialEntryNavigation.Target
+    @Binding var navigation: FeedInitialEntryNavigation
+    let content: (FeedInitialEntryNavigation.Mount) -> Content
+    @State private var mount: FeedInitialEntryNavigation.Mount?
+
+    init(
+        target: FeedInitialEntryNavigation.Target,
+        navigation: Binding<FeedInitialEntryNavigation>,
+        @ViewBuilder content: @escaping (FeedInitialEntryNavigation.Mount) -> Content
+    ) {
+        self.target = target
+        _navigation = navigation
+        self.content = content
+    }
+
+    var body: some View {
+        ZStack {
+            if let mount {
+                content(mount)
+            }
+        }
+        .onAppear {
+            // Renew callback authority without replacing the existing list.
+            mount = navigation.mount(target)
+        }
+        .onDisappear {
+            guard let mount else { return }
+            navigation.unmount(mount)
+        }
+    }
+}
+
 public struct FeedView: View {
     @ObservedRealmObject var feed: Feed
     @ObservedObject var viewModel: FeedViewModel
@@ -190,7 +281,7 @@ public struct FeedView: View {
     var showsToolbar = true
     var initialScrollEntryID: String?
     @State private var showsReaderContentNewBadges = true
-    @State private var hasAppliedInitialScrollEntryID = false
+    @State private var initialEntryNavigation = FeedInitialEntryNavigation()
     @Environment(\.contentSelection) private var contentSelection
 #if os(iOS)
     @Environment(\.editMode) private var editMode
@@ -239,43 +330,51 @@ public struct FeedView: View {
     }
 #endif
 
-    private func consumeInitialScrollEntryIDIfNeeded(_ content: FeedEntry) {
-        if content.compoundKey == initialScrollEntryID {
-            hasAppliedInitialScrollEntryID = true
-        }
+    private var initialEntryTarget: FeedInitialEntryNavigation.Target {
+        .init(feedID: feed.id, entryID: initialScrollEntryID)
+    }
+
+    private func feedListSelection(for mount: FeedInitialEntryNavigation.Mount) -> Binding<String?> {
+        Binding(
+            get: {
+                initialEntryNavigation.isCurrent(mount) ? contentSelection.wrappedValue : nil
+            },
+            set: { selection in
+                // A retired list can still finish a detached selection refresh.
+                guard initialEntryNavigation.admitListSelection(selection, mount: mount) else { return }
+                contentSelection.wrappedValue = selection
+            }
+        )
     }
 
     @ViewBuilder
     private func feedContent(entries: [FeedEntry]) -> some View {
         let entryIDs = entries.map(\.compoundKey)
         let collections = viewModel.collections ?? []
-        let activeScrollTargetID = hasAppliedInitialScrollEntryID ? nil : initialScrollEntryID
-        Group {
-            if isHorizontal {
-                ReaderContentHorizontalList(
-                    contents: entries,
-                    sortOrder: .publicationDate,
-                    includeSource: false,
-                    contentSelection: contentSelection
-                ) {
-                    EmptyView()
-                }
-                .id("feed-horizontal-\(feed.id.uuidString)")
-                .animation(.easeInOut(duration: 0.25), value: entryIDs)
-            } else {
+        let target = initialEntryTarget
+        if isHorizontal {
+            ReaderContentHorizontalList(
+                contents: entries,
+                sortOrder: .publicationDate,
+                includeSource: false,
+                contentSelection: contentSelection
+            ) {
+                EmptyView()
+            }
+            .id("feed-horizontal-\(feed.id.uuidString)")
+            .animation(.easeInOut(duration: 0.25), value: entryIDs)
+        } else {
+            FeedInitialEntryMount(target: target, navigation: $initialEntryNavigation) { mount in
                 ReaderContentList(
                     contents: entries,
                     sortOrder: .publicationDate,
                     includeSource: false,
-                    entrySelection: contentSelection,
+                    entrySelection: feedListSelection(for: mount),
                     useDefaultRowInsets: true,
                     showsNewBadges: showsReaderContentNewBadges,
                     separateRowsIntoSections: true,
                     allowEditing: allowsVideoMakerSelection,
-                    onContentAppear: { content in
-                        consumeInitialScrollEntryIDIfNeeded(content)
-                    },
-                    scrollTargetID: activeScrollTargetID,
+                    scrollTargetID: initialEntryNavigation.scrollEntryID(for: mount),
                     supplementarySections: {
                         if !collections.isEmpty {
                             Section {
@@ -305,29 +404,20 @@ public struct FeedView: View {
                         )
                     }
                 )
-                .id("feed-vertical-\(feed.id.uuidString)")
+                .onOwnedScrollTarget(id: mount.id, isCurrent: {
+                    initialEntryNavigation.scrollEntryID(for: mount) != nil
+                }, didScroll: { entryID in
+                    guard let entryID = initialEntryNavigation.takeSelection(
+                        forLoadedEntry: entryID, mount: mount
+                    ) else { return }
+                    contentSelection.wrappedValue = entryID
+                })
                 .animation(.easeInOut(duration: 0.25), value: entryIDs)
-                .onAppear {
-                    applyInitialScrollEntryIDIfNeeded()
-                }
-                .onChange(of: entryIDs) { _ in
-                    applyInitialScrollEntryIDIfNeeded()
-                }
 #if os(iOS)
                 .listStyle(.insetGrouped)
 #endif
             }
-        }
-    }
-
-    @MainActor
-    private func applyInitialScrollEntryIDIfNeeded() {
-        guard let initialScrollEntryID,
-              entries.contains(where: { $0.compoundKey == initialScrollEntryID }) else {
-            return
-        }
-        if contentSelection.wrappedValue != initialScrollEntryID {
-            contentSelection.wrappedValue = initialScrollEntryID
+            .id(target)
         }
     }
 
