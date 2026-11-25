@@ -391,6 +391,110 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
     }
 
     @MainActor
+    func testPartialFeedResponsesPreserveCachedEntriesAndValidators() async throws {
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        let originalRequestHandler = FeedURLProtocol.requestHandler
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = originalRequestHandler
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        let feedURL = try XCTUnwrap(URL(string: "https://example.com/partial-feed.xml"))
+        feed.rssUrl = feedURL
+        feed.deleteOrphans = true
+        try realm.write {
+            realm.add(feed)
+            feed.refreshChangeMetadata(explicitlyModified: true)
+        }
+        makeFeedSessionOverrideForTesting = {
+            let sessionConfiguration = URLSessionConfiguration.ephemeral
+            sessionConfiguration.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: sessionConfiguration)
+        }
+
+        func rssData(_ titles: [String]) -> Data {
+            let items = titles.enumerated().map { index, title in
+                """
+                <item><guid>item-\(index)</guid><title>\(title)</title>
+                <link>https://example.com/item-\(index)</link><description>Body</description></item>
+                """
+            }.joined()
+            return Data("<rss version='2.0'><channel><title>Feed</title>\(items)</channel></rss>".utf8)
+        }
+
+        let cachedTitles = ["Cached First", "Cached Second"]
+        let completeData = rssData(cachedTitles)
+        let seedHeaders = [
+            "Content-Type": "application/rss+xml",
+            "ETag": "\"cached\"",
+            "Last-Modified": "Mon, 07 Sep 2026 10:00:00 GMT",
+        ]
+        FeedURLProtocol.requestHandler = { _ in (200, seedHeaders, completeData) }
+        try await feed.freeze().fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        let activeEntries = realm.objects(FeedEntry.self).where { !$0.isDeleted }
+        XCTAssertEqual(activeEntries.map(\.title).sorted(), cachedTitles)
+        let cachedModified = try XCTUnwrap(feed.lastFetchedModifiedAt)
+        let cachedRefresh = try XCTUnwrap(feed.lastRefreshedEntriesAt)
+
+        // This is valid RSS that would replace one entry and orphan the other
+        // if transport admitted it as the complete feed.
+        let partialData = rssData(["Partial First"])
+        let updatedHeaders = [
+            "Content-Type": "application/rss+xml",
+            "ETag": "\"updated\"",
+            "Last-Modified": "Tue, 08 Sep 2026 10:00:00 GMT",
+        ]
+        let partialRange = "bytes 0-\(partialData.count - 1)/\(partialData.count + 100)"
+        for partialMethod in ["GET", "HEAD"] {
+            FeedURLProtocol.requestHandler = { request in
+                if request.httpMethod == partialMethod {
+                    // A matching HEAD validator cannot make a partial response authoritative.
+                    var headers = partialMethod == "HEAD" ? seedHeaders : updatedHeaders
+                    headers["Content-Range"] = partialRange
+                    return (206, headers, partialData)
+                }
+                return (200, updatedHeaders, partialData)
+            }
+            do {
+                try await feed.freeze().fetch(realmConfiguration: configuration)
+                XCTFail("Expected a partial \(partialMethod) response to fail refresh")
+            } catch FeedError.downloadFailed {
+                // The response was rejected at the download boundary.
+            }
+            await realm.asyncRefresh()
+            XCTAssertEqual(activeEntries.map(\.title).sorted(), cachedTitles)
+            XCTAssertEqual(feed.lastFetchedETag, "\"cached\"")
+            XCTAssertEqual(feed.lastFetchedModifiedAt, cachedModified)
+            XCTAssertEqual(feed.lastRefreshedEntriesAt, cachedRefresh)
+        }
+
+        let updatedTitles = ["Updated First", "Updated Second"]
+        let updatedData = rssData(updatedTitles)
+        FeedURLProtocol.requestHandler = { _ in (200, updatedHeaders, updatedData) }
+        try await feed.freeze().fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertEqual(activeEntries.map(\.title).sorted(), updatedTitles)
+        XCTAssertEqual(feed.lastFetchedETag, "\"updated\"")
+    }
+
+    @MainActor
     func testFeedResponseDoesNotPublishAfterURLChanges() async throws {
         let oldRSSURL = try XCTUnwrap(URL(string: "https://old.example/feed.xml"))
         let newRSSURL = try XCTUnwrap(URL(string: "https://new.example/feed.xml"))
