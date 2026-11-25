@@ -6001,9 +6001,7 @@ class Reader {
         $('#dimming-overlay').classList.add('show')
         $('#side-bar').classList.add('show')
         void this.#ensureSidebarCoverLoaded()
-        if (this.#tocView?.setCurrentHref && this.view?.renderer?.tocItem?.href) {
-            this.#tocView.setCurrentHref(this.view.renderer.tocItem.href)
-        }
+        this.#tocView?.setCurrentHref(this.view?.lastLocation?.tocItem?.href)
         return true
     }
     #ensureSidebarCoverLoaded() {
@@ -9889,6 +9887,8 @@ class Reader {
                 this.closeSideBar()
             })
             $('#toc-view').append(this.#tocView.element)
+            if ($('#side-bar').classList.contains('show'))
+                this.#tocView.setCurrentHref(this.view?.lastLocation?.tocItem?.href)
         }
 
         // load and show highlights embedded in the file by Calibre
