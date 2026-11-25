@@ -683,10 +683,11 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     isMainFrame: message.frameInfo.isMainFrame
                 ), ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                     claimedURL: result.windowURL,
-                    frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                    frameMainDocumentURL: message.mainDocumentURL,
+                    frameRequestURL: message.requestURL,
                     currentPageURL: readerViewModel.state.pageURL,
                     requiresMainFrame: false,
-                    isMainFrame: message.frameInfo.isMainFrame
+                    isMainFrame: message.isMainFrame
                 ) else {
                     return
                 }
@@ -786,10 +787,11 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
                     isMainFrame: message.frameInfo.isMainFrame
                 ), ReaderDocumentMutationAdmission.acceptsTopLevelDocument(
                     claimedURL: result.windowURL,
-                    frameMainDocumentURL: message.frameInfo.request.mainDocumentURL,
+                    frameMainDocumentURL: message.mainDocumentURL,
+                    frameRequestURL: message.requestURL,
                     currentPageURL: readerViewModel.state.pageURL,
                     requiresMainFrame: false,
-                    isMainFrame: message.frameInfo.isMainFrame
+                    isMainFrame: message.isMainFrame
                 ) else {
                     return
                 }
