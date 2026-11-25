@@ -660,9 +660,14 @@ internal func readerContentPublicationDateFallback(for url: URL) async -> String
 
 @MainActor
 internal func readerContentPublicationDateFallback(
-    for content: any ReaderContentProtocol
+    for content: any ReaderContentProtocol,
+    loadURLFallback: @MainActor (URL) async -> String? = {
+        await readerContentPublicationDateFallback(for: $0)
+    }
 ) async -> String? {
-    if !(content is HistoryRecord),
+    // A saved full-content RSS history record mirrors the publication date
+    // and display preference from the feed record that supplied its body.
+    if !(content is HistoryRecord) || content.rssContainsFullContent,
        (content.displayPublicationDate || content.isPhysicalMedia),
        let publicationDate = content.publicationDate {
         return formattedReaderContentPublicationDate(
@@ -673,7 +678,7 @@ internal func readerContentPublicationDateFallback(
             )
         )
     }
-    return await readerContentPublicationDateFallback(for: content.url)
+    return await loadURLFallback(content.url)
 }
 
 internal func buildCanonicalReadabilityHTML(
