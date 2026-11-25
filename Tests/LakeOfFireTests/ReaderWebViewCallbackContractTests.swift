@@ -7,6 +7,7 @@ import UIKit
 import SwiftUI
 import Combine
 import RealmSwift
+import BigSyncKit
 @testable import SwiftUIWebView
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
@@ -332,6 +333,48 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         let pendingAttribute = try await webView.evaluateJavaScript("document.documentElement.hasAttribute('data-mnb-font-pending')")
         XCTAssertEqual(pendingAttribute as? Bool, false)
         withExtendedLifetime((fixture, nativeFixture, webView)) {}
+    }
+
+    func testFullContentFeedEntryRendersWithoutJournalingDerivedReaderFlags() async throws {
+        let fixture = makeReaderWebViewHandlerFixture()
+        let mode = fixture.readerModeViewModel
+        let reader = fixture.readerContent
+        let navigator = fixture.handler.navigator
+        let url = try XCTUnwrap(URL(string: "https://reader.test/full-content-feed-entry"))
+        let html = "<html><body><div id='reader-content'><p>Saved feed article text.</p></div></body></html>"
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [Feed.self, FeedEntry.self]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
+        let realm = try Realm(configuration: configuration, queue: nil)
+        let feed = Feed()
+        feed.isReaderModeByDefault = true
+        feed.rssContainsFullContent = true
+        let entry = FeedEntry()
+        entry.feedID = feed.id
+        entry.url = url
+        entry.title = "Saved feed article"
+        entry.html = html
+        entry.updateCompoundKey()
+        try realm.write {
+            realm.add(feed)
+            realm.add(entry)
+        }
+        XCTAssertFalse(entry.content?.isEmpty ?? true)
+        XCTAssertTrue(entry.isReaderModeAvailable)
+        XCTAssertTrue(entry.rssContainsFullContent)
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
+
+        reader.pageURL = url
+        reader.content = entry
+        mode.navigator = navigator
+        mode.readerLocalHTMLLoader = { _ in html }
+        mode.readerPublicationDateLoader = { _ in nil }
+        mode.showReaderView(readerContent: reader, scriptCaller: fixture.handler.scriptCaller)
+        await mode.waitForReaderModeRender(for: url)
+
+        XCTAssertEqual(navigator.debugLoadSnapshot.lastDataLoadBaseURL, url.absoluteString)
+        try await realm.asyncRefresh()
+        XCTAssertTrue(realm.objects(BigSyncPendingMutation.self).isEmpty)
     }
 
     private func cachedHistoryRecord(url: URL) throws -> (Realm, HistoryRecord) {
