@@ -1231,6 +1231,7 @@ public struct Reader: View {
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
     let onNavigationFailed: ((WebViewState) -> Void)?
+    let onPreservedCommittedDocument: (@MainActor (WebViewState) -> Void)?
     let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
@@ -1269,6 +1270,7 @@ public struct Reader: View {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
+        onPreservedCommittedDocument: (@MainActor (WebViewState) -> Void)? = nil,
         onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
@@ -1291,6 +1293,7 @@ public struct Reader: View {
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
+        self.onPreservedCommittedDocument = onPreservedCommittedDocument
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.onScrollBottomStateChanged = onScrollBottomStateChanged
@@ -1406,6 +1409,7 @@ public struct Reader: View {
             onNavigationCommitted: onNavigationCommitted,
             onNavigationFinished: onNavigationFinished,
             onNavigationFailed: onNavigationFailed,
+            onPreservedCommittedDocument: onPreservedCommittedDocument,
             onDocumentContextInvalidated: onDocumentContextInvalidated,
             onURLChanged: onURLChanged,
             onScrollBottomStateChanged: onScrollBottomStateChanged,

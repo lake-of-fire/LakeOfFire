@@ -72,6 +72,7 @@ final class ReaderWebViewHandler {
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     var onNavigationFailed: ((WebViewState) -> Void)?
+    var onPreservedCommittedDocument: (@MainActor (WebViewState) -> Void)?
     var onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     var onURLChanged: ((WebViewState) async throws -> Void)?
     
@@ -89,6 +90,7 @@ final class ReaderWebViewHandler {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
+        onPreservedCommittedDocument: (@MainActor (WebViewState) -> Void)? = nil,
         onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         readerContent: ReaderContent,
@@ -102,6 +104,7 @@ final class ReaderWebViewHandler {
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
+        self.onPreservedCommittedDocument = onPreservedCommittedDocument
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.readerContent = readerContent
@@ -325,6 +328,11 @@ final class ReaderWebViewHandler {
         ) { @MainActor in
             self.onNavigationFailed?(state)
         }
+        if preservesCommittedDocument {
+            // Admit the deferred failure before invoking a synchronous observer,
+            // so a reentrant document invalidation can retire that failure.
+            onPreservedCommittedDocument?(state)
+        }
     }
 
     func onDocumentContextInvalidated(
@@ -397,6 +405,7 @@ public struct ReaderWebView: View {
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
     let onNavigationFailed: ((WebViewState) -> Void)?
+    let onPreservedCommittedDocument: (@MainActor (WebViewState) -> Void)?
     let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
@@ -430,6 +439,7 @@ public struct ReaderWebView: View {
             onNavigationCommitted: onNavigationCommitted,
             onNavigationFinished: onNavigationFinished,
             onNavigationFailed: onNavigationFailed,
+            onPreservedCommittedDocument: onPreservedCommittedDocument,
             onDocumentContextInvalidated: onDocumentContextInvalidated,
             onURLChanged: onURLChanged,
             readerContent: readerContent,
@@ -472,6 +482,7 @@ public struct ReaderWebView: View {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
+        onPreservedCommittedDocument: (@MainActor (WebViewState) -> Void)? = nil,
         onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
@@ -493,6 +504,7 @@ public struct ReaderWebView: View {
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
+        self.onPreservedCommittedDocument = onPreservedCommittedDocument
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.onScrollBottomStateChanged = onScrollBottomStateChanged
