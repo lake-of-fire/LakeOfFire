@@ -109,7 +109,7 @@ final class FeedRSSPersistenceBatchTests: XCTestCase {
             await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
             for ext in ["realm", "realm.lock", "realm.management", "realm.note"] {
                 try? FileManager.default.removeItem(
-                    for: realmURL.deletingPathExtension().appendingPathExtension(ext)
+                    at: realmURL.deletingPathExtension().appendingPathExtension(ext)
                 )
             }
         }
@@ -156,7 +156,8 @@ private final class BatchFeedURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let request = request, let handler = Self.requestHandler else {
+        let request = request
+        guard let handler = Self.requestHandler else {
             client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
             return
         }
@@ -169,4 +170,6 @@ private final class BatchFeedURLProtocol: URLProtocol {
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
+
+    override func stopLoading() {}
 }
