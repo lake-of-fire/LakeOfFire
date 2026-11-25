@@ -237,6 +237,9 @@ final class EbookMetadataEnrichmentTests: XCTestCase {
     func testPublicationDateEnrichmentReplacesFileDateOnlyForValidMetadata() async throws {
         try await withFixture { f in
             let fileDate = Date(timeIntervalSince1970: 1_700_000_000)
+            let displayFormatter = DateFormatter()
+            displayFormatter.dateStyle = .medium
+            displayFormatter.timeZone = TimeZone(secondsFromGMT: 0)
             let cases: [(name: String, opfDate: String?, expected: Date)] = [
                 ("reduced", "1997-07", Date(timeIntervalSince1970: 867_715_200)),
                 ("invalid", "2019-02-29T03:04:05Z", fileDate),
@@ -250,6 +253,7 @@ final class EbookMetadataEnrichmentTests: XCTestCase {
                 let deferred = try await EbookFileManager.enrichMetadata([file])
                 XCTAssertTrue(deferred.isEmpty, name)
                 XCTAssertEqual(file.publicationDate, expected, name)
+                XCTAssertEqual(file.humanReadablePublicationDate, displayFormatter.string(from: expected), name)
                 XCTAssertEqual(file.title, "Coverless title", name)
                 XCTAssertEqual(file.author, "Author", name)
                 let generation = try XCTUnwrap(self.generation(file, in: f.realm), name)
@@ -257,6 +261,39 @@ final class EbookMetadataEnrichmentTests: XCTestCase {
                 let deferredAgain = try await EbookFileManager.enrichMetadata([file])
                 XCTAssertTrue(deferredAgain.isEmpty, name)
                 XCTAssertEqual(self.generation(file, in: f.realm), generation, name)
+            }
+        }
+    }
+
+    func testAbsoluteEPUBPublicationDateUsesUTCAcrossDeviceTimeZones() throws {
+        let locale = Locale(identifier: "en_US_POSIX")
+        let startOf1997 = Date(timeIntervalSince1970: 852_076_800)
+        let cases: [(zone: String, instant: Date, ebookText: String, deviceText: String)] = [
+            ("America/Toronto", startOf1997, "Jan 1, 1997", "Dec 31, 1996"),
+            ("Asia/Tokyo", startOf1997.addingTimeInterval(-3_600), "Dec 31, 1996", "Jan 1, 1997"),
+        ]
+        for (identifier, instant, ebookText, deviceText) in cases {
+            let zone = try XCTUnwrap(TimeZone(identifier: identifier))
+            for storage in ["local", "icloud"] {
+                let url = try XCTUnwrap(URL(string: "ebook://ebook/load/\(storage)/book.epub"))
+                let format = ReaderAbsolutePublicationDateFormat(url: url, isPhysicalMedia: true)
+                let formatter = format.makeFormatter(locale: locale, deviceTimeZone: zone)
+                XCTAssertEqual(formatter.string(from: instant), ebookText, "\(identifier), \(storage)")
+            }
+
+            let otherItems = [
+                ("https://example.test/feed-entry", false),
+                ("https://example.test/remote.epub", true),
+                ("reader-file://file/load/local/comic.zip", true),
+                ("ebook://ebook/load/local/comic.zip", true),
+                ("ebook://ebook/load/local/book.epub", false),
+                ("ebook://ebook/view/local/book.epub", true),
+            ]
+            for (address, isPhysicalMedia) in otherItems {
+                let url = try XCTUnwrap(URL(string: address))
+                let format = ReaderAbsolutePublicationDateFormat(url: url, isPhysicalMedia: isPhysicalMedia)
+                let formatter = format.makeFormatter(locale: locale, deviceTimeZone: zone)
+                XCTAssertEqual(formatter.string(from: instant), deviceText, "\(identifier), \(address)")
             }
         }
     }
