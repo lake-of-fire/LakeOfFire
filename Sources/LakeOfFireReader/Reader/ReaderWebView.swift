@@ -72,6 +72,7 @@ final class ReaderWebViewHandler {
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     var onNavigationFailed: ((WebViewState) -> Void)?
+    var onPreservedCommittedDocument: (@MainActor (WebViewState) -> Void)?
     var onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     var onURLChanged: ((WebViewState) async throws -> Void)?
     
@@ -89,6 +90,7 @@ final class ReaderWebViewHandler {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
+        onPreservedCommittedDocument: (@MainActor (WebViewState) -> Void)? = nil,
         onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         readerContent: ReaderContent,
@@ -102,6 +104,7 @@ final class ReaderWebViewHandler {
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
+        self.onPreservedCommittedDocument = onPreservedCommittedDocument
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.readerContent = readerContent
@@ -311,7 +314,11 @@ final class ReaderWebViewHandler {
         disposition: WebViewNavigationFailureDisposition
     ) {
         let preservesCommittedDocument = disposition == .preservedCommittedDocument
-        if !preservesCommittedDocument {
+        if preservesCommittedDocument {
+            // The committed document did not change, so consumers can resume
+            // work retired at the start of provisional navigation.
+            onPreservedCommittedDocument?(state)
+        } else {
             readerContent.withdrawSelectionIntent()
             // Settle the admitted failure before a later same-URL preparation
             // can begin. Deferred public observers do not own render cleanup.
@@ -397,6 +404,7 @@ public struct ReaderWebView: View {
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
     let onNavigationFailed: ((WebViewState) -> Void)?
+    let onPreservedCommittedDocument: (@MainActor (WebViewState) -> Void)?
     let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
@@ -430,6 +438,7 @@ public struct ReaderWebView: View {
             onNavigationCommitted: onNavigationCommitted,
             onNavigationFinished: onNavigationFinished,
             onNavigationFailed: onNavigationFailed,
+            onPreservedCommittedDocument: onPreservedCommittedDocument,
             onDocumentContextInvalidated: onDocumentContextInvalidated,
             onURLChanged: onURLChanged,
             readerContent: readerContent,
@@ -472,6 +481,7 @@ public struct ReaderWebView: View {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
+        onPreservedCommittedDocument: (@MainActor (WebViewState) -> Void)? = nil,
         onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
@@ -493,6 +503,7 @@ public struct ReaderWebView: View {
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
+        self.onPreservedCommittedDocument = onPreservedCommittedDocument
         self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.onScrollBottomStateChanged = onScrollBottomStateChanged
