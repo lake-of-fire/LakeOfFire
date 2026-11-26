@@ -1230,12 +1230,15 @@ const getHTMLFragment = (doc, id) => doc.getElementById(id) ??
     doc.querySelector(`[name="${CSS.escape(id)}"]`)
 
 const getPageSpread = properties => {
+    // No-spread and its center alias disable pairing regardless of where a
+    // lateral placement token appears in the item's unordered property list.
+    if (properties.includes('rendition:spread-none')
+        || properties.includes('rendition:page-spread-center')) return 'center'
     for (const p of properties) {
         if (p === 'page-spread-left' || p === 'rendition:page-spread-left')
             return 'left'
         if (p === 'page-spread-right' || p === 'rendition:page-spread-right')
             return 'right'
-        if (p === 'rendition:page-spread-center') return 'center'
     }
 }
 

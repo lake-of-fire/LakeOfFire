@@ -353,7 +353,9 @@ export class FixedLayout extends HTMLElement {
         const blankWidth = leftFrame.width ?? rightFrame.width
         const blankHeight = leftFrame.height ?? rightFrame.height
 
-        const scale = portrait
+        // A centered section owns one viewport in either orientation. Only a
+        // paired spread reserves width for a second (possibly blank) page.
+        const scale = center || portrait
             ? Math.min(
                 width / (target.width ?? blankWidth),
                 height / (target.height ?? blankHeight))
