@@ -167,8 +167,89 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testRSSRefreshResolvesItemMediaAgainstEffectiveDocumentURL() async throws {
+        let feedURL = try XCTUnwrap(URL(string: "https://example.com/feed.xml"))
+        let documentURL = try XCTUnwrap(URL(string: "https://feeds.example.com/editions/today/feed.xml"))
+        let configuration = makeRealmConfiguration()
+        let originalLibrary = LibraryDataManager.realmConfiguration
+        let originalBookmark = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistory = ReaderContentLoader.historyRealmConfiguration
+        let originalEntry = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalSession = makeFeedSessionOverrideForTesting
+        let originalRequestHandler = FeedURLProtocol.requestHandler
+        let originalResponseURL = FeedURLProtocol.responseURL
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibrary
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmark
+            ReaderContentLoader.historyRealmConfiguration = originalHistory
+            ReaderContentLoader.feedEntryRealmConfiguration = originalEntry
+            makeFeedSessionOverrideForTesting = originalSession
+            FeedURLProtocol.requestHandler = originalRequestHandler
+            FeedURLProtocol.responseURL = originalResponseURL
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = feedURL
+        try realm.write {
+            realm.add(feed)
+            feed.refreshChangeMetadata(explicitlyModified: true)
+        }
+
+        let body = Data("""
+            <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+              <channel>
+                <title>Relative item references</title>
+                <link>https://example.com/</link>
+                <description>RSS URL resolution fixture</description>
+                <item>
+                  <title>Enclosure image</title>
+                  <link>articles/one.html</link>
+                  <enclosure url="../images/one.jpg" length="1" type="image/jpeg"/>
+                  <media:subTitle type="text/vtt" lang="en" href="captions/one.vtt"/>
+                </item>
+                <item>
+                  <title>Media image</title>
+                  <link>/articles/two.html</link>
+                  <media:content url="images/two.png" type="image/png"/>
+                </item>
+              </channel>
+            </rss>
+            """.utf8)
+        makeFeedSessionOverrideForTesting = {
+            let session = URLSessionConfiguration.ephemeral
+            session.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: session)
+        }
+        FeedURLProtocol.responseURL = documentURL
+        FeedURLProtocol.requestHandler = { _ in
+            (200, ["Content-Type": "application/rss+xml"], body)
+        }
+
+        try await feed.freeze().fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+
+        let feedID = feed.id
+        let entries = realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted }
+        XCTAssertEqual(entries.count, 2)
+        let first = try XCTUnwrap(entries.first { $0.title == "Enclosure image" })
+        XCTAssertEqual(first.url.absoluteString, "https://feeds.example.com/editions/today/articles/one.html")
+        XCTAssertEqual(first.imageUrl?.absoluteString, "https://feeds.example.com/editions/images/one.jpg")
+        XCTAssertEqual(first.audioSubtitlesURL?.absoluteString, "https://feeds.example.com/editions/today/captions/one.vtt")
+        let second = try XCTUnwrap(entries.first { $0.title == "Media image" })
+        XCTAssertEqual(second.url.absoluteString, "https://feeds.example.com/articles/two.html")
+        XCTAssertEqual(second.imageUrl?.absoluteString, "https://feeds.example.com/editions/today/images/two.png")
+    }
+
     private final class FeedURLProtocol: URLProtocol {
         nonisolated(unsafe) static var responses = [URL: Data]()
+        nonisolated(unsafe) static var responseURL: URL?
         nonisolated(unsafe) static var requestHandler:
             ((URLRequest) -> (statusCode: Int, headers: [String: String], data: Data))?
 
@@ -211,7 +292,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
                 return
             }
             let response = HTTPURLResponse(
-                url: url,
+                url: Self.responseURL ?? url,
                 statusCode: responsePayload.statusCode,
                 httpVersion: "HTTP/1.1",
                 headerFields: responsePayload.headers
