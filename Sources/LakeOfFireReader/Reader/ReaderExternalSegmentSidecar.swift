@@ -1243,8 +1243,8 @@ enum ReaderExternalSegmentSidecarScheme: String, Sendable {
 
     func token(from url: URL) -> String? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.scheme == rawValue,
-              components.host == endpointHost,
+              components.scheme?.lowercased() == rawValue,
+              components.host?.lowercased() == endpointHost,
               components.user == nil,
               components.password == nil,
               components.port == nil,
