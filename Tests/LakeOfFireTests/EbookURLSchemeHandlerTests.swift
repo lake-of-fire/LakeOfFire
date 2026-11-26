@@ -376,10 +376,19 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let stored = try XCTUnwrap(store.insert(Data("sidecar".utf8)))
         let token = stored.token
 
-        let endpoints: [(scheme: ReaderExternalSegmentSidecarScheme, valid: String, invalid: [String])] = [
+        let endpoints: [(
+            scheme: ReaderExternalSegmentSidecarScheme,
+            valid: String,
+            equivalent: [String],
+            invalid: [String]
+        )] = [
             (
                 .ebook,
                 "ebook://ebook/processed-section-sidecar/\(token)",
+                [
+                    "EBOOK://ebook/processed-section-sidecar/\(token)",
+                    "ebook://EBOOK/processed-section-sidecar/\(token)",
+                ],
                 [
                     "internal://ebook/processed-section-sidecar/\(token)",
                     "ebook://other/processed-section-sidecar/\(token)",
@@ -394,6 +403,10 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             (
                 .internalReader,
                 "internal://local/reader-sidecar/\(token)",
+                [
+                    "INTERNAL://local/reader-sidecar/\(token)",
+                    "internal://LOCAL/reader-sidecar/\(token)",
+                ],
                 [
                     "ebook://local/reader-sidecar/\(token)",
                     "internal://other/reader-sidecar/\(token)",
@@ -417,6 +430,18 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 Data("sidecar".utf8),
                 endpoint.valid
             )
+            for equivalentURLString in endpoint.equivalent {
+                let equivalentURL = try XCTUnwrap(URL(string: equivalentURLString))
+                XCTAssertEqual(
+                    readerExternalSegmentSidecarResponse(
+                        for: equivalentURL,
+                        scheme: endpoint.scheme,
+                        store: store
+                    )?.data,
+                    Data("sidecar".utf8),
+                    equivalentURLString
+                )
+            }
             for rejectedURLString in endpoint.invalid {
                 let rejectedURL = try XCTUnwrap(URL(string: rejectedURLString))
                 XCTAssertNil(
