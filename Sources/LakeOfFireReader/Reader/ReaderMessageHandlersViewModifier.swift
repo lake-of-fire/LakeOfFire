@@ -301,7 +301,7 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
     }
 
     private func scheduleAutomaticReadability(
-        reason: String, windowURL: URL?, frameInfo: WKFrameInfo,
+        windowURL: URL?, frameInfo: WKFrameInfo,
         receiptBinding: WebViewScriptCaller.JavaScriptBindingToken?
     ) {
         guard let receipt = captureReadabilityReceipt(
@@ -310,9 +310,9 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
         automaticReadabilityTask?.cancel()
         automaticReadabilityTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            let delayNanoseconds: UInt64 = reason == "mutation" ? 3_000_000_000 : 100_000_000
+            // The user script already debounces DOM mutations for three seconds.
             do {
-                try await Task.sleep(nanoseconds: delayNanoseconds)
+                try await Task.sleep(nanoseconds: 100_000_000)
             } catch {
                 return
             }
@@ -477,10 +477,8 @@ internal final class ReaderMessageHandlers: ObservableObject, Identifiable {
             ("readabilityNeedsUpdate", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let body = message.body as? [String: Any] else { return }
-                let reason = body["reason"] as? String ?? "unknown"
                 let windowURL = (body["windowURL"] as? String).flatMap(URL.init(string:))
                 scheduleAutomaticReadability(
-                    reason: reason,
                     windowURL: windowURL,
                     frameInfo: message.frameInfo,
                     receiptBinding: message.javaScriptBindingToken
