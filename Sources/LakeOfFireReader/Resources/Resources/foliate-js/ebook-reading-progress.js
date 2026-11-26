@@ -6,4 +6,7 @@ const clampedFiniteFraction = value => {
 export const ebookProgressFractionForRelocate = ({
     relocateFraction,
     authoritativeFraction,
-}) => clampedFiniteFraction(relocateFraction) ?? clampedFiniteFraction(authoritativeFraction)
+    progressUnavailable,
+}) => progressUnavailable === true
+    ? null
+    : clampedFiniteFraction(relocateFraction) ?? clampedFiniteFraction(authoritativeFraction)

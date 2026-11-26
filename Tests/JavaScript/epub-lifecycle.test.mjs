@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { element, xmlDocument } from './xml-fixture.mjs'
 
 globalThis.DOMParser = class {}
 
@@ -14,6 +15,59 @@ const makeSource = destroy => ({
     replaceText: (_href, text) => text,
     replaceURL: value => value,
     destroy,
+})
+
+test('EPUB spine no-spread overrides center only the specified sections', async () => {
+    const container = 'urn:oasis:names:tc:opendocument:xmlns:container'
+    const opf = 'http://www.idpf.org/2007/opf'
+    const cases = [
+        ['rendition:spread-none', 'center'],
+        ['rendition:page-spread-center', 'center'],
+        ['page-spread-left rendition:spread-none', 'center'],
+        ['rendition:spread-none page-spread-left', 'center'],
+        ['rendition:page-spread-right rendition:spread-none', 'center'],
+        ['rendition:spread-none rendition:page-spread-right', 'center'],
+        ['page-spread-left rendition:page-spread-center', 'center'],
+        ['rendition:page-spread-center rendition:page-spread-right', 'center'],
+        ['page-spread-left', 'left'],
+        ['rendition:page-spread-left', 'left'],
+        ['page-spread-right', 'right'],
+        ['rendition:page-spread-right', 'right'],
+        ['rendition:spread-none-extra vendor:spread-none spread-none', undefined],
+        ['', undefined],
+    ]
+    const documents = new Map([
+        ['META-INF/container.xml', xmlDocument(element('container', container, {}, [
+            element('rootfile', container, {
+                'full-path': 'OPS/book.opf', 'media-type': 'application/oebps-package+xml',
+            }),
+        ]))],
+        ['OPS/book.opf', xmlDocument(element('package', opf, {}, [
+            element('metadata', opf, {}, [
+                element('meta', opf, { property: 'rendition:layout' }, [], 'pre-paginated'),
+                element('meta', opf, { property: 'rendition:spread' }, [], 'both'),
+            ]),
+            element('manifest', opf, {}, cases.map((_, index) => element('item', opf, {
+                id: `page-${index}`, href: `page-${index}.xhtml`, 'media-type': 'application/xhtml+xml',
+            }))),
+            element('spine', opf, {}, cases.map(([properties], index) => element('itemref', opf, {
+                idref: `page-${index}`, properties,
+            }))),
+        ]))],
+    ])
+    const book = new EPUB({
+        ...makeSource(() => {}),
+        loadText: async href => documents.has(href) ? href : null,
+    })
+    book.parser = { parseFromString: source => documents.get(source) }
+    try {
+        await book.init()
+        assert.equal(book.rendition.layout, 'pre-paginated')
+        assert.equal(book.rendition.spread, 'both')
+        assert.deepEqual(book.sections.map(section => section.pageSpread), cases.map(([, spread]) => spread))
+    } finally {
+        book.destroy()
+    }
 })
 
 test('EPUB href navigation addresses retained sections after an unresolved spine reference', () => {

@@ -24,3 +24,17 @@ test('falls back to authoritative progress and clamps the storage domain', () =>
         authoritativeFraction: 0.5,
     }), 1)
 })
+
+test('explicitly unavailable geometry never borrows a prior display fraction', () => {
+    for (const relocateFraction of [undefined, 0.4]) {
+        assert.equal(ebookProgressFractionForRelocate({
+            relocateFraction,
+            authoritativeFraction: 0.25,
+            progressUnavailable: true,
+        }), null)
+    }
+    assert.equal(ebookProgressFractionForRelocate({
+        relocateFraction: undefined,
+        authoritativeFraction: 0.25,
+    }), 0.25)
+})

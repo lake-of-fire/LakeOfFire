@@ -197,6 +197,129 @@ const makeBook = () => ({
     },
 })
 
+test('view ignores relocations with invalid section identity', async () => {
+    const renderer = new FakeRenderer()
+    globalThis.__viewRendererFactory = () => renderer
+    const view = new View()
+    const book = makeBook()
+    book.sections = [
+        { id: 'chapter-1.xhtml', size: 1500, cfi: 'epubcfi(/6/2)' },
+        { id: 'chapter-2.xhtml', size: 1500, cfi: 'epubcfi(/6/4)' },
+    ]
+    book.splitTOCHref = href => [href]
+    book.getTOCFragment = () => null
+    const relocations = []
+    view.addEventListener('relocate', event => relocations.push(event.detail))
+    const relocate = (index, reason, relocationID) => renderer.dispatchEvent(new CustomEvent('relocate', {
+        detail: { index, reason, range: null, fraction: 0.25, size: 0.5, relocationID },
+    }))
+
+    try {
+        assert.equal(await view.open(book), true)
+        view.history.pushState(0)
+        relocate(1, 'navigation', 'valid')
+        assert.equal(relocations.length, 1)
+        const [location] = relocations
+        assert.equal(location.sectionIndex, 1)
+        assert.equal(location.cfi, 'epubcfi(/6/4)')
+        assert.equal(location.relocationID, 'valid')
+
+        for (const index of ['1', -1, 2, 0.5, undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+            relocate(index, 'page', 'invalid')
+        }
+
+        assert.equal(relocations.length, 1)
+        assert.equal(view.lastLocation, location)
+        view.history.pushState(1)
+        assert.equal(await view.history.back(), true)
+        assert.deepEqual(renderer.goToCalls, [{ index: 0 }])
+    } finally {
+        view.close()
+    }
+})
+
+test('view relocation preserves its range and receipt when progress geometry is unavailable', async () => {
+    const renderer = new FakeRenderer()
+    globalThis.__viewRendererFactory = () => renderer
+    const view = new View()
+    const book = makeBook()
+    book.sections = [
+        { id: 'chapter-1.xhtml', size: 1500, cfi: 'epubcfi(/6/2)' },
+        { id: 'chapter-2.xhtml', size: 1500, cfi: 'epubcfi(/6/4)' },
+    ]
+    book.splitTOCHref = href => [href]
+    book.getTOCFragment = () => null
+    const documentElement = { childNodes: [] }
+    const ownerDocument = { documentElement }
+    const body = { nodeType: 1, localName: 'body', childNodes: [], parentNode: documentElement, ownerDocument }
+    const text = { nodeType: 3, nodeValue: 'Chapter', parentNode: body, ownerDocument }
+    documentElement.childNodes.push(body)
+    body.childNodes.push(text)
+    const measuredRange = { startContainer: text, startOffset: 1, collapsed: true }
+    const unmeasuredRange = { ...measuredRange, startOffset: 2 }
+    const relocations = []
+    view.addEventListener('relocate', event => relocations.push(event.detail))
+
+    try {
+        assert.equal(await view.open(book), true)
+        const relocate = (range, geometry, relocationID) => renderer.dispatchEvent(new CustomEvent('relocate', {
+            detail: { index: 1, reason: 'navigation', range, ...geometry, relocationID },
+        }))
+        relocate(measuredRange, { fraction: 0.75, size: 0.5 }, 'measured')
+        relocate(unmeasuredRange, { fraction: Number.NaN, size: 0.5 }, 'projection-rejected')
+        relocate(unmeasuredRange, { fraction: 0.1, size: 0.3, progressUnavailable: true }, 'renderer-rejected')
+
+        assert.equal(relocations.length, 3)
+        const [measured, unmeasured, rendererRejected] = relocations
+        assert.equal(measured.fraction, 1)
+        assert.equal(measured.location.next, 2)
+        assert.equal(measured.progressUnavailable, undefined)
+        assert.equal(measured.cfi, view.getCFI(1, measuredRange))
+        for (const relocation of [unmeasured, rendererRejected]) {
+            assert.equal(relocation.progressUnavailable, true)
+            assert.equal(relocation.fraction, undefined)
+            assert.equal(relocation.fractionInSection, undefined)
+            assert.equal(relocation.pageFraction, undefined)
+            assert.equal(relocation.location, undefined)
+            assert.equal(relocation.time, undefined)
+            assert.equal(relocation.sectionIndex, 1)
+            assert.equal(relocation.range, unmeasuredRange)
+            assert.equal(relocation.cfi, view.getCFI(1, unmeasuredRange))
+            assert.notEqual(relocation.cfi, measured.cfi)
+        }
+        assert.equal(unmeasured.relocationID, 'projection-rejected')
+        assert.equal(rendererRejected.relocationID, 'renderer-rejected')
+        assert.equal(view.lastLocation, rendererRejected)
+    } finally {
+        view.close()
+    }
+})
+
+test('a view without a progress projector preserves the renderer availability signal', async () => {
+    const renderer = new FakeRenderer()
+    globalThis.__viewRendererFactory = () => renderer
+    const view = new View()
+    const book = makeBook()
+    book.sections = [{ id: 'chapter.xhtml', cfi: 'epubcfi(/6/2)' }]
+
+    try {
+        assert.equal(await view.open(book), true)
+        const relocate = detail => renderer.dispatchEvent(new CustomEvent('relocate', {
+            detail: { index: 0, reason: 'navigation', range: null, ...detail },
+        }))
+        relocate({ fraction: 0.4, size: 0.2 })
+        assert.equal(view.lastLocation.fraction, undefined)
+        assert.equal(view.lastLocation.progressUnavailable, undefined)
+        relocate({ progressUnavailable: true, relocationID: 'unmeasured' })
+        assert.equal(view.lastLocation.fraction, undefined)
+        assert.equal(view.lastLocation.progressUnavailable, true)
+        assert.equal(view.lastLocation.cfi, 'epubcfi(/6/2)')
+        assert.equal(view.lastLocation.relocationID, 'unmeasured')
+    } finally {
+        view.close()
+    }
+})
+
 const makeLinkedBook = (name, index) => {
     const book = makeBook()
     book.sections = [{

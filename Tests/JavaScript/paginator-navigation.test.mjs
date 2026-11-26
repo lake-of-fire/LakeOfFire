@@ -147,7 +147,7 @@ const makeLayoutNode = () => {
     return node
 }
 
-const makeLayoutDocument = () => {
+const makeLayoutDocument = ({ contentRect = () => ({ width: 3200, height: 1000, left: 0, top: 0 }) } = {}) => {
     const doc = new EventTarget()
     doc.body = makeLayoutNode()
     doc.documentElement = makeLayoutNode()
@@ -160,7 +160,7 @@ const makeLayoutDocument = () => {
     doc.defaultView = { getComputedStyle: globalThis.getComputedStyle }
     doc.createRange = () => ({
         selectNodeContents() {},
-        getBoundingClientRect: () => ({ width: 3200, height: 1000, left: 0, top: 0 }),
+        getBoundingClientRect: contentRect,
     })
     return doc
 }
@@ -180,6 +180,128 @@ test('animation-frame operations reject instead of stranding their caller', asyn
         manabiRunAnimationFrameOperation(() => { throw failure }),
         failure
     )
+})
+
+const withProgressPaginator = async ({ doc, flow }, run) => {
+    const originalCreateElement = document.createElement
+    const originalCreateRange = document.createRange
+    document.createRange = doc.createRange
+    document.createElement = name => {
+        const node = makeLayoutNode()
+        if (name === 'iframe') {
+            node.contentDocument = doc
+            Object.defineProperty(node, 'src', {
+                set() { setImmediate(() => node.dispatchEvent(new Event('load'))) },
+            })
+        }
+        return node
+    }
+    const paginator = new Paginator()
+    if (flow) paginator.setAttribute('flow', flow)
+    const container = paginator.shadowRoot.nodes.get('container')
+    container.clientWidth = 800
+    container.clientHeight = 1000
+    const resizeObserver = resizeObservers.at(-1)
+    paginator.open({ dir: 'ltr', sections: [
+        { id: 'current.xhtml', linear: 'yes', load: async () => 'current-document', unload() {} },
+    ] })
+    try {
+        await run(paginator, container, resizeObserver)
+    } finally {
+        paginator.destroy()
+        document.createElement = originalCreateElement
+        document.createRange = originalCreateRange
+    }
+}
+
+test('paginator retains navigation receipts for empty columns and reports progress after measurement', { timeout: 5000 }, async () => {
+    let width = 0
+    const doc = makeLayoutDocument({ contentRect: () => ({ width, height: 1000, left: 0, top: 0 }) })
+    await withProgressPaginator({ doc }, async (paginator, container, resizeObserver) => {
+        const relocations = []
+        paginator.addEventListener('relocate', event => relocations.push(event.detail))
+        assert.equal(await paginator.goTo({ index: 0, anchor: 0 }, { relocationID: 'empty-column' }), true)
+        const initial = relocations.find(detail => detail.relocationID === 'empty-column')
+        assert.equal(initial?.index, 0)
+        assert.equal(initial.reason, 'navigation')
+        assert.equal(initial.progressUnavailable, true)
+        assert.equal('fraction' in initial, false)
+        assert.equal('size' in initial, false)
+
+        width = 500
+        const reanchored = new Promise(resolve => {
+            paginator.addEventListener('relocate', event => resolve(event.detail), { once: true })
+        })
+        container.clientWidth = 600
+        resizeObserver.callback([{ contentRect: { width: 600, height: 1000, top: 0, left: 0 } }])
+        const measured = await reanchored
+        assert.equal(measured.reason, 'anchor')
+        assert.equal(measured.index, 0)
+        assert.equal(measured.relocationID, undefined)
+        assert.equal(measured.progressUnavailable, undefined)
+        assert.equal(measured.fraction, 0)
+        assert.equal(measured.size, 1)
+    })
+})
+
+test('paginator preserves a measured image-only section as one logical page', { timeout: 5000 }, async () => {
+    const doc = makeLayoutDocument()
+    const imageOnlyContent = { textContent: '', querySelectorAll: () => [makeLayoutNode()] }
+    doc.getElementById = id => id === 'reader-content' ? imageOnlyContent : null
+    await withProgressPaginator({ doc }, async paginator => {
+        let location
+        paginator.addEventListener('relocate', ({ detail }) => {
+            if (detail.relocationID === 'image-only') location = detail
+        })
+        assert.equal(await paginator.goTo({ index: 0, anchor: 0 }, { relocationID: 'image-only' }), true)
+        assert.equal((await paginator.pageMetrics()).pages, 1)
+        assert.equal(location?.index, 0)
+        assert.equal(location.progressUnavailable, undefined)
+        assert.equal(location.fraction, 0)
+        assert.equal(location.size, 1)
+    })
+})
+
+test('scrolled paginator keeps invalid measurements out of navigation and live progress', { timeout: 5000 }, async () => {
+    let height = NaN
+    const doc = makeLayoutDocument()
+    doc.documentElement.getBoundingClientRect = () => ({ width: 800, height, left: 0, top: 0 })
+    await withProgressPaginator({ doc, flow: 'scrolled' }, async (paginator, container, resizeObserver) => {
+        const relocations = []
+        paginator.addEventListener('relocate', event => relocations.push(event.detail))
+        assert.equal(await paginator.goTo({ index: 0, anchor: 0 }, { relocationID: 'unmeasured-scroll' }), true)
+        const expectUnavailable = detail => {
+            assert.equal(detail?.index, 0)
+            assert.equal(detail.progressUnavailable, true)
+            assert.equal('fraction' in detail, false)
+            assert.equal('size' in detail, false)
+        }
+        expectUnavailable(relocations.find(detail => detail.relocationID === 'unmeasured-scroll'))
+
+        const nextLiveScroll = () => new Promise(resolve => {
+            const handle = ({ detail }) => {
+                if (detail.reason !== 'live-scroll') return
+                paginator.removeEventListener('relocate', handle)
+                resolve(detail)
+            }
+            paginator.addEventListener('relocate', handle)
+            container.dispatchEvent(new Event('scroll'))
+        })
+        expectUnavailable(await nextLiveScroll())
+
+        height = 1000
+        const reanchored = new Promise(resolve => {
+            paginator.addEventListener('relocate', event => resolve(event.detail), { once: true })
+        })
+        container.clientHeight = 700
+        resizeObserver.callback([{ contentRect: { width: 800, height: 700, top: 0, left: 0 } }])
+        await reanchored
+        container.scrollTop = 250
+        const measured = await nextLiveScroll()
+        assert.equal(measured.index, 0)
+        assert.equal(measured.progressUnavailable, undefined)
+        assert.equal(measured.fraction, 0.25)
+    })
 })
 
 test('layout reanchoring during a suspended section load cannot borrow its relocation receipt', { timeout: 5000 }, async () => {

@@ -1536,7 +1536,8 @@ class View {
                     } else {
                         const side = defaultSide
                         const otherSide = defaultOtherSide
-                        const contentSize = documentElement.getBoundingClientRect()[side]
+                        const contentRect = documentElement.getBoundingClientRect()
+                        const contentSize = contentRect[side]
                         const expandedSize = contentSize
                         expandedMetrics = {
                             column: false,
@@ -1545,6 +1546,7 @@ class View {
                             contentRectWidth: null,
                             contentRectHeight: null,
                             contentSize,
+                            scrollContentSize: contentRect[otherSide],
                             expandedSize,
                             pageCount: this._size > 0 ? Math.max(1, Math.ceil(expandedSize / this._size)) : 0,
                             size: this._size,
@@ -2031,23 +2033,17 @@ export class Paginator extends HTMLElement {
         this.#liveScrollListener = debounce(async () => {
             if (this.#destroyed || !this.#view || this.#view.isLoading) return;
             if (this.scrolled && !this.#isCacheWarmer) {
-                const index = this.#index;
-                let fraction = 0;
-                const metrics = await this.pageMetrics();
-                if (this.scrolled) {
-                    fraction = metrics.viewSize > 0 ? metrics.start / metrics.viewSize : 0;
-                } else if (metrics.pages > 0) {
-                    const { page, pages } = metrics;
-                    fraction = (page - 1) / (pages - 2);
-                }
-                // Don't include all details, just enough for the slider
+                const index = this.#index
+                const metrics = await this.pageMetrics()
+                if (!this.scrolled) return
+                // Just enough detail for the slider.
                 this.dispatchEvent(new CustomEvent('relocate', {
                     detail: {
                         reason: 'live-scroll',
                         index,
-                        fraction
+                        ...this.#scrolledRelocationProgress(metrics),
                     }
-                }));
+                }))
             }
         }, 450)
 
@@ -2538,7 +2534,8 @@ export class Paginator extends HTMLElement {
         this.#pageMetricsCache = metrics
     }
     async #rememberExpandedPageMetrics(expandedMetrics) {
-        if (!expandedMetrics || !Number.isFinite(expandedMetrics.size) || expandedMetrics.size <= 0) {
+        // Scrolled expansion sizes the inline axis, rather than the scroll axis.
+        if (!expandedMetrics?.column || !Number.isFinite(expandedMetrics.size) || expandedMetrics.size <= 0) {
             return
         }
         await this.#awaitDirection()
@@ -2570,6 +2567,7 @@ export class Paginator extends HTMLElement {
             page,
             pages,
             rawPages,
+            expandedContentSize: expandedMetrics.contentSize,
             source: 'expand',
             inlineProgression: expandedMetrics.inlineProgression === true,
         })
@@ -3975,6 +3973,10 @@ export class Paginator extends HTMLElement {
                     this.#startForScrollProp(scrollProp),
                 ])
             }
+            const expanded = this.#view?.expandedMetrics
+            const expandedContentSize = this.scrolled
+                ? (expanded?.column === false ? expanded.scrollContentSize : undefined)
+                : (expanded?.column === true ? expanded.contentSize : undefined)
             const end = start + size
             const rawPages = size > 0 ? Math.round(viewSize / size) : 0
             const pages = this.#normalizePages(rawPages)
@@ -3994,6 +3996,7 @@ export class Paginator extends HTMLElement {
                 page,
                 pages,
                 rawPages,
+                expandedContentSize,
                 metricsSource,
                 inlineProgression: this.#view?.expandedMetrics?.inlineProgression === true,
             }
@@ -4735,6 +4738,19 @@ export class Paginator extends HTMLElement {
             }
         }
     }
+    #hasRelocationGeometry({ size, viewSize, start, expandedContentSize }) {
+        // The view can have its initial viewport or padding dimensions before it measures content.
+        return Number.isFinite(size) && size > 0
+            && Number.isFinite(viewSize) && viewSize > 0
+            && Number.isFinite(start)
+            && Number.isFinite(expandedContentSize) && expandedContentSize > 0
+    }
+    #scrolledRelocationProgress(metrics) {
+        const fraction = metrics.start / metrics.viewSize
+        return this.#hasRelocationGeometry(metrics) && Number.isFinite(fraction)
+            ? { fraction }
+            : { progressUnavailable: true }
+    }
     async #afterScroll(reason, knownMetrics = null, requireCurrent = null) {
         requireCurrent?.()
         if (this.#isCacheWarmer) {
@@ -4813,34 +4829,37 @@ export class Paginator extends HTMLElement {
             detail.visibleSentinelIDs = pageTurnVisibleSentinelIDs
             detail.visibleRangeSource = 'page-sentinel-geometry-range'
         }
-        let relocationMetrics = null
         if ((reason === 'page' || reason === 'navigation') && this.#pendingPageTurnDirection) {
             detail.pageTurnDirection = this.#pendingPageTurnDirection;
         }
+        const metrics = knownMetrics || await this.pageMetrics()
+        requireCurrent?.()
         if (this.scrolled) {
-            const metrics = knownMetrics || await this.pageMetrics()
-            requireCurrent?.()
-            relocationMetrics = metrics
-            detail.fraction = metrics.viewSize > 0 ? metrics.start / metrics.viewSize : 0
+            Object.assign(detail, this.#scrolledRelocationProgress(metrics))
             logProgressInputs(this.#layoutMetricDiagnostics(metrics, {
                 reason,
                 mode: 'scrolled',
                 fraction: detail.fraction,
+                progressUnavailable: detail.progressUnavailable,
                 ...visibleRangeDiagnostics,
             }));
         } else {
-            const metrics = knownMetrics || await this.pageMetrics()
-            requireCurrent?.()
-            relocationMetrics = metrics
             const { page, pages } = metrics
+            const hasProgress = this.#hasRelocationGeometry(metrics)
+                && Number.isFinite(page) && Number.isFinite(pages) && pages > 0
             if (pages <= 2) {
-                detail.fraction = 0;
-                detail.size = 1;
+                if (hasProgress) {
+                    detail.fraction = 0
+                    detail.size = 1
+                } else {
+                    detail.progressUnavailable = true
+                }
                 logProgressInputs(this.#layoutMetricDiagnostics(metrics, {
                     reason,
                     mode: 'paginated-degenerate',
                     fraction: detail.fraction,
                     size: detail.size,
+                    progressUnavailable: detail.progressUnavailable,
                     ...visibleRangeDiagnostics,
                 }));
                 requireCurrent?.()
@@ -4848,19 +4867,24 @@ export class Paginator extends HTMLElement {
                 requireCurrent?.()
                 return
             }
-            const headerVisibility = page > 1 ? 'visible' : 'hidden'
-            requireCurrent?.()
-            if (this.#header.style.visibility !== headerVisibility) {
-                this.#header.style.visibility = headerVisibility
+            if (!hasProgress) {
+                detail.progressUnavailable = true
+            } else {
+                const headerVisibility = page > 1 ? 'visible' : 'hidden'
+                requireCurrent?.()
+                if (this.#header.style.visibility !== headerVisibility) {
+                    this.#header.style.visibility = headerVisibility
+                }
+                const contentPageCount = pages - 2
+                detail.fraction = manabiClamp01((page - 1) / contentPageCount)
+                detail.size = 1 / contentPageCount
             }
-            const contentPageCount = Math.max(1, pages - 2)
-            detail.fraction = manabiClamp01((page - 1) / contentPageCount)
-            detail.size = 1 / contentPageCount
             logProgressInputs(this.#layoutMetricDiagnostics(metrics, {
                 reason,
                 mode: 'paginated',
                 fraction: detail.fraction,
                 size: detail.size,
+                progressUnavailable: detail.progressUnavailable,
                 ...visibleRangeDiagnostics,
             }));
         }
@@ -4870,6 +4894,7 @@ export class Paginator extends HTMLElement {
             reason,
             fraction: Number.isFinite(detail.fraction) ? Math.round(detail.fraction * 1_000_000) : null,
             size: Number.isFinite(detail.size) ? Math.round(detail.size * 1_000_000) : null,
+            relocationID: detail.progressUnavailable === true ? detail.relocationID : undefined,
             page: knownMetrics?.page ?? null,
             pages: knownMetrics?.pages ?? null,
         })

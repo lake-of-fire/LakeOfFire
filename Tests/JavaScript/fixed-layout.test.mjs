@@ -904,6 +904,58 @@ test('fixed layout releases replaced and destroyed section load references', asy
     assert.deepEqual(unloadCounts, [1, 1])
 })
 
+for (const { label, spread, pageSpread, viewports } of [
+    { label: 'spread none', spread: 'none', viewports: ['landscape', 'portrait'] },
+    { label: 'centered spine item under spread both', spread: 'both', pageSpread: 'center',
+        viewports: ['portrait', 'landscape'] },
+]) {
+    test(`fixed layout fits ${label} to the viewport before and after rotation`, async () => {
+        const dimensions = {
+            landscape: { width: 1200, height: 800, scale: 1 },
+            portrait: { width: 600, height: 1000, scale: 0.5 },
+        }
+        globalThis.__fixedLayoutBounds = dimensions[viewports[0]]
+        const layout = new FixedLayout()
+        try {
+            const loads = [], relocations = []
+            layout.addEventListener('relocate', event => relocations.push(event.detail.index))
+            layout.open({
+                dir: 'ltr',
+                rendition: { spread, viewport: { width: 1200, height: 800 } },
+                sections: [0, 1].map(index => ({
+                    linear: 'yes',
+                    pageSpread: index === 0 ? pageSpread : undefined,
+                    load: async () => { loads.push(index); return `page-${index}` },
+                })),
+            })
+
+            assert.equal(await layout.goTo({ index: 0 }), true)
+            const [original] = layout.getContents()
+            for (const viewport of viewports) {
+                const { width, height, scale } = dimensions[viewport]
+                if (viewport !== viewports[0]) {
+                    globalThis.__fixedLayoutBounds = { width, height }
+                    globalThis.__fixedLayoutResizeObserverCallback()
+                }
+                const contents = layout.getContents()
+                assert.deepEqual(contents.map(content => content.index), [0])
+                const [page] = contents
+                assert.equal(page.iframe, original.iframe)
+                assert.equal(page.element.style.display, 'block')
+                assert.equal(page.iframe.style.transform, `scale(${scale})`)
+                assert.equal(page.element.style.width, `${1200 * scale}px`)
+                assert.equal(page.element.style.height, `${800 * scale}px`)
+                assert.equal(layout.currentIndex, 0)
+                assert.deepEqual(loads, [0])
+                assert.deepEqual(relocations, [0])
+            }
+        } finally {
+            layout.destroy()
+            globalThis.__fixedLayoutBounds = null
+        }
+    })
+}
+
 test('fixed layout portrait side navigation recomputes scale for the selected page viewport', async () => {
     globalThis.__fixedLayoutBounds = { width: 600, height: 900 }
     globalThis.__fixedLayoutViewportBySource = new Map([
@@ -964,10 +1016,35 @@ test('fixed layout landscape turns operate on complete spreads without false sid
             layout.getContents().map(content => content.element.style.display),
             ['block', 'block']
         )
+        assert.deepEqual(
+            layout.getContents().map(content => content.element.style.width),
+            ['600px', '600px']
+        )
         assert.equal(await layout.next(), false)
         assert.equal(await layout.prev(), false)
         assert.deepEqual(relocations.map(event => event.index), [0])
     } finally {
+        globalThis.__fixedLayoutBounds = null
+    }
+})
+
+test('fixed layout reserves the blank half beside a one-sided landscape spread', async () => {
+    globalThis.__fixedLayoutBounds = { width: 1200, height: 800 }
+    const layout = new FixedLayout()
+    try {
+        layout.open({
+            dir: 'ltr',
+            rendition: { spread: 'both', viewport: { width: 1200, height: 800 } },
+            sections: [{ linear: 'yes', pageSpread: 'left', load: async () => 'page-0' }],
+        })
+
+        assert.equal(await layout.goTo({ index: 0 }), true)
+        const contents = layout.getContents()
+        assert.deepEqual(contents.map(content => content.index), [0, -1])
+        assert.deepEqual(contents.map(content => content.element.style.width), ['600px', '600px'])
+        assert.equal(contents[1].iframe.src, undefined)
+    } finally {
+        layout.destroy()
         globalThis.__fixedLayoutBounds = null
     }
 })

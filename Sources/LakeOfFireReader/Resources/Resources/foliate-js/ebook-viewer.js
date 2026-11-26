@@ -12138,13 +12138,15 @@ class Reader {
             fallbackFraction: fraction,
         });
         const effectiveFraction = effectiveFractionDiagnostics.fraction;
+        const progressUnavailable = detail.progressUnavailable === true
         const progressFraction = ebookProgressFractionForRelocate({
             relocateFraction: fraction,
             authoritativeFraction: effectiveFraction,
-        });
-        const progressFractionSource = typeof fraction === 'number' && Number.isFinite(fraction)
-            ? 'relocate-detail'
-            : effectiveFractionDiagnostics.source;
+            progressUnavailable,
+        })
+        const progressFractionSource = progressUnavailable
+            ? 'unavailable'
+            : (Number.isFinite(fraction) ? 'relocate-detail' : effectiveFractionDiagnostics.source)
         const currentPercent = typeof primaryLabelDiagnostics?.currentPercent === 'number'
             ? primaryLabelDiagnostics.currentPercent
             : null;
@@ -12195,7 +12197,7 @@ class Reader {
             && !!cfi
             && typeof sectionBaseCFI === 'string'
             && cfi === sectionBaseCFI;
-        const hasPageScopedObservation = typeof sectionIndex === 'number'
+        const hasPageScopedObservation = !progressUnavailable && typeof sectionIndex === 'number'
             && typeof localSectionIndex === 'number';
         const priorCFIObservation = this.lastCFIPersistenceObservation;
         let cfiIsUnstableAcrossPages = typeof cfi === 'string'
@@ -12211,15 +12213,17 @@ class Reader {
             this.unstableCFIs.add(cfi);
             cfiIsUnstableAcrossPages = true;
         }
-        this.lastCFIPersistenceObservation = typeof cfi === 'string' && !!cfi && hasPageScopedObservation
-            ? {
-                cfi,
-                sectionIndex,
-                localSectionIndex,
-                rendererTotal: typeof rendererTotal === 'number' ? rendererTotal : null,
-            }
-            : null;
-        const syntheticRestoreLocator = makeSyntheticRestoreLocator({
+        if (!progressUnavailable) {
+            this.lastCFIPersistenceObservation = typeof cfi === 'string' && !!cfi && hasPageScopedObservation
+                ? {
+                    cfi,
+                    sectionIndex,
+                    localSectionIndex,
+                    rendererTotal: typeof rendererTotal === 'number' ? rendererTotal : null,
+                }
+                : null
+        }
+        const syntheticRestoreLocator = progressUnavailable ? null : makeSyntheticRestoreLocator({
             sectionIndex,
             localSectionIndex,
             rendererTotal,
@@ -12317,7 +12321,9 @@ class Reader {
         manabiTimelineMark('viewer.progress.inputs', progressBridgePayload);
         // (removed: setting tocView currentHref here)
 
-        if (this.hasLoadedLastPosition && !globalThis.__manabiRestoreInProgress) {
+        // Only a finite observation can consume restore suppression or enter the durable debounce.
+        if (Number.isFinite(progressFraction)
+            && this.hasLoadedLastPosition && !globalThis.__manabiRestoreInProgress) {
             const normalizedRelocateReason = typeof reason === 'string' ? reason.trim().toLowerCase() : '';
             const shouldSuppressRestoreSettleSave =
                 globalThis.__manabiSuppressNextRestoreRelocateSave === true
@@ -12338,7 +12344,7 @@ class Reader {
                 this.#postUpdateReadingProgressMessage({
                     bookEvent,
                     producerOwner,
-                    fraction: Number.isFinite(progressFraction) ? progressFraction : fraction,
+                    fraction: progressFraction,
                     cfi: persistedLocator,
                     reason,
                     currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
