@@ -1200,7 +1200,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         return String(decoding: tokenBytes, as: UTF8.self)
     }
 
-    private static func isValidToken(_ token: String) -> Bool {
+    fileprivate static func isValidToken(_ token: String) -> Bool {
         token.utf8.count == SHA256.Digest.byteCount * 2
             && token.utf8.allSatisfy {
                 ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102)
@@ -1233,6 +1233,29 @@ enum ReaderExternalSegmentSidecarScheme: String, Sendable {
         case .internalReader: "/reader-sidecar/"
         }
     }
+
+    private var endpointHost: String {
+        switch self {
+        case .ebook: "ebook"
+        case .internalReader: "local"
+        }
+    }
+
+    func token(from url: URL) -> String? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme == rawValue,
+              components.host == endpointHost,
+              components.user == nil,
+              components.password == nil,
+              components.port == nil,
+              components.percentEncodedQuery == nil,
+              components.percentEncodedFragment == nil,
+              components.percentEncodedPath.hasPrefix(endpointPathPrefix) else {
+            return nil
+        }
+        let token = String(components.percentEncodedPath.dropFirst(endpointPathPrefix.count))
+        return ReaderExternalSegmentSidecarStore.isValidToken(token) ? token : nil
+    }
 }
 
 func readerExternalSegmentSidecarResponse(
@@ -1240,9 +1263,8 @@ func readerExternalSegmentSidecarResponse(
     scheme: ReaderExternalSegmentSidecarScheme,
     store: ReaderExternalSegmentSidecarStore = .shared
 ) -> (response: HTTPURLResponse, data: Data)? {
-    let prefix = scheme.endpointPathPrefix
-    guard url.path.hasPrefix(prefix),
-          let entry = store.entry(for: String(url.path.dropFirst(prefix.count))) else {
+    guard let token = scheme.token(from: url),
+          let entry = store.entry(for: token) else {
         return nil
     }
     let response = HTTPURLResponse(
