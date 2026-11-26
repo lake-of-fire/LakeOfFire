@@ -1,4 +1,5 @@
 import CoreText
+import WebKit
 import XCTest
 @testable import LakeOfFire
 
@@ -13,6 +14,16 @@ final class SystemManagedReaderFontTests: XCTestCase {
         XCTAssertFalse(local.enablesRuntimeResourceDelivery)
         XCTAssertTrue(delivered.enablesRuntimeResourceDelivery)
         XCTAssertEqual(Set([local, delivered]).count, 2)
+    }
+
+    func testRuntimePreviewCanSupplyAnExplicitFaceAlias() {
+        let alias = "Manabi Reader YuKyokasho"
+        let asset = SharedReaderFontAsset(
+            systemFontNames: [alias: "YuKyo-Medium"],
+            horizontalFamilyName: alias, verticalFamilyName: alias,
+            enablesRuntimeResourceDelivery: true
+        )
+        XCTAssertEqual(asset.cssFontFaceFamilyName(for: alias), alias)
     }
 
     func testRuntimeDeliveryServesExactRegisteredFontBytesOnEveryReaderScheme() throws {
@@ -58,18 +69,139 @@ final class SystemManagedReaderFontTests: XCTestCase {
             systemFontNames: ["YuKyokasho": "Helvetica", "YuKyokasho Yoko": missing],
             horizontalFamilyName: "YuKyokasho", verticalFamilyName: "YuKyokasho Yoko",
             enablesRuntimeResourceDelivery: true)
-        let url = URL(string: "internal://local/manabi-fonts.css?family=YuKyokasho")!
+        let url = URL(string: "internal://local/manabi-fonts.css?family=YuKyokasho&revision=7")!
         let stylesheet = try XCTUnwrap(sharedReaderFontResponse(for: url, asset: asset))
         XCTAssertEqual(stylesheet.response.statusCode, 200)
         let routes = try fontRoutes(in: String(decoding: stylesheet.data, as: UTF8.self))
+        XCTAssertEqual(routes.count, 1, "An unavailable vertical face must not block horizontal delivery")
         let available = try XCTUnwrap(routes.first { $0.fragment == "Helvetica" })
-        let unavailable = try XCTUnwrap(routes.first { $0.fragment == missing })
+        XCTAssertNil(routes.first { $0.fragment == missing })
         let availableResponse = try XCTUnwrap(sharedReaderFontResponse(for: available, asset: asset))
         XCTAssertEqual(availableResponse.response.statusCode, 200)
         XCTAssertFalse(availableResponse.data.isEmpty)
+
+        let verticalStylesheetURL = URL(
+            string: "internal://local/manabi-fonts.css?family=YuKyokasho%20Yoko&revision=7"
+        )!
+        let verticalStylesheet = try XCTUnwrap(
+            sharedReaderFontResponse(for: verticalStylesheetURL, asset: asset)
+        )
+        XCTAssertEqual(verticalStylesheet.response.statusCode, 404)
+        let encodedMissing = Data(missing.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let unavailable = URL(
+            string: "internal://local/manabi-fonts/system-\(encodedMissing)?revision=7#\(missing)"
+        )!
         let unavailableResponse = try XCTUnwrap(sharedReaderFontResponse(for: unavailable, asset: asset))
         XCTAssertEqual(unavailableResponse.response.statusCode, 404)
         XCTAssertTrue(unavailableResponse.data.isEmpty, "CoreText fallback is not the requested font")
+
+        let embedded = sharedReaderFontDocumentResources(asset: asset, sourceURL: url)
+        XCTAssertEqual(embedded.count, 1)
+        let face = try XCTUnwrap(embedded.first)
+        XCTAssertEqual(Data(base64Encoded: face.base64), availableResponse.data)
+        XCTAssertEqual(face.sourceURLs, [available.absoluteString])
+    }
+
+    @MainActor
+    func testRoutedStylesheetPreservesNativeFallbackAndKeepsWorkingDirectionFirst() async throws {
+        let horizontal = "Menlo"
+        let vertical = "Reader Vertical Test"
+        let asset = SharedReaderFontAsset(
+            systemFontNames: [horizontal: "ManabiMissingFont-\(UUID().uuidString)", vertical: "Helvetica"],
+            horizontalFamilyName: horizontal, verticalFamilyName: vertical,
+            enablesRuntimeResourceDelivery: true
+        )
+        let origin = try XCTUnwrap(URL(string: "internal://local/"))
+        let stylesheet = try XCTUnwrap(sharedReaderFontStylesheetURL(for: origin, familyName: horizontal))
+        let response = try XCTUnwrap(sharedReaderFontResponse(for: stylesheet, asset: asset))
+        let routes = try fontRoutes(in: String(decoding: response.data, as: UTF8.self))
+        let verticalURL = try XCTUnwrap(routes.first { $0.fragment == "Helvetica" })
+        let handler = InternalURLSchemeHandler()
+        handler.sharedReaderFontAsset = asset
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(handler, forURLScheme: "internal")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 640, height: 200), configuration: configuration)
+        defer { webView.stopLoading() }
+
+        let navigation = SystemManagedFontPreviewNavigation()
+        webView.navigationDelegate = navigation
+        webView.loadHTMLString("""
+            <!doctype html>
+            <html>
+              <head><link rel="stylesheet" href="\(stylesheet.absoluteString)"></head>
+              <body>
+                <span id="sample">iii WWW agile fox 123</span>
+                <canvas width="560" height="90"></canvas>
+              </body>
+            </html>
+            """, baseURL: origin)
+        await fulfillment(of: [navigation.completed], timeout: 5)
+        if let error = navigation.error { throw error }
+
+        let result = try await webView.callAsyncJavaScript(#"""
+            const text = document.getElementById('sample')
+            const canvas = document.querySelector('canvas')
+            const context = canvas.getContext('2d')
+            const raster = families => {
+                context.clearRect(0, 0, canvas.width, canvas.height)
+                context.font = '400 42px ' + families
+                context.fillText(text.textContent, 8, 56)
+                return canvas.toDataURL()
+            }
+            const names = familyList => familyList.split(',').map(family => family.trim().replace(/^['"]|['"]$/g, ''))
+            const select = alias => '400 42px ' + JSON.stringify(alias)
+            const horizontalStack = getComputedStyle(text).fontFamily
+            const nativePixels = raster(JSON.stringify(nativeFamily) + ', system-ui')
+            const genericPixels = raster('system-ui')
+            try { await document.fonts.load(select(horizontalAlias), text.textContent) } catch (_) {}
+            const horizontalFailed = Array.from(document.fonts).some(face =>
+                names(face.family)[0] === horizontalAlias && face.status === 'error')
+            const horizontalPixels = raster(horizontalStack)
+
+            document.body.classList.add('reader-vertical-writing')
+            const verticalStack = getComputedStyle(text).fontFamily
+            const verticalFaces = await document.fonts.load(select(verticalAlias), text.textContent)
+            const verticalPixels = raster(verticalStack)
+            const verticalReference = await new FontFace('Vertical URL Reference', 'url(' + JSON.stringify(verticalURL) + ')').load()
+            document.fonts.add(verticalReference)
+            const referencePixels = raster('"Vertical URL Reference", system-ui')
+            document.body.classList.remove('reader-vertical-writing')
+
+            // The live settings writer may explicitly select a different
+            // fallback even while the previous route sheet is still present.
+            document.documentElement.style.setProperty('--mnb-content-font', 'system-ui')
+            document.body.style.setProperty('--mnb-content-font', 'system-ui')
+            const otherStack = getComputedStyle(text).fontFamily
+
+            return {
+                nativeDiffersFromGeneric: nativePixels !== genericPixels,
+                horizontalRouteFailed: horizontalFailed,
+                horizontalAliasIsFirst: names(horizontalStack)[0] === horizontalAlias,
+                horizontalNativeIsSecond: names(horizontalStack)[1] === nativeFamily,
+                failedRouteUsesNativeFace: horizontalPixels === nativePixels,
+                verticalAliasIsFirst: names(verticalStack)[0] === verticalAlias,
+                verticalRouteLoaded: verticalFaces.some(face => face.status === 'loaded'),
+                verticalUsesRoutedGlyphs: verticalPixels === referencePixels && verticalPixels !== genericPixels,
+                explicitSettingsFallbackWins: names(otherStack)[0] === 'system-ui',
+            }
+            """#, arguments: [
+                "nativeFamily": horizontal,
+                "horizontalAlias": asset.cssFontFaceFamilyName(for: horizontal),
+                "verticalAlias": asset.cssFontFaceFamilyName(for: vertical),
+                "verticalURL": verticalURL.absoluteString,
+            ], in: nil, contentWorld: .page)
+        let checks = try XCTUnwrap(result as? [String: Bool])
+        for key in [
+            "nativeDiffersFromGeneric", "horizontalRouteFailed", "horizontalAliasIsFirst", "horizontalNativeIsSecond",
+            "failedRouteUsesNativeFace", "verticalAliasIsFirst", "verticalRouteLoaded", "verticalUsesRoutedGlyphs",
+            "explicitSettingsFallbackWins",
+        ] {
+            XCTAssertEqual(checks[key], true, key)
+        }
     }
 
     private func fontRoutes(in css: String) throws -> [URL] {
@@ -119,5 +251,25 @@ final class SystemManagedReaderFontTests: XCTestCase {
             XCTAssertEqual(fontResponse.response.statusCode, 404)
             XCTAssertTrue(fontResponse.data.isEmpty)
         }
+    }
+}
+
+@MainActor
+private final class SystemManagedFontPreviewNavigation: NSObject, WKNavigationDelegate {
+    let completed = XCTestExpectation(description: "Font preview HTML loaded")
+    private(set) var error: Error?
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        completed.fulfill()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        self.error = error
+        completed.fulfill()
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        self.error = error
+        completed.fulfill()
     }
 }
