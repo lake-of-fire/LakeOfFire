@@ -368,6 +368,94 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(served.response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
     }
 
+    func testExternalSidecarRequestRequiresCanonicalURLIdentity() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-identity-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let stored = try XCTUnwrap(store.insert(Data("sidecar".utf8)))
+        let token = stored.token
+
+        let endpoints: [(
+            scheme: ReaderExternalSegmentSidecarScheme,
+            valid: String,
+            equivalent: [String],
+            invalid: [String]
+        )] = [
+            (
+                .ebook,
+                "ebook://ebook/processed-section-sidecar/\(token)",
+                [
+                    "EBOOK://ebook/processed-section-sidecar/\(token)",
+                    "ebook://EBOOK/processed-section-sidecar/\(token)",
+                ],
+                [
+                    "internal://ebook/processed-section-sidecar/\(token)",
+                    "ebook://other/processed-section-sidecar/\(token)",
+                    "ebook://ebook/processed-section-sidecar/\(token)/extra",
+                    "ebook://ebook/processed-section-sidecar/\(token)?query=1",
+                    "ebook://ebook/processed-section-sidecar/\(token)#fragment",
+                    "ebook://user@ebook/processed-section-sidecar/\(token)",
+                    "ebook://ebook:81/processed-section-sidecar/\(token)",
+                    "ebook://ebook/processed-section-sidecar/\(token.uppercased())",
+                ]
+            ),
+            (
+                .internalReader,
+                "internal://local/reader-sidecar/\(token)",
+                [
+                    "INTERNAL://local/reader-sidecar/\(token)",
+                    "internal://LOCAL/reader-sidecar/\(token)",
+                ],
+                [
+                    "ebook://local/reader-sidecar/\(token)",
+                    "internal://other/reader-sidecar/\(token)",
+                    "internal://local/reader-sidecar/\(token)/extra",
+                    "internal://local/reader-sidecar/\(token)?query=1",
+                    "internal://local/reader-sidecar/\(token)#fragment",
+                    "internal://user@local/reader-sidecar/\(token)",
+                    "internal://local:81/reader-sidecar/\(token)",
+                    "internal://local/reader-sidecar/\(token.uppercased())",
+                ]
+            ),
+        ]
+        for endpoint in endpoints {
+            let validURL = try XCTUnwrap(URL(string: endpoint.valid))
+            XCTAssertEqual(
+                readerExternalSegmentSidecarResponse(
+                    for: validURL,
+                    scheme: endpoint.scheme,
+                    store: store
+                )?.data,
+                Data("sidecar".utf8),
+                endpoint.valid
+            )
+            for equivalentURLString in endpoint.equivalent {
+                let equivalentURL = try XCTUnwrap(URL(string: equivalentURLString))
+                XCTAssertEqual(
+                    readerExternalSegmentSidecarResponse(
+                        for: equivalentURL,
+                        scheme: endpoint.scheme,
+                        store: store
+                    )?.data,
+                    Data("sidecar".utf8),
+                    equivalentURLString
+                )
+            }
+            for rejectedURLString in endpoint.invalid {
+                let rejectedURL = try XCTUnwrap(URL(string: rejectedURLString))
+                XCTAssertNil(
+                    readerExternalSegmentSidecarResponse(
+                        for: rejectedURL,
+                        scheme: endpoint.scheme,
+                        store: store
+                    ),
+                    rejectedURLString
+                )
+            }
+        }
+    }
+
     func testPublishedSidecarRemainsAvailableForDocumentLifetime() throws {
         let firstPayload = ebookIndexedSidecarPayload(0)
         let first = publishingCanonicalReaderSegmentSidecar(firstPayload, scheme: .ebook)
