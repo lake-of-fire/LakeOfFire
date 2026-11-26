@@ -1883,10 +1883,16 @@ public class ReaderFileManager: ObservableObject {
             throw ReaderFileManagerError.invalidFileURL
         }
 
-        let localRootURL: URL? = storageLocation == .local
-            ? try relativePath.fileURL(forRoot: localDrive?.rootDirectory ?? Self.getDocumentsDirectory()) : nil
-        let cloudRootURL: URL? = storageLocation == .icloud
-            ? try cloudDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) } : nil
+        let localRootURL: URL?
+        let cloudRootURL: URL?
+        do {
+            localRootURL = storageLocation == .local
+                ? try relativePath.fileURL(forRoot: localDrive?.rootDirectory ?? Self.getDocumentsDirectory()) : nil
+            cloudRootURL = storageLocation == .icloud
+                ? try cloudDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) } : nil
+        } catch is RootRelativePathError {
+            throw ReaderFileManagerError.invalidFileURL
+        }
         let activeRootURL: URL?
         switch storageLocation {
         case .local:
