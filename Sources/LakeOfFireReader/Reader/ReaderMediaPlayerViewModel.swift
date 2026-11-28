@@ -95,6 +95,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private var automaticRefreshPlayback: (contentKey: String, loadID: UUID, intent: WebViewNavigator.IssuedNavigationIdentity, contentIsCurrent: @Sendable () -> Bool)?
     private var currentContentKey: String?
     private var currentContentURL: URL?
+    private var initialRestorePresentation: (contentKey: String, contentLoadID: UUID, interactionRevision: UInt64)?
     private var ttsUtterances = [ReaderTTSUtterance]()
     private var ttsSentenceIdentifierToIndex = [String: Int]()
     private var ttsUtteranceObjectIdentifierToIndex = [ObjectIdentifier: Int]()
@@ -325,6 +326,16 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState, startsNewDocument: Bool = true) async throws {
         let incomingContentKey = content.compoundKey
         let beginsNewPlaybackLoad = startsNewDocument || currentContentKey != incomingContentKey
+        let preservesInitialRestorePresentation = initialRestorePresentation.map {
+            $0.contentKey == incomingContentKey
+                && $0.contentLoadID == currentContentLoadID
+                && $0.interactionRevision == playbackInteractionRevision
+                && isMediaPlayerPresented
+                && playbackSource == .recordedAudio
+        } ?? false
+        if initialRestorePresentation?.contentKey == incomingContentKey {
+            initialRestorePresentation = nil
+        }
         if beginsNewPlaybackLoad {
             beginPlaybackContentLoad(contentKey: incomingContentKey, contentURL: content.url)
         }
@@ -359,6 +370,12 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 audioURLs = voiceAudioURLs
             }
             stopAITTSPlayback(clearQueue: true)
+        }
+        if preservesInitialRestorePresentation,
+           !newState.pageURL.isNativeReaderView,
+           !voiceAudioURLs.isEmpty {
+            audioURLs = voiceAudioURLs
+            isMediaPlayerPresented = true
         }
     }
 
@@ -434,6 +451,30 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         )
     }
 
+    /// Primes restored recorded-audio controls from a local content record
+    /// before the first reader sheet is shown. This never requests autoplay.
+    @discardableResult
+    public func prepareInitialRestoreRecordedAudio(
+        contentKey: String,
+        contentURL: URL,
+        audioURLs: [URL]
+    ) -> Bool {
+        guard !audioURLs.isEmpty,
+              currentContentKey == nil || currentContentKey == contentKey,
+              !isMediaPlayerPresented || playbackSource == .recordedAudio else {
+            return false
+        }
+        beginPlaybackContentLoad(contentKey: contentKey, contentURL: contentURL)
+        self.audioURLs = audioURLs
+        transitionToRecordedAudioPresentation(reason: "initialReaderRestore")
+        initialRestorePresentation = (
+            contentKey: contentKey,
+            contentLoadID: currentContentLoadID,
+            interactionRevision: playbackInteractionRevision
+        )
+        return true
+    }
+
     @MainActor
     public func transitionToReadAloudPresentation() {
         cancelAutoplayRequest(reason: "readAloudTransition")
@@ -444,6 +485,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func closePlaybackPresentation() {
+        initialRestorePresentation = nil
         cancelAutoplayRequest(reason: "closePlaybackPresentation")
         if playbackSource == .aiTextToSpeech {
             stopAITTSIfNeeded()
@@ -754,6 +796,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func invalidatePlaybackForDocumentLoad() {
+        initialRestorePresentation = nil
         automaticRefreshPlayback = nil
         currentContentLoadID = UUID()
         currentContentKey = nil
