@@ -326,17 +326,21 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState, startsNewDocument: Bool = true) async throws {
         let incomingContentKey = content.compoundKey
         let beginsNewPlaybackLoad = startsNewDocument || currentContentKey != incomingContentKey
-        let preservesInitialRestorePresentation = initialRestorePresentation.map {
-            $0.contentKey == incomingContentKey
-                && $0.contentLoadID == currentContentLoadID
-                && $0.interactionRevision == playbackInteractionRevision
-                && isMediaPlayerPresented
-                && playbackSource == .recordedAudio
+        let initialRestoreMatchesCurrentLoad = initialRestorePresentation.map {
+            $0.contentKey == incomingContentKey && $0.contentLoadID == currentContentLoadID
         } ?? false
-        if initialRestorePresentation?.contentKey == incomingContentKey {
+        let preservesInitialRestorePresentation = initialRestoreMatchesCurrentLoad
+            && isMediaPlayerPresented
+            && playbackSource == .recordedAudio
+        let suppressesAutoOpenAfterInitialRestoreDismissal = initialRestoreMatchesCurrentLoad
+            && initialRestorePresentation?.interactionRevision != playbackInteractionRevision
+            && !isMediaPlayerPresented
+        // A non-new-document loader callback must not consume this marker. The
+        // same marker also identifies the playback load prepared before the
+        // renderer's first commit, so beginning that commit must not withdraw
+        // its already-visible presentation.
+        if beginsNewPlaybackLoad && !initialRestoreMatchesCurrentLoad {
             initialRestorePresentation = nil
-        }
-        if beginsNewPlaybackLoad {
             beginPlaybackContentLoad(contentKey: incomingContentKey, contentURL: content.url)
         }
         let voiceAudioURLs = content.resolvedVoiceAudioURLs
@@ -352,15 +356,21 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             if voiceAudioURLs != audioURLs {
                 audioURLs = voiceAudioURLs
             }
-            if !voiceAudioURLs.isEmpty && content.autoOpenMediaPlayer {
+            // The restored presentation was selected before the first
+            // document commit. Keep it visible without a close/reopen
+            // transition, regardless of the saved auto-open preference.
+            if !preservesInitialRestorePresentation {
+                if !suppressesAutoOpenAfterInitialRestoreDismissal,
+                   !voiceAudioURLs.isEmpty, content.autoOpenMediaPlayer {
 #if DEBUG
-                if !isMediaPlayerPresented {
-                }
+                    if !isMediaPlayerPresented {
+                    }
 #endif
-                isMediaPlayerPresented = true
-            } else if playbackSource == .recordedAudio, isMediaPlayerPresented {
-                cancelAutoplayRequest(reason: "navigation.noRecordedAudio")
-                isMediaPlayerPresented = false
+                    isMediaPlayerPresented = true
+                } else if playbackSource == .recordedAudio, isMediaPlayerPresented {
+                    cancelAutoplayRequest(reason: "navigation.noRecordedAudio")
+                    isMediaPlayerPresented = false
+                }
             }
         } else if newState.pageURL.isNativeReaderView {
             if isMediaPlayerPresented {
@@ -370,12 +380,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 audioURLs = voiceAudioURLs
             }
             stopAITTSPlayback(clearQueue: true)
-        }
-        if preservesInitialRestorePresentation,
-           !newState.pageURL.isNativeReaderView,
-           !voiceAudioURLs.isEmpty {
-            audioURLs = voiceAudioURLs
-            isMediaPlayerPresented = true
         }
     }
 
@@ -485,7 +489,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func closePlaybackPresentation() {
-        initialRestorePresentation = nil
         cancelAutoplayRequest(reason: "closePlaybackPresentation")
         if playbackSource == .aiTextToSpeech {
             stopAITTSIfNeeded()
