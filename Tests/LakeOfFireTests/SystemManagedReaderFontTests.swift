@@ -1,7 +1,8 @@
 import CoreText
 import XCTest
 import WebKit
-@testable import LakeOfFire
+import LakeOfFireFiles
+import LakeOfFireReader
 
 final class SystemManagedReaderFontTests: XCTestCase {
     func testRuntimeDeliveryIsAnExplicitPartOfFontAssetIdentity() {
