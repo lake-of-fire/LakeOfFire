@@ -10,7 +10,7 @@ import Combine
 import RealmSwift
 import BigSyncKit
 import LakeKit
-import LakeOfFire
+import LakeOfFireFiles
 import WebKit
 @testable import SwiftUIWebView
 @testable import LakeOfFireContent
